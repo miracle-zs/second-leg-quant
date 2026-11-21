@@ -248,11 +248,20 @@ def get_layout_drawings(
         dt1_str = datetime.fromtimestamp(t1_int, tz=TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M")
         dt2_str = datetime.fromtimestamp(t2_int, tz=TZ_SHANGHAI).strftime("%Y-%m-%d %H:%M")
 
+        # Extract interval
+        line_iv = (
+            state_obj.get("state", {}).get("interval")
+            or state_obj.get("interval")
+            or (points[0].get("interval") if points and isinstance(points[0], dict) else None)
+            or ""
+        )
+
         drawing_meta: dict[str, Any] = {
             "id": sid,
             "type": tool_type,
             "symbol": norm_sym,
             "raw_symbol": raw_sym,
+            "interval": str(line_iv),
             "p1": p1_flt,
             "t1": t1_int,
             "p2": p2_flt,
@@ -379,16 +388,44 @@ def fetch_latest_closed_candle(
         # If all returned candles appear in-progress, pick the second to last as guaranteed closed
         if len(klines_data) >= 2:
             target_candle = klines_data[-2]
+            prev_candle_raw = klines_data[-3] if len(klines_data) >= 3 else None
         else:
             target_candle = klines_data[-1]
+            prev_candle_raw = None
     else:
         target_candle = closed_candles[-1]
+        prev_candle_raw = closed_candles[-2] if len(closed_candles) >= 2 else None
 
     open_ms = int(target_candle[0])
     close_ms = int(target_candle[6])
 
     open_dt = datetime.fromtimestamp(open_ms / 1000.0, tz=TZ_SHANGHAI)
     close_dt = datetime.fromtimestamp(close_ms / 1000.0, tz=TZ_SHANGHAI)
+
+    prev_candle_dict = None
+    if prev_candle_raw:
+        p_open_ms = int(prev_candle_raw[0])
+        p_close_ms = int(prev_candle_raw[6])
+        p_open_dt = datetime.fromtimestamp(p_open_ms / 1000.0, tz=TZ_SHANGHAI)
+        p_close_dt = datetime.fromtimestamp(p_close_ms / 1000.0, tz=TZ_SHANGHAI)
+        prev_candle_dict = {
+            "symbol": clean_sym,
+            "interval": interval,
+            "open_time_ms": p_open_ms,
+            "close_time_ms": p_close_ms,
+            "open_time": int(p_open_ms / 1000),
+            "close_time": int(p_close_ms / 1000),
+            "open": float(prev_candle_raw[1]),
+            "high": float(prev_candle_raw[2]),
+            "low": float(prev_candle_raw[3]),
+            "close": float(prev_candle_raw[4]),
+            "volume": float(prev_candle_raw[5]),
+            "open_time_str": p_open_dt.strftime("%Y-%m-%d %H:%M:%S UTC+8"),
+            "close_time_str": p_close_dt.strftime("%Y-%m-%d %H:%M:%S UTC+8"),
+            "candle_time": p_open_dt.strftime("%Y-%m-%d %H:%M"),
+            "candle_timestamp": int(p_open_ms / 1000),
+            "is_closed": True,
+        }
 
     return {
         "symbol": clean_sym,
@@ -407,6 +444,7 @@ def fetch_latest_closed_candle(
         "candle_time": open_dt.strftime("%Y-%m-%d %H:%M"),
         "candle_timestamp": int(open_ms / 1000),
         "is_closed": True,
+        "prev_candle": prev_candle_dict,
     }
 
 
@@ -467,9 +505,14 @@ def check_symbol_breakout(
     candle: dict[str, Any] | None = None,
     target_time: int | float | None = None,
     at_close: bool = False,
+    prev_candle: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Evaluates whether a symbol's candlestick closes above the logarithmic trendline resistance.
+    Implements strict crossover logic and runaway/ancient line filtering:
+    - Previous candle close must be <= previous log resistance.
+    - Current candle close must be > current log resistance.
+    - Skip if resistance <= 0 or current price > resistance * 1.25.
 
     Args:
         symbol: Ticker symbol (e.g. 'YBUSDT' or 'BINANCE:YBUSDT.P')
@@ -477,10 +520,12 @@ def check_symbol_breakout(
         candle: Optional candlestick dict; if None, fetches the latest closed 15m candle
         target_time: Optional explicit timestamp to evaluate resistance at
         at_close: If True, evaluates resistance at candle close time; else at candle open time
+        prev_candle: Optional previous closed candlestick for strict crossover validation
 
     Returns:
         dict:
-            is_breakout (bool): True if close_price > res_price
+            is_breakout (bool): True if strict crossover confirmed and not runaway
+            is_crossover (bool): True if crossed from <= res to > res
             close_price (float): Closed candle close price
             res_price (float): Logarithmic resistance price at target timestamp
             pct (float): Breakout percentage ((close - res) / res * 100)
@@ -525,13 +570,54 @@ def check_symbol_breakout(
 
     res_price = calculate_log_resistance(p1=p1, t1=t1, p2=p2, t2=t2, target_t=eval_t)
 
-    is_breakout = close_price > res_price
-    pct = round(((close_price - res_price) / res_price) * 100, 4)
+    # Strict Crossover Logic:
+    # Previous closed candle close MUST be <= previous log resistance,
+    # and current closed candle close MUST be > current log resistance.
+    p_candle = prev_candle if prev_candle is not None else candle.get("prev_candle")
+    prev_close = None
+    prev_res = None
+    is_crossover = False
+
+    if p_candle:
+        prev_close = float(p_candle["close"])
+        prev_t = int(p_candle.get("candle_timestamp") or p_candle.get("open_time", eval_t - 900))
+        prev_res = calculate_log_resistance(p1=p1, t1=t1, p2=p2, t2=t2, target_t=prev_t)
+        if prev_close <= prev_res and close_price > res_price:
+            is_crossover = True
+        else:
+            # If previous candle was already above resistance, it is ALREADY broken out
+            is_crossover = False
+    else:
+        # Fallback if prev_candle is not provided in mock:
+        prev_t = eval_t - 900
+        prev_res = calculate_log_resistance(p1=p1, t1=t1, p2=p2, t2=t2, target_t=prev_t)
+        open_p = candle.get("open")
+        if open_p is not None and float(open_p) > prev_res:
+            # Open was already above previous resistance
+            is_crossover = False
+        else:
+            is_crossover = close_price > res_price
+
+    # Filter invalid price or runaway / ancient decay line
+    is_runaway = False
+    if res_price <= 0:
+        is_breakout = False
+    elif close_price > res_price * 1.25:
+        is_runaway = True
+        is_breakout = False
+    else:
+        is_breakout = is_crossover
+
+    pct = round(((close_price - res_price) / res_price) * 100, 4) if res_price > 0 else 0.0
 
     return {
         "is_breakout": is_breakout,
+        "is_crossover": is_crossover,
+        "is_runaway": is_runaway,
         "close_price": close_price,
-        "res_price": round(res_price, 6),
+        "res_price": round(res_price, 6) if res_price > 0 else 0.0,
+        "prev_close": prev_close,
+        "prev_res": round(prev_res, 6) if prev_res is not None else None,
         "pct": pct,
         "candle_time": candle_time_str,
         "candle_timestamp": candle_ts,

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_updated": "2026-11-22 00:27:02",
+  "last_updated": "2026-11-22 01:39:39",
   "active_resonance_symbols": [
     "ELSAUSDT",
     "ENSOUSDT",
@@ -18,7 +18,9 @@
       "zones": [
         "双核共振+逼空"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:CYBERUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:CYBERUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-21 22:05:14"
     },
     "ELSAUSDT": {
       "symbol": "ELSAUSDT",
@@ -27,7 +29,9 @@
       "zones": [
         "双核黄金共振"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:ELSAUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:ELSAUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-21 22:05:14"
     },
     "ENSOUSDT": {
       "symbol": "ENSOUSDT",
@@ -36,7 +40,9 @@
       "zones": [
         "双核共振+逼空"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:ENSOUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:ENSOUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-21 22:05:14"
     },
     "HMSTRUSDT": {
       "symbol": "HMSTRUSDT",
@@ -45,7 +51,9 @@
       "zones": [
         "双核黄金共振"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:HMSTRUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:HMSTRUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-22 00:03:03"
     },
     "HUMAUSDT": {
       "symbol": "HUMAUSDT",
@@ -54,7 +62,9 @@
       "zones": [
         "双核共振+逼空"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:HUMAUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:HUMAUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-21 22:05:14"
     },
     "IDOLUSDT": {
       "symbol": "IDOLUSDT",
@@ -63,7 +73,9 @@
       "zones": [
         "双核黄金共振"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:IDOLUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:IDOLUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-21 22:05:14"
     },
     "KERNELUSDT": {
       "symbol": "KERNELUSDT",
@@ -72,7 +84,9 @@
       "zones": [
         "双核共振+逼空"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:KERNELUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:KERNELUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-21 22:05:14"
     },
     "RAREUSDT": {
       "symbol": "RAREUSDT",
@@ -81,7 +95,9 @@
       "zones": [
         "双核共振+逼空"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:RAREUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:RAREUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-21 22:05:14"
     },
     "UAIUSDT": {
       "symbol": "UAIUSDT",
@@ -90,7 +106,9 @@
       "zones": [
         "双核黄金共振"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:UAIUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:UAIUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-21 22:05:14"
     },
     "YBUSDT": {
       "symbol": "YBUSDT",
@@ -99,7 +117,9 @@
       "zones": [
         "双核共振+逼空"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:YBUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:YBUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-21 22:05:14"
     },
     "JCTUSDT": {
       "symbol": "JCTUSDT",
@@ -108,7 +128,9 @@
       "zones": [
         "双核黄金共振"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:JCTUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:JCTUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-21 23:04:03"
     },
     "SOPHUSDT": {
       "symbol": "SOPHUSDT",
@@ -117,72 +139,10 @@
       "zones": [
         "双核黄金共振"
       ],
-      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:SOPHUSDT.P&interval=15"
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:SOPHUSDT.P&interval=15",
+      "last_notified_time": 1795278646,
+      "last_notified_at": "2026-11-22 00:03:04"
     }
   },
-  "notified_breakout_keys": [
-    "ENSOUSDT_1795269600_3wQ7fx",
-    "CYBERUSDT_1795269600_5NdyuJ",
-    "UAIUSDT_1795269600_1cD1qu",
-    "IDOLUSDT_1795269600_KjMnjT",
-    "RAREUSDT_1795269600_0ju3pQ",
-    "HUMAUSDT_1795269600_0N0McW",
-    "YBUSDT_1795269600_SFzHy9",
-    "KERNELUSDT_1795269600_egMKud",
-    "HMSTRUSDT_1795269600_ctoX8b",
-    "CYBERUSDT_1795269600_8hWpud",
-    "RAREUSDT_1795269600_PDOmuu",
-    "UAIUSDT_1795269600_A2Jo3Y",
-    "ENSOUSDT_1795269600_B2CZm6",
-    "HUMAUSDT_1795269600_Opfdo1",
-    "HUMAUSDT_1795269600_UvXo3R",
-    "RAREUSDT_1795269600_PSGiHD",
-    "UAIUSDT_1795269600_PYTkyk",
-    "ENSOUSDT_1795269600_H5wcgR",
-    "CYBERUSDT_1795269600_9i7ROa",
-    "IDOLUSDT_1795269600",
-    "ENSOUSDT_1795269600",
-    "HUMAUSDT_1795269600",
-    "YBUSDT_1795269600",
-    "RAREUSDT_1795269600",
-    "HMSTRUSDT_1795269600",
-    "KERNELUSDT_1795269600",
-    "CYBERUSDT_1795269600",
-    "UAIUSDT_1795269600",
-    "RAREUSDT_1795270500",
-    "YBUSDT_1795270500",
-    "HUMAUSDT_1795270500",
-    "ENSOUSDT_1795270500",
-    "IDOLUSDT_1795270500",
-    "HMSTRUSDT_1795270500",
-    "CYBERUSDT_1795270500",
-    "KERNELUSDT_1795270500",
-    "UAIUSDT_1795270500",
-    "UAIUSDT_1795271400",
-    "RAREUSDT_1795271400",
-    "CYBERUSDT_1795271400",
-    "ENSOUSDT_1795271400",
-    "HUMAUSDT_1795271400",
-    "HMSTRUSDT_1795271400",
-    "IDOLUSDT_1795271400",
-    "KERNELUSDT_1795271400",
-    "YBUSDT_1795271400",
-    "YBUSDT_1795272300",
-    "IDOLUSDT_1795272300",
-    "ENSOUSDT_1795272300",
-    "RAREUSDT_1795272300",
-    "KERNELUSDT_1795272300",
-    "HUMAUSDT_1795272300",
-    "IDOLUSDT_1795275900",
-    "SOPHUSDT_1795275900",
-    "HMSTRUSDT_1795275900",
-    "ENSOUSDT_1795275900",
-    "YBUSDT_1795275900",
-    "RAREUSDT_1795275900",
-    "IDOLUSDT_1795276800",
-    "YBUSDT_1795276800",
-    "SOPHUSDT_1795276800",
-    "ENSOUSDT_1795276800",
-    "RAREUSDT_1795276800"
-  ]
+  "notified_breakout_keys": []
 }

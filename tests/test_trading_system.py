@@ -20,6 +20,7 @@ Usage:
 
 import os
 import sys
+import time
 import json
 import math
 import shutil
@@ -185,8 +186,39 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
+    def test_cold_start_baseline_suppresses_initial_alerts(self):
+        """Verify cold start initial run records baseline symbols without sending alerts."""
+        candidates = [
+            {
+                "symbol": "ALPHAUSDT",
+                "price": 1.25,
+                "turnover_ratio": 4.5,
+                "funding_rate_4h_pct": -0.08,
+                "is_resonance": True,
+                "resonance_score": 3,
+                "is_neg_funding": True,
+                "zones": ["双核共振+逼空"]
+            }
+        ]
+        with open(self.pool_path, "w", encoding="utf-8") as f:
+            json.dump(candidates, f)
+
+        notifier = tad.ServerChanNotifier(dry_run=True)
+        state_store = tad.ResonanceStateStore(self.state_path)
+
+        # On initial run with cold_start=True, establish baseline without alerting
+        alerts = tad.check_feature_1_resonance(
+            notifier=notifier,
+            state_store=state_store,
+            pool_file=self.pool_path,
+            layout_id="ig0LuDL8",
+            cold_start=True
+        )
+        self.assertEqual(len(alerts), 0)
+        self.assertEqual(state_store.get_active_symbols(), {"ALPHAUSDT"})
+
     def test_new_resonance_detection_and_notification(self):
-        """Verify newly entered resonance tokens trigger alerts with proper links."""
+        """Verify newly entered resonance tokens trigger alerts with proper links when baseline exists."""
         candidates = [
             {
                 "symbol": "ALPHAUSDT",
@@ -213,8 +245,11 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
 
         notifier = tad.ServerChanNotifier(dry_run=True)
         state_store = tad.ResonanceStateStore(self.state_path)
+        # Establish baseline where GAMMAUSDT is active, so ALPHAUSDT is newly entered
+        state_store.data["active_resonance_symbols"] = ["GAMMAUSDT"]
+        state_store.save()
 
-        # Initial run: ALPHAUSDT enters resonance
+        # Run check: ALPHAUSDT enters resonance
         alerts = tad.check_feature_1_resonance(
             notifier=notifier,
             state_store=state_store,
@@ -230,7 +265,7 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
         self.assertIn("https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:ALPHAUSDT.P&interval=15", hist_entry["tv_link"])
 
     def test_resonance_state_transition_and_deduplication(self):
-        """Verify state persistence prevents redundant notification spam."""
+        """Verify state persistence prevents redundant notification spam in steady state."""
         candidates = [
             {
                 "symbol": "ALPHAUSDT",
@@ -248,30 +283,71 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
         notifier = tad.ServerChanNotifier(dry_run=True)
         state_store = tad.ResonanceStateStore(self.state_path)
 
-        # 1st check -> alerted
-        alerts1 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path)
+        # 1st check with cold_start=False -> alerted
+        alerts1 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=False)
         self.assertEqual(len(alerts1), 1)
 
         # 2nd check with same state -> 0 new alerts
-        alerts2 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path)
+        alerts2 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=False)
         self.assertEqual(len(alerts2), 0)
 
         # 3rd check: ALPHAUSDT drops out
         with open(self.pool_path, "w", encoding="utf-8") as f:
             json.dump([], f)
-        alerts3 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path)
+        alerts3 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=False)
         self.assertEqual(len(alerts3), 0)
         self.assertEqual(state_store.get_active_symbols(), set())
 
-        # 4th check: ALPHAUSDT re-enters -> alerted again
+    def test_feature_1_24h_debounce(self):
+        """Verify 24h debounce suppresses repetitive alerts on boundary score jitter."""
+        candidates = [
+            {
+                "symbol": "ALPHAUSDT",
+                "price": 1.25,
+                "is_resonance": True,
+                "resonance_score": 3,
+                "funding_rate_4h_pct": -0.05,
+                "turnover_ratio": 2.5,
+                "zones": ["双核共振+逼空"]
+            }
+        ]
         with open(self.pool_path, "w", encoding="utf-8") as f:
             json.dump(candidates, f)
-        alerts4 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path)
-        self.assertEqual(len(alerts4), 1)
+
+        notifier = tad.ServerChanNotifier(dry_run=True)
+        state_store = tad.ResonanceStateStore(self.state_path)
+
+        # 1. First alert sent
+        alerts1 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=False)
+        self.assertEqual(len(alerts1), 1)
+        self.assertIn("ALPHAUSDT", state_store.data["history"])
+        notified_time = state_store.data["history"]["ALPHAUSDT"]["last_notified_time"]
+        self.assertIsNotNone(notified_time)
+
+        # 2. ALPHAUSDT drops out of active resonance
+        state_store.data["active_resonance_symbols"] = []
+        state_store.save()
+
+        # 3. ALPHAUSDT re-enters 2 hours later (well within 24h) -> Debounce blocks re-notification
+        alerts2 = tad.check_feature_1_resonance(
+            notifier, state_store, self.pool_path, cold_start=False, debounce_hours=24.0
+        )
+        self.assertEqual(len(alerts2), 0, "24h debounce must suppress alert when re-entering within 24 hours")
+        self.assertEqual(state_store.get_active_symbols(), {"ALPHAUSDT"})
+
+        # 4. Simulate >24h elapsed (e.g. notified 25 hours ago)
+        state_store.data["active_resonance_symbols"] = []
+        state_store.data["history"]["ALPHAUSDT"]["last_notified_time"] = int(time.time() - 25 * 3600)
+        state_store.save()
+
+        alerts3 = tad.check_feature_1_resonance(
+            notifier, state_store, self.pool_path, cold_start=False, debounce_hours=24.0
+        )
+        self.assertEqual(len(alerts3), 1, "Alert should fire again once 24h debounce window has expired")
 
 
 class TestFeature2BreakoutDetection(unittest.TestCase):
-    """4. Feature 2: 15m breakout detection (using YBUSDT actual data)"""
+    """4. Feature 2: 15m breakout detection (strict crossover, single-line consumption, filtering)"""
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
@@ -296,6 +372,7 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         """
         trendline = {
             "id": "SFzHy9",
+            "interval": "15",
             "p1": 0.06306,
             "t1": 1795104900,
             "p2": 0.05757,
@@ -312,11 +389,23 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
             "candle_timestamp": 1795234500,
             "candle_time": "2026-11-21 12:15",
             "is_closed": True,
+            "prev_candle": {
+                "symbol": "YBUSDT",
+                "open": 0.04920,
+                "high": 0.04980,
+                "low": 0.04910,
+                "close": 0.04975,  # <= prev log res 0.049948
+                "open_time": 1795233600,
+                "close_time": 1795234499,
+                "candle_timestamp": 1795233600,
+                "is_closed": True
+            }
         }
 
         # Verify engine direct evaluation
         eval_result = tve.check_symbol_breakout("YBUSDT", trendline, candle=candle_1215)
         self.assertTrue(eval_result["is_breakout"])
+        self.assertTrue(eval_result["is_crossover"])
         self.assertEqual(eval_result["close_price"], 0.05030)
         self.assertAlmostEqual(eval_result["res_price"], 0.049892, places=5)
         self.assertGreater(eval_result["pct"], 0.8)
@@ -329,12 +418,242 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
                 self.assertEqual(len(alerts), 1)
                 self.assertEqual(alerts[0]["symbol"], "YBUSDT")
                 self.assertAlmostEqual(alerts[0]["close_price"], 0.05030, places=5)
-                self.assertTrue(self.state_store.has_breakout_notified("YBUSDT_1795234500"))
+                # Verify single-line consumption key
+                self.assertTrue(self.state_store.has_breakout_notified("YBUSDT_SFzHy9"))
+
+    def test_true_crossover_triggers_breakout(self):
+        """
+        Verify True Crossover:
+        prev_close <= prev_res and curr_close > curr_res -> triggers breakout.
+        """
+        trendline = {
+            "id": "cross_line_1",
+            "interval": "15",
+            "p1": 0.06306,
+            "t1": 1795104900,
+            "p2": 0.05757,
+            "t2": 1795155300,
+        }
+        # Prev res at 1795233600 is ~0.049948; Curr res at 1795234500 is ~0.049892
+        candle_cross = {
+            "symbol": "YBUSDT",
+            "open": 0.04980,
+            "high": 0.05050,
+            "low": 0.04970,
+            "close": 0.05020,  # > curr_res 0.049892
+            "open_time": 1795234500,
+            "close_time": 1795235399,
+            "candle_timestamp": 1795234500,
+            "candle_time": "2026-11-21 12:15",
+            "is_closed": True,
+            "prev_candle": {
+                "symbol": "YBUSDT",
+                "open": 0.04930,
+                "high": 0.04980,
+                "low": 0.04920,
+                "close": 0.04960,  # <= prev_res 0.049948
+                "open_time": 1795233600,
+                "close_time": 1795234499,
+                "candle_timestamp": 1795233600,
+                "is_closed": True
+            }
+        }
+        eval_result = tve.check_symbol_breakout("YBUSDT", trendline, candle=candle_cross)
+        self.assertTrue(eval_result["is_crossover"])
+        self.assertTrue(eval_result["is_breakout"])
+
+        mock_drawings = {"YBUSDT": [trendline]}
+        with patch.object(tad, "fetch_layout_drawings", return_value=mock_drawings):
+            with patch.object(tad, "get_binance_closed_15m_candle", return_value=candle_cross):
+                alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
+                self.assertEqual(len(alerts), 1)
+                self.assertEqual(alerts[0]["trendline_id"], "cross_line_1")
+
+    def test_already_above_line_does_not_trigger_breakout(self):
+        """
+        Verify Already Above Line:
+        prev_close > prev_res and curr_close > curr_res -> does NOT trigger breakout.
+        """
+        trendline = {
+            "id": "cross_line_2",
+            "interval": "15",
+            "p1": 0.06306,
+            "t1": 1795104900,
+            "p2": 0.05757,
+            "t2": 1795155300,
+        }
+        # Both prev and curr are above resistance
+        candle_already_above = {
+            "symbol": "YBUSDT",
+            "open": 0.05010,
+            "high": 0.05080,
+            "low": 0.05000,
+            "close": 0.05040,  # > curr_res 0.049892
+            "open_time": 1795234500,
+            "close_time": 1795235399,
+            "candle_timestamp": 1795234500,
+            "candle_time": "2026-11-21 12:15",
+            "is_closed": True,
+            "prev_candle": {
+                "symbol": "YBUSDT",
+                "open": 0.04990,
+                "high": 0.05030,
+                "low": 0.04980,
+                "close": 0.05015,  # > prev_res 0.049948 (ALREADY ABOVE!)
+                "open_time": 1795233600,
+                "close_time": 1795234499,
+                "candle_timestamp": 1795233600,
+                "is_closed": True
+            }
+        }
+        eval_result = tve.check_symbol_breakout("YBUSDT", trendline, candle=candle_already_above)
+        self.assertFalse(eval_result["is_crossover"])
+        self.assertFalse(eval_result["is_breakout"])
+
+        mock_drawings = {"YBUSDT": [trendline]}
+        with patch.object(tad, "fetch_layout_drawings", return_value=mock_drawings):
+            with patch.object(tad, "get_binance_closed_15m_candle", return_value=candle_already_above):
+                alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
+                self.assertEqual(len(alerts), 0, "Already above line must not trigger false breakout")
+
+    def test_single_line_consumption_deduplication(self):
+        """
+        Verify Single-Line Consumption:
+        Second consecutive candle with same line_id does NOT send breakout alert.
+        """
+        trendline = {
+            "id": "single_consume_line",
+            "interval": "15",
+            "p1": 0.06306,
+            "t1": 1795104900,
+            "p2": 0.05757,
+            "t2": 1795155300,
+        }
+        candle_1 = {
+            "symbol": "YBUSDT",
+            "open": 0.04980,
+            "high": 0.05050,
+            "low": 0.04970,
+            "close": 0.05020,
+            "open_time": 1795234500,
+            "close_time": 1795235399,
+            "candle_timestamp": 1795234500,
+            "candle_time": "2026-11-21 12:15",
+            "is_closed": True,
+            "prev_candle": {
+                "close": 0.04960,  # <= prev_res
+                "open_time": 1795233600,
+                "close_time": 1795234499,
+                "candle_timestamp": 1795233600,
+            }
+        }
+        mock_drawings = {"YBUSDT": [trendline]}
+        with patch.object(tad, "fetch_layout_drawings", return_value=mock_drawings):
+            with patch.object(tad, "get_binance_closed_15m_candle", return_value=candle_1):
+                alerts1 = tad.check_feature_2_breakout(self.notifier, self.state_store)
+                self.assertEqual(len(alerts1), 1)
+                self.assertTrue(self.state_store.has_breakout_notified("YBUSDT_single_consume_line"))
+
+        # Second consecutive candle 15m later
+        candle_2 = {
+            "symbol": "YBUSDT",
+            "open": 0.05020,
+            "high": 0.05100,
+            "low": 0.05010,
+            "close": 0.05080,
+            "open_time": 1795235400,
+            "close_time": 1795236299,
+            "candle_timestamp": 1795235400,
+            "candle_time": "2026-11-21 12:30",
+            "is_closed": True,
+            "prev_candle": {
+                "close": 0.04960,  # Even if crossover simulated
+                "open_time": 1795234500,
+                "close_time": 1795235399,
+                "candle_timestamp": 1795234500,
+            }
+        }
+        with patch.object(tad, "fetch_layout_drawings", return_value=mock_drawings):
+            with patch.object(tad, "get_binance_closed_15m_candle", return_value=candle_2):
+                alerts2 = tad.check_feature_2_breakout(self.notifier, self.state_store)
+                self.assertEqual(len(alerts2), 0, "Second candle must be suppressed by single-line consumption")
+
+    def test_non_15m_and_ancient_trendlines_ignored(self):
+        """
+        Verify that 240m / ancient / runaway trendlines are strictly ignored.
+        """
+        now_ts = 1795234500  # reference time matching candle
+
+        # 1. Non-15m line (240m = 4h)
+        line_240m = {
+            "id": "line_4h",
+            "interval": "240",
+            "p1": 0.06306,
+            "t1": 1795104900,
+            "p2": 0.05757,
+            "t2": 1795155300,
+        }
+        self.assertFalse(tad.is_valid_15m_trendline(line_240m, current_time=now_ts))
+
+        # 2. Daily line ("D")
+        line_d = {
+            "id": "line_daily",
+            "interval": "D",
+            "p1": 0.06306,
+            "t1": 1795104900,
+            "p2": 0.05757,
+            "t2": 1795155300,
+        }
+        self.assertFalse(tad.is_valid_15m_trendline(line_d, current_time=now_ts))
+
+        # 3. Ancient line: t2 was 80 hours ago (> 72 hours)
+        ancient_t2 = now_ts - 80 * 3600
+        line_ancient = {
+            "id": "line_ancient",
+            "interval": "15",
+            "p1": 0.07000,
+            "t1": ancient_t2 - 36000,
+            "p2": 0.06000,
+            "t2": ancient_t2,
+        }
+        self.assertFalse(tad.is_valid_15m_trendline(line_ancient, current_time=now_ts))
+
+        # 4. Runaway / ancient decay line (price > res * 1.25)
+        runaway_line = {
+            "id": "runaway_line",
+            "interval": "15",
+            "p1": 0.0100,
+            "t1": now_ts - 7200,
+            "p2": 0.0080,
+            "t2": now_ts - 3600,
+        }
+        candle_runaway = {
+            "symbol": "YBUSDT",
+            "open": 0.0500,
+            "high": 0.0510,
+            "low": 0.0490,
+            "close": 0.0500,  # ~7x higher than resistance (~0.007)
+            "open_time": now_ts,
+            "close_time": now_ts + 899,
+            "candle_timestamp": now_ts,
+            "is_closed": True,
+        }
+        eval_runaway = tve.check_symbol_breakout("YBUSDT", runaway_line, candle=candle_runaway)
+        self.assertTrue(eval_runaway["is_runaway"])
+        self.assertFalse(eval_runaway["is_breakout"])
+
+        # Daemon integration test: all invalid lines ignored
+        mock_drawings = {"YBUSDT": [line_240m, line_d, line_ancient, runaway_line]}
+        with patch.object(tad, "fetch_layout_drawings", return_value=mock_drawings):
+            with patch.object(tad, "get_binance_closed_15m_candle", return_value=candle_runaway):
+                alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
+                self.assertEqual(len(alerts), 0, "All invalid/non-15m/ancient/runaway lines must produce 0 alerts")
 
     def test_non_breakout_candle_below_trendline(self):
         """Verify candle closing below logarithmic resistance does NOT trigger breakout alert."""
         trendline = {
             "id": "SFzHy9",
+            "interval": "15",
             "p1": 0.06306,
             "t1": 1795104900,
             "p2": 0.05757,

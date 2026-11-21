@@ -288,19 +288,8 @@ def get_binance_ticker_price(symbol: str) -> float:
 
 def get_binance_closed_15m_candle(symbol: str) -> Optional[dict]:
     """
-    拉取币安永续合约最新已收盘的 15m K 线。
-    返回格式:
-    {
-        "symbol": symbol,
-        "open_time": int (秒级),
-        "close_time": int (秒级),
-        "open": float,
-        "high": float,
-        "low": float,
-        "close": float,
-        "volume": float,
-        "is_closed": bool
-    }
+    拉取币安永续合约最新已收盘的 15m K 线，同时附带倒数第二根已收盘 K 线 (prev_candle)，
+    供 15m 严格 Crossover (下穿或线上穿越) 突破判定使用。
     """
     sym = symbol.upper()
     if not sym.endswith("USDT"):
@@ -315,13 +304,35 @@ def get_binance_closed_15m_candle(symbol: str) -> Optional[dict]:
             
             now_ms = int(time.time() * 1000)
             # 倒数第一根通常是正在进行的未闭合K线，倒数第二根为确定闭合的K线
-            candle = klines[-2]
             if klines[-1][6] < now_ms:
                 # 倒数第一根也已收盘
                 candle = klines[-1]
+                prev_candle_raw = klines[-2] if len(klines) >= 2 else None
+            else:
+                candle = klines[-2]
+                prev_candle_raw = klines[-3] if len(klines) >= 3 else None
 
             open_dt = datetime.fromtimestamp(candle[0] / 1000.0, tz=timezone(timedelta(hours=8)))
             close_dt = datetime.fromtimestamp(candle[6] / 1000.0, tz=timezone(timedelta(hours=8)))
+
+            prev_candle_dict = None
+            if prev_candle_raw:
+                p_open_dt = datetime.fromtimestamp(prev_candle_raw[0] / 1000.0, tz=timezone(timedelta(hours=8)))
+                p_close_dt = datetime.fromtimestamp(prev_candle_raw[6] / 1000.0, tz=timezone(timedelta(hours=8)))
+                prev_candle_dict = {
+                    "symbol": sym,
+                    "open_time": int(prev_candle_raw[0] // 1000),
+                    "close_time": int(prev_candle_raw[6] // 1000),
+                    "open": float(prev_candle_raw[1]),
+                    "high": float(prev_candle_raw[2]),
+                    "low": float(prev_candle_raw[3]),
+                    "close": float(prev_candle_raw[4]),
+                    "volume": float(prev_candle_raw[5]),
+                    "candle_time": p_open_dt.strftime("%Y-%m-%d %H:%M"),
+                    "candle_timestamp": int(prev_candle_raw[0] // 1000),
+                    "is_closed": True
+                }
+
             return {
                 "symbol": sym,
                 "open_time": int(candle[0] // 1000),
@@ -333,11 +344,67 @@ def get_binance_closed_15m_candle(symbol: str) -> Optional[dict]:
                 "volume": float(candle[5]),
                 "candle_time": open_dt.strftime("%Y-%m-%d %H:%M"),
                 "candle_timestamp": int(candle[0] // 1000),
-                "is_closed": True
+                "is_closed": True,
+                "prev_candle": prev_candle_dict
             }
     except Exception as e:
         logger.warning(f"拉取 {sym} 15m K线失败: {e}")
         return None
+
+
+def is_valid_15m_trendline(line: dict, current_time: Optional[float] = None) -> bool:
+    """
+    趋势线有效性与过滤规则校验:
+    1. 周期过滤: 仅允许 15m 画线 (line.get('interval') == '15' 或 point interval == '15' 或缺失默认15m)。
+       严格忽略非15m画线 (例如 '240', 'D', '1D', '60', '1W' 等)。
+    2. 新鲜度过滤: 趋势线第二个锚点 t2 或 server_update_time 必须为近期有效 (72小时以内)。
+    """
+    # 1. 周期过滤
+    line_iv = line.get("interval")
+    if not line_iv and "state" in line and isinstance(line["state"], dict):
+        line_iv = line["state"].get("interval")
+    if not line_iv and "points" in line and isinstance(line["points"], list):
+        for pt in line["points"]:
+            if isinstance(pt, dict) and pt.get("interval"):
+                line_iv = pt.get("interval")
+                break
+
+    if line_iv is not None:
+        iv_str = str(line_iv).strip().upper()
+        if iv_str and iv_str not in ("15", "15M"):
+            return False
+
+    # 2. 新鲜度过滤 (72 小时以内 = 259,200 秒)
+    MAX_AGE_SEC = 72 * 3600
+    now_ts = current_time if current_time is not None else time.time()
+
+    t2 = line.get("t2")
+    if t2 is None and "points" in line and len(line["points"]) >= 2:
+        t2 = line["points"][1].get("time_t") or line["points"][1].get("time")
+
+    s_time = line.get("server_update_time")
+    if s_time is not None:
+        try:
+            s_time_sec = float(s_time) / 1000.0 if float(s_time) > 1e11 else float(s_time)
+        except (ValueError, TypeError):
+            s_time_sec = None
+    else:
+        s_time_sec = None
+
+    is_recent = False
+    if t2 is not None:
+        try:
+            t2_sec = float(t2)
+            if (now_ts - t2_sec) <= MAX_AGE_SEC:
+                is_recent = True
+        except (ValueError, TypeError):
+            pass
+
+    if not is_recent and s_time_sec is not None:
+        if (now_ts - s_time_sec) <= MAX_AGE_SEC:
+            is_recent = True
+
+    return is_recent
 
 
 # ==============================================================================
@@ -366,41 +433,63 @@ def calculate_log_resistance(p1: float, t1: float, p2: float, t2: float, target_
         return 0.0
 
 
-def fetch_layout_drawings(layout_id: str = DEFAULT_TV_LAYOUT_ID, ttl_sec: int = 60) -> Dict[str, Any]:
-    """从 tv_trendline_engine 获取 TradingView 布局中的画线数据 (支持内存与本地缓存)"""
+def fetch_layout_drawings(
+    layout_id: str = DEFAULT_TV_LAYOUT_ID,
+    ttl_sec: int = 60,
+    filter_15m: bool = False
+) -> Dict[str, Any]:
+    """
+    从 tv_trendline_engine 获取 TradingView 布局中的画线数据 (支持内存与本地缓存)。
+    若 filter_15m=True，则自动过滤剔除非15m周期或超过72小时未更新的陈旧失效画线。
+    """
     global _DRAWINGS_CACHE
     now = time.time()
+    raw_drawings = None
+
     if (
         _DRAWINGS_CACHE["data"] is not None
         and _DRAWINGS_CACHE["layout_id"] == layout_id
         and (now - _DRAWINGS_CACHE["ts"]) < ttl_sec
     ):
-        return _DRAWINGS_CACHE["data"]
+        raw_drawings = _DRAWINGS_CACHE["data"]
+    else:
+        # 优先检测本地近期生成的快照缓存 (有效窗口 180s)
+        local_cache_file = RUNS_DIR / f"tradingview_drawings_{layout_id}.json"
+        if local_cache_file.exists():
+            try:
+                mtime = local_cache_file.stat().st_mtime
+                if now - mtime < 180:
+                    with open(local_cache_file, "r", encoding="utf-8") as f:
+                        cdata = json.load(f)
+                        drawings = cdata.get("drawings_by_symbol", {})
+                        if drawings:
+                            _DRAWINGS_CACHE = {"data": drawings, "ts": now, "layout_id": layout_id}
+                            raw_drawings = drawings
+            except Exception:
+                pass
 
-    # 优先检测本地近期生成的快照缓存 (有效窗口 180s)
-    local_cache_file = RUNS_DIR / f"tradingview_drawings_{layout_id}.json"
-    if local_cache_file.exists():
-        try:
-            mtime = local_cache_file.stat().st_mtime
-            if now - mtime < 180:
-                with open(local_cache_file, "r", encoding="utf-8") as f:
-                    cdata = json.load(f)
-                    drawings = cdata.get("drawings_by_symbol", {})
-                    if drawings:
-                        _DRAWINGS_CACHE = {"data": drawings, "ts": now, "layout_id": layout_id}
-                        return drawings
-        except Exception:
-            pass
+        if raw_drawings is None and tve and hasattr(tve, "get_layout_drawings"):
+            try:
+                drawings = tve.get_layout_drawings(layout_id)
+                if isinstance(drawings, dict):
+                    _DRAWINGS_CACHE = {"data": drawings, "ts": now, "layout_id": layout_id}
+                    raw_drawings = drawings
+            except Exception as e:
+                logger.warning(f"获取 TV 布局画线异常: {e}")
 
-    if tve and hasattr(tve, "get_layout_drawings"):
-        try:
-            drawings = tve.get_layout_drawings(layout_id)
-            if isinstance(drawings, dict):
-                _DRAWINGS_CACHE = {"data": drawings, "ts": now, "layout_id": layout_id}
-                return drawings
-        except Exception as e:
-            logger.warning(f"获取 TV 布局画线异常: {e}")
-    return {}
+    if not raw_drawings:
+        return {}
+
+    if not filter_15m:
+        return raw_drawings
+
+    filtered_map = {}
+    for sym, lines in raw_drawings.items():
+        line_list = lines if isinstance(lines, list) else [lines]
+        valid_lines = [l for l in line_list if is_valid_15m_trendline(l, current_time=now)]
+        if valid_lines:
+            filtered_map[sym] = valid_lines
+    return filtered_map
 
 
 # ==============================================================================
@@ -564,12 +653,17 @@ def check_feature_1_resonance(
     notifier: ServerChanNotifier,
     state_store: ResonanceStateStore,
     pool_file: Path = DEFAULT_POOL_PATH,
-    layout_id: str = DEFAULT_TV_LAYOUT_ID
+    layout_id: str = DEFAULT_TV_LAYOUT_ID,
+    cold_start: bool = True,
+    debounce_hours: float = 24.0,
 ) -> List[dict]:
     """
     Feature 1 (新共振标的提醒):
     比对 runs/second_leg_candidates_pool.json 与 runs/resonance_state.json。
     新进入三重共振或双核黄金共振的标的，触发 Server酱 微信提醒，指引画线。
+    风控机制:
+    1. 冷启动基准建立: 当 state_store 中暂无活跃标的或首次启动时，直接记录当前标的为基准，不向 Server酱 泛洪发信。
+    2. 24小时防抖: 标的若在 24 小时内已通知过，在共振分数边界上下波动时不重复发信。
     """
     if not pool_file.exists():
         logger.warning(f"候选池文件不存在: {pool_file}")
@@ -596,6 +690,32 @@ def check_feature_1_resonance(
     active_symbols = state_store.get_active_symbols()
     current_symbols = set(current_resonance_coins.keys())
 
+    now_ts = time.time()
+    now_str = get_beijing_time_str()
+
+    # 1. 冷启动基准建立: 当 state_store 暂无活跃标的，直接记录当前标的，不发送微信通知
+    if cold_start and not active_symbols:
+        logger.info(
+            f"冷启动基准建立: state_store 中暂无活跃标的，直接记录当前 {len(current_symbols)} 个共振标的为初始基准，不发送微信通知。"
+        )
+        state_store.data["active_resonance_symbols"] = sorted(list(current_symbols))
+        for sym in current_symbols:
+            coin = current_resonance_coins[sym]
+            res_score = coin.get("resonance_score", 2)
+            tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
+            if sym not in state_store.data.setdefault("history", {}):
+                state_store.data["history"][sym] = {
+                    "symbol": sym,
+                    "first_detected": now_str,
+                    "last_notified_at": now_str,
+                    "last_notified_time": int(now_ts),
+                    "res_score": res_score,
+                    "zones": coin.get("zones", []),
+                    "tv_link": tv_link,
+                }
+        state_store.save()
+        return []
+
     # 计算新进入共振的标的
     new_entered = current_symbols - active_symbols
     alerted_list = []
@@ -607,7 +727,25 @@ def check_feature_1_resonance(
         coin = current_resonance_coins[sym]
         res_score = coin.get("resonance_score", 2)
         is_neg_fr = coin.get("is_neg_funding") or coin.get("funding_rate_4h_pct", 0) < 0
-        
+
+        # 2. 24小时防抖校验: 若 24 小时内已通知过，分数边界波动不重复提醒
+        hist = state_store.data.get("history", {}).get(sym, {})
+        last_notified_ts = hist.get("last_notified_time")
+        if last_notified_ts is None and "first_detected" in hist:
+            try:
+                dt = datetime.strptime(hist["first_detected"], "%Y-%m-%d %H:%M:%S")
+                last_notified_ts = dt.replace(tzinfo=timezone(timedelta(hours=8))).timestamp()
+            except Exception:
+                last_notified_ts = None
+
+        if debounce_hours > 0 and last_notified_ts is not None:
+            age_sec = now_ts - last_notified_ts
+            if age_sec < (debounce_hours * 3600):
+                logger.info(
+                    f"24h防抖拦截: {sym} 在前 24 小时内 ({age_sec / 3600:.1f}h 前) 已通知过，跳过重复打扰。"
+                )
+                continue
+
         if res_score == 3 or is_neg_fr:
             res_tag = "🔥 三重共振 (双核共振 + 4h负费率逼空)"
             res_badge = "🔥 三重共振"
@@ -616,7 +754,7 @@ def check_feature_1_resonance(
             res_badge = "👑 双核共振"
 
         tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
-        
+
         title = f"{res_badge} 提醒: {sym} 进入共振区，请画 15m 趋势线"
         desp = f"""### {res_tag} 选币确认！
 
@@ -626,7 +764,7 @@ def check_feature_1_resonance(
 - **4h资金费率**: `{coin.get('funding_rate_4h_pct', 0):+.4f}%`
 - **机会区标签**: {', '.join(coin.get('zones', [])) or '共振区'}
 - **形态状态**: {coin.get('status', '多周期趋势共振')}
-- **触发时间**: {get_beijing_time_str()}
+- **触发时间**: {now_str}
 
 ---
 > 🎯 **操作指引**:
@@ -638,10 +776,12 @@ def check_feature_1_resonance(
         sent_ok = notifier.send_alert(title, desp)
         if sent_ok:
             alerted_list.append(coin)
-            # 记录历史
-            state_store.data["history"][sym] = {
+            # 记录/更新历史
+            state_store.data.setdefault("history", {})[sym] = {
                 "symbol": sym,
-                "first_detected": get_beijing_time_str(),
+                "first_detected": hist.get("first_detected", now_str),
+                "last_notified_at": now_str,
+                "last_notified_time": int(now_ts),
                 "res_score": res_score,
                 "zones": coin.get("zones", []),
                 "tv_link": tv_link
@@ -662,6 +802,13 @@ def check_feature_2_breakout(
     Feature 2 (15m 突破开多提醒):
     针对处于共振区的标的，若在 TradingView ig0LuDL8 中存在下行趋势线，
     校验最新 15m 已收盘 K 线是否实体突破该对数趋势线。突破即发送 Server酱 开多买点②提醒。
+    风控与去重规则:
+    1. 严格 Crossover 逻辑: 上一根 15m 收盘价 <= 上一根对数阻力位，且当前 15m 收盘价 > 当前对数阻力位。
+       若上一根 K 线已在线上方，说明属于已突破运行中状态，坚决不触发重复预警。
+    2. 单线消费去重: 每条趋势线 ID (Key: f"{sym}_{line_id}") 突破仅提醒一次，触发后即标记为已消费。
+       后续所有 15m K 线绝不重复针对同一条趋势线发信。
+    3. 趋势线有效性与过滤: 仅监控 15m 趋势线 (严格忽略 '240', 'D' 等)，第二个锚点 t2 或更新时间须在 72 小时以内。
+       阻力价 <= 0 或 当前价 > 阻力价 * 1.25 (失控/陈旧衰减死线) 强制跳过。
     """
     drawings_map = fetch_layout_drawings(layout_id)
     if not drawings_map:
@@ -684,20 +831,30 @@ def check_feature_2_breakout(
         if not matched_lines:
             continue
 
-        # 单币种仅拉取一次最新已收盘 15m K线
+        # 单币种拉取最新已收盘 15m K线 (含 prev_candle)
         candle = get_binance_closed_15m_candle(sym)
         if not candle:
             continue
 
         c_ts = candle.get("candle_timestamp") or candle.get("close_time", 0)
-        sym_candle_key = f"{sym}_{c_ts}"
-        if state_store.has_breakout_notified(sym_candle_key):
-            continue
-
         lines_to_check = matched_lines if isinstance(matched_lines, list) else [matched_lines]
+        ref_now = c_ts if c_ts else time.time()
 
         # 遍历该币种的所有趋势线
         for line in lines_to_check:
+            line_id = line.get("id", "custom_line")
+            trendline_key = f"{sym}_{line_id}"
+
+            # 1. 单线消费去重: 一条线 ID 仅触发一次
+            if state_store.has_breakout_notified(trendline_key):
+                logger.debug(f"趋势线 {trendline_key} 已触发消费，跳过重复检测。")
+                continue
+
+            # 2. 趋势线周期与时效过滤: 仅限 15m 且 72h 内画线
+            if not is_valid_15m_trendline(line, current_time=ref_now):
+                logger.debug(f"趋势线 {trendline_key} 已被过滤 (非 15m 或创建/更新超过 72 小时)。")
+                continue
+
             # 兼容不同数据格式: points 或 p1/p2
             p1_price, p1_time, p2_price, p2_time = None, None, None, None
             if "p1" in line and "p2" in line and "t1" in line and "t2" in line:
@@ -718,13 +875,14 @@ def check_feature_2_breakout(
             if p1_price < p2_price:
                 continue
 
-            # 优先调用 tve.check_symbol_breakout
+            close_time = candle.get("close_time", c_ts + 900)
+            close_price = float(candle["close"])
             is_breakout = False
-            close_price = 0.0
             res_price = 0.0
             pct = 0.0
             candle_info = {}
 
+            # 优先调用 tve.check_symbol_breakout (内置严格 Crossover 与 runaway 校验)
             if tve and hasattr(tve, "check_symbol_breakout"):
                 try:
                     res = tve.check_symbol_breakout(sym, line, candle=candle)
@@ -737,28 +895,56 @@ def check_feature_2_breakout(
                 except Exception as e:
                     logger.debug(f"tve.check_symbol_breakout 运行异常，回退内置算法: {e}")
 
-            if not is_breakout and not candle_info:
-                close_time = candle["close_time"]
-                close_price = candle["close"]
-                res_price = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, close_time)
-                if res_price > 0 and close_price > res_price:
-                    is_breakout = True
-                    pct = (close_price - res_price) / res_price * 100.0
-                    candle_info = candle
+            if not candle_info:
+                eval_t = candle.get("candle_timestamp") or candle.get("open_time") or close_time
+                res_price = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, eval_t)
+
+                # 3. 严格 Crossover 逻辑判定
+                if res_price > 0 and close_price <= res_price * 1.25:
+                    prev_c = candle.get("prev_candle")
+                    if prev_c:
+                        prev_close = float(prev_c["close"])
+                        prev_t = int(prev_c.get("candle_timestamp") or prev_c.get("open_time", eval_t - 900))
+                        prev_res = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, prev_t)
+                        if prev_close <= prev_res and close_price > res_price:
+                            is_breakout = True
+                    else:
+                        prev_t = eval_t - 900
+                        prev_res = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, prev_t)
+                        open_p = candle.get("open")
+                        if open_p is not None and float(open_p) > prev_res:
+                            is_breakout = False
+                        elif close_price > res_price:
+                            is_breakout = True
+
+                    if is_breakout:
+                        pct = (close_price - res_price) / res_price * 100.0
+                        candle_info = candle
+
+            # 4. 双重防御: 阻力位非法或当前价格严重偏离阻力位 (runaway/decay) 则绝不触发
+            if res_price <= 0 or close_price > res_price * 1.25:
+                continue
 
             if is_breakout:
-                state_store.mark_breakout_notified(sym_candle_key)
+                # 标记该趋势线已消费，后续 15m K 线绝不重复预警该线
+                state_store.mark_breakout_notified(trendline_key)
+                if c_ts:
+                    state_store.mark_breakout_notified(f"{sym}_{c_ts}")
+
                 info = {
                     "symbol": sym,
                     "close_price": close_price,
                     "res_price": res_price,
                     "pct": pct,
                     "candle_time": candle_info.get("candle_time") or candle_info.get("close_time"),
-                    "trendline": line
+                    "trendline": line,
+                    "trendline_id": line_id
                 }
                 breakout_alerts.append(info)
                 _send_breakout_notification(notifier, sym, res_price, close_price, pct, candle_info, layout_id)
-                break
+                break  # 单标的单轮巡检最多发出一次突破提醒
+
+    return breakout_alerts
 
     return breakout_alerts
 
@@ -1198,7 +1384,7 @@ def main():
         description="“突破追多与移动保本系统”四重闭环守护体系 (Trade Alert & Risk Management Daemon)"
     )
     parser.add_argument("--sync-binance", action="store_true", help="立即从币安合约拉取实盘活跃持仓并自动同步")
-    parser.add_argument("--check-once", action="store_true", help="执行单次全量评测并输出汇总 (适用于 cron / hourly_sync)")
+    parser.add_argument("--check-once", "--evaluate-once", action="store_true", dest="check_once", help="执行单次全量评测并输出汇总 (适用于 cron / hourly_sync)")
     parser.add_argument("--daemon", action="store_true", help="启动持续后台守护进程 (10s 移动止盈巡检 + 15m 整点收盘突破/止损)")
     parser.add_argument("--add-pos", nargs=2, metavar=("SYMBOL", "ENTRY_PRICE"), help="手动录入新持仓 (例如: --add-pos YBUSDT 0.54)")
     parser.add_argument("--amount", type=float, default=0.0, help="持仓数量 (与 --add-pos 配合使用)")
