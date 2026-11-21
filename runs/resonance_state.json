@@ -1,10 +1,9 @@
 {
   "version": 1,
-  "last_updated": "2026-11-22 00:03:24",
+  "last_updated": "2026-11-22 00:27:02",
   "active_resonance_symbols": [
     "ELSAUSDT",
     "ENSOUSDT",
-    "HMSTRUSDT",
     "IDOLUSDT",
     "JCTUSDT",
     "RAREUSDT",
@@ -179,6 +178,11 @@
     "HMSTRUSDT_1795275900",
     "ENSOUSDT_1795275900",
     "YBUSDT_1795275900",
-    "RAREUSDT_1795275900"
+    "RAREUSDT_1795275900",
+    "IDOLUSDT_1795276800",
+    "YBUSDT_1795276800",
+    "SOPHUSDT_1795276800",
+    "ENSOUSDT_1795276800",
+    "RAREUSDT_1795276800"
   ]
 }
