@@ -1,0 +1,12 @@
+{
+  "serverchan_sendkey": "SCTxxxxxx...",
+  "binance_api_key": "your_binance_api_key_here",
+  "binance_api_secret": "your_binance_api_secret_here",
+  "tradingview_layout_id": "ig0LuDL8",
+  "check_interval_seconds": 10,
+  "resonance_pool_file": "runs/second_leg_candidates_pool.json",
+  "resonance_state_file": "runs/resonance_state.json",
+  "positions_file": "runs/trade_positions.json",
+  "trailing_activation_pct": 6.0,
+  "trailing_lock_pct": 1.0
+}

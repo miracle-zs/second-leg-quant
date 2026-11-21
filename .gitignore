@@ -1,0 +1,23 @@
+# Environment variables & secrets
+.env
+.env.local
+config/alerts_config.json
+config/*secret*
+
+
+# macOS system files
+.DS_Store
+
+# Python & test caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Logs & runtime artifacts
+*.log
+runs/*.log
+runs/.last_sync_ok_ts
+runs/.hourly_sync.lock
+
+# Scratch & temporary inspection crops
+scratch/inspection_crops/

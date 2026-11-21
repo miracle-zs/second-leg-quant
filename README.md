@@ -1,0 +1,69 @@
+# 突破追多与移动保本系统（v3.5 Pro）
+
+专注于币安 USDT 永续合约中**真实流通市值低于 3,000 万美元、负费率逼空、巨量高换手、1h EMA 顺势共振**的纯加密标的（彻底排除 TradFi 股票/大宗商品/外汇通证），以 TradingView 15m 对数下降趋势线实体收盘突破为入场信号，以“破线跌回立即止损（< 1.5%）+ 浮盈超 6% 移动保本锁定至 +1%”为执行纪律，捕捉确定性爆发机会。
+
+---
+
+## 核心交付终端
+
+直接在浏览器中打开根目录下的 [`index.html`](file:///Users/zhangshuai/PycharmProjects/ai选币/index.html) 即可进入实战工作台：
+
+1. **中央实战工作台（[`index.html`](file:///Users/zhangshuai/PycharmProjects/ai选币/index.html)）**
+   - 5 块联动 KPI 机会区过滤卡（👑 顺势高换手共振区、🔥 负费率逼空区、⚡ 巨量高换手区、📈 1h EMA 顺势区、🌐 全量底池）。
+   - 前端每 5 秒直连币安公开 API 轮询刷新价格、24h 区间分位、动态市值、换手倍数与 4h 等效资费，支持后台标签页自动休眠。
+   - 内置 TradingView 15m 专属布局直达、一键复制 / 导出 `.txt` 批量导入 TV 自选、实战四步法速查折叠抽屉、整点资费结算倒计时及快捷键（`/` 搜币、`1-5` 切分区、`Esc` 清空/退出）。
+2. **突破追多与移动保本战法手册（[`reports/strategy_second_leg_playbook.html`](file:///Users/zhangshuai/PycharmProjects/ai选币/reports/strategy_second_leg_playbook.html)）**
+   - 系统化呈现实战四步法（标的初选、TV画对数线、15m实体突破开多、破线止损与移动保本）以及币安 API 联动自动化风控体系。
+
+---
+
+## 目录结构
+
+```text
+ai选币/
+├── index.html                                 # 中央实战工作台 (浏览器直接打开)
+├── README.md                                  # 项目说明与运行指南
+├── .env                                       # 私密配置 (CMC_API_KEY)
+│
+├── reports/                                   # 战法手册产物
+│   └── strategy_second_leg_playbook.html      # 突破追多与移动保本战法手册
+│
+├── scripts/                                   # 核心流水线脚本
+│   ├── scan_second_leg_pool.py                # 币安 + CMC Pro 全池核验与 1h 趋势/共振时长扫描
+│   ├── hud_common.py                          # 双端 HUD 公共渲染、表格行与前端轮询模块
+│   ├── build_index.py                         # 编译中央实战工作台 index.html
+│   ├── build_second_leg_playbook.py           # 编译战法手册 HTML
+│   ├── trade_alert_daemon.py                  # 交易风控与四重预警守护进程 (Server酱推送 + 币安持仓同步)
+│   ├── tv_trendline_engine.py                 # TV 云端画线解析器与对数趋势线解算引擎
+│   ├── binance_position_client.py             # 币安合约实盘持仓客户端 (HMAC-SHA256)
+│   ├── sync_all.py                            # 一键串联“扫描 → 编译首页 → 编译手册 → 风控评测”
+│   └── hourly_sync.sh                         # 每小时自动同步脚本 (带原子锁与 120s 冷却防重)
+│
+├── runs/                                      # 运行时数据缓存与日志
+│   ├── second_leg_candidates_pool.json        # 最新核验的纯加密候选币池
+│   ├── sub_30m_history.json                   # 曾低于 $30M 标的的 7 天溢出跟踪记录
+│   └── cron_sync.log                          # 每小时自动同步执行日志
+│
+└── tests/                                     # 单元与系统测试套件
+    ├── test_trading_system.py                 # 对数数学、TV 画线、突破与通知状态测试
+    └── test_binance_position_sync.py          # 币安持仓自动对齐与风控评测测试
+```
+
+---
+
+## 常用命令
+
+```bash
+# 一键全量同步（扫描候选池 + 编译双端 HTML + 执行单次风控评测）
+python3 scripts/sync_all.py
+
+# 启动交易预警与风控守护后台进程 (10s 移动锁利巡检 + 15m 突破/止损确认)
+python3 scripts/trade_alert_daemon.py --daemon
+
+# 单独重新编译双端页面（基于 runs/second_leg_candidates_pool.json）
+python3 scripts/build_index.py
+python3 scripts/build_second_leg_playbook.py
+
+# 运行完整测试套件 (27 项测试)
+python3 -m unittest discover -s tests -p "test_*.py"
+```
