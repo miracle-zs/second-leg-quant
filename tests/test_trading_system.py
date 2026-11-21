@@ -549,6 +549,28 @@ class TestCLIOperations(unittest.TestCase):
         self.assertIn("active_resonance_count", res)
         self.assertIn("open_positions_count", res)
 
+    def test_load_config_from_dotenv(self):
+        """Test unified configuration loading from custom .env file."""
+        test_env = Path(self.test_dir) / ".env.test"
+        test_env.write_text(
+            "CMC_API_KEY=test_cmc_key_123\n"
+            "SERVERCHAN_SENDKEY=SCTtestkey999\n"
+            "BINANCE_API_KEY=binance_key_abc\n"
+            "BINANCE_API_SECRET=binance_secret_xyz\n"
+            "TRADINGVIEW_LAYOUT_ID=custom_layout_789\n"
+            "TRAILING_ACTIVATION_PCT=8.5\n"
+            "TRAILING_LOCK_PCT=1.5\n",
+            encoding="utf-8"
+        )
+        loaded = tad.load_config(env_path=test_env)
+        self.assertEqual(loaded.get("cmc_api_key"), "test_cmc_key_123")
+        self.assertEqual(loaded.get("serverchan_sendkey"), "SCTtestkey999")
+        self.assertEqual(loaded.get("binance_api_key"), "binance_key_abc")
+        self.assertEqual(loaded.get("binance_api_secret"), "binance_secret_xyz")
+        self.assertEqual(loaded.get("tradingview_layout_id"), "custom_layout_789")
+        self.assertEqual(loaded.get("trailing_activation_pct"), 8.5)
+        self.assertEqual(loaded.get("trailing_lock_pct"), 1.5)
+
 
 def run_full_suite():
     """Custom runner for pretty console output."""

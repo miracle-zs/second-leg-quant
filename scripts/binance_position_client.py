@@ -78,6 +78,28 @@ class BinanceFuturesClient:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
 
+    @classmethod
+    def from_env(cls, env_path: Path = PROJECT_ROOT / ".env") -> "BinanceFuturesClient":
+        """优先从项目根目录 .env 文件及环境变量中自动初始化客户端"""
+        k = os.environ.get("BINANCE_API_KEY", "")
+        s = os.environ.get("BINANCE_API_SECRET", "")
+        if (not k or not s) and env_path.exists():
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            pk, pv = line.split("=", 1)
+                            pk = pk.strip()
+                            pv = pv.strip().strip("\"'")
+                            if pk == "BINANCE_API_KEY" and not k:
+                                k = pv
+                            elif pk == "BINANCE_API_SECRET" and not s:
+                                s = pv
+            except Exception:
+                pass
+        return cls(api_key=k, api_secret=s)
+
     def is_configured(self) -> bool:
         """检查 API 凭证是否已完整配置"""
         return bool(self.api_key and self.api_secret)

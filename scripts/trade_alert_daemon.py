@@ -93,8 +93,31 @@ DEFAULT_TV_LAYOUT_ID = "ig0LuDL8"
 # 0. 配置与安全存取实用工具
 # ==============================================================================
 
-def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> dict:
-    """加载配置文件并结合环境变量"""
+def load_dotenv(env_path: Path) -> dict:
+    """解析 .env 环境变量文件"""
+    res = {}
+    if env_path and env_path.exists():
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        res[k.strip()] = v.strip().strip("\"'")
+        except Exception as e:
+            logger.debug(f"读取 .env 异常: {e}")
+    return res
+
+
+def load_config(
+    config_path: Path = DEFAULT_CONFIG_PATH,
+    env_path: Optional[Path] = None,
+) -> dict:
+    """
+    统一加载系统配置与密钥。
+    主配置源: 项目根目录 .env 文件
+    加载优先级: OS环境变量 > .env 文件 > config/alerts_config.json > 代码内置默认值
+    """
     cfg = {
         "serverchan_sendkey": "",
         "binance_api_key": "",
@@ -107,7 +130,9 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> dict:
         "trailing_activation_pct": 6.0,
         "trailing_lock_pct": 1.0,
     }
-    if config_path.exists():
+
+    # 1. 尝试从 config/alerts_config.json 读取基础配置 (向下兼容)
+    if config_path and config_path.exists():
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
@@ -115,19 +140,42 @@ def load_config(config_path: Path = DEFAULT_CONFIG_PATH) -> dict:
                     cfg.update(loaded)
         except Exception as e:
             logger.warning(f"读取配置文件 {config_path} 异常，采用默认值: {e}")
-    else:
-        # 创建默认模板配置
-        try:
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.warning(f"写入初始配置文件异常: {e}")
 
-    # 环境变量优先级最高
+    # 2. 统一从根目录 .env 文件合并读取密钥与配置 (主配置中心)
+    target_env = env_path if env_path is not None else (PROJECT_ROOT / ".env")
+    dotenv_map = load_dotenv(target_env) if target_env else {}
+    if dotenv_map:
+        if "CMC_API_KEY" in dotenv_map and dotenv_map["CMC_API_KEY"]:
+            cfg["cmc_api_key"] = dotenv_map["CMC_API_KEY"]
+        if "SERVERCHAN_SENDKEY" in dotenv_map and dotenv_map["SERVERCHAN_SENDKEY"]:
+            cfg["serverchan_sendkey"] = dotenv_map["SERVERCHAN_SENDKEY"]
+        if "BINANCE_API_KEY" in dotenv_map and dotenv_map["BINANCE_API_KEY"]:
+            cfg["binance_api_key"] = dotenv_map["BINANCE_API_KEY"]
+        if "BINANCE_API_SECRET" in dotenv_map and dotenv_map["BINANCE_API_SECRET"]:
+            cfg["binance_api_secret"] = dotenv_map["BINANCE_API_SECRET"]
+        if "TRADINGVIEW_LAYOUT_ID" in dotenv_map and dotenv_map["TRADINGVIEW_LAYOUT_ID"]:
+            cfg["tradingview_layout_id"] = dotenv_map["TRADINGVIEW_LAYOUT_ID"]
+        elif "TV_LAYOUT_ID" in dotenv_map and dotenv_map["TV_LAYOUT_ID"]:
+            cfg["tradingview_layout_id"] = dotenv_map["TV_LAYOUT_ID"]
+        if "TRAILING_ACTIVATION_PCT" in dotenv_map and dotenv_map["TRAILING_ACTIVATION_PCT"]:
+            try:
+                cfg["trailing_activation_pct"] = float(dotenv_map["TRAILING_ACTIVATION_PCT"])
+            except ValueError:
+                pass
+        if "TRAILING_LOCK_PCT" in dotenv_map and dotenv_map["TRAILING_LOCK_PCT"]:
+            try:
+                cfg["trailing_lock_pct"] = float(dotenv_map["TRAILING_LOCK_PCT"])
+            except ValueError:
+                pass
+
+    # 3. 环境变量优先级最高
+    env_cmc = os.environ.get("CMC_API_KEY")
+    if env_cmc:
+        cfg["cmc_api_key"] = env_cmc
     env_sendkey = os.environ.get("SERVERCHAN_SENDKEY")
     if env_sendkey:
         cfg["serverchan_sendkey"] = env_sendkey
-    env_layout = os.environ.get("TV_LAYOUT_ID")
+    env_layout = os.environ.get("TRADINGVIEW_LAYOUT_ID") or os.environ.get("TV_LAYOUT_ID")
     if env_layout:
         cfg["tradingview_layout_id"] = env_layout
     env_b_key = os.environ.get("BINANCE_API_KEY")
@@ -1173,7 +1221,7 @@ def main():
         )
         if not b_client.is_configured():
             print("\n⚠️ 币安 API Key / Secret 未配置，系统运行于手动/离线模式。")
-            print("如需启用币安实盘自动同步，请在 config/alerts_config.json 或环境变量 (BINANCE_API_KEY, BINANCE_API_SECRET) 中配置凭据。\n")
+            print("如需启用币安实盘自动同步，请在项目根目录 .env 或环境变量 (BINANCE_API_KEY, BINANCE_API_SECRET) 中配置凭据。\n")
             return
 
         store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))

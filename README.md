@@ -23,7 +23,8 @@
 ai选币/
 ├── index.html                                 # 中央实战工作台 (浏览器直接打开)
 ├── README.md                                  # 项目说明与运行指南
-├── .env                                       # 私密配置 (CMC_API_KEY)
+├── .env.example                               # 统一密钥与配置模板
+├── .env                                       # 私密配置 (CMC / Server酱 / 币安合约 API / 风控参数)
 │
 ├── reports/                                   # 战法手册产物
 │   └── strategy_second_leg_playbook.html      # 突破追多与移动保本战法手册
@@ -51,6 +52,21 @@ ai选币/
 
 ---
 
+## 统一配置说明
+
+系统采用标准化 `.env` 单文件集中管理所有密钥与风控参数：
+
+```bash
+# 复制模板创建本地配置
+cp .env.example .env
+
+# 编辑 .env 填入你的密钥 (CMC API, Server酱 SendKey, 币安只读/合约 API)
+```
+
+支持参数列表详见 [.env.example](file:///Users/zhangshuai/PycharmProjects/ai选币/.env.example)。
+
+---
+
 ## 常用命令
 
 ```bash
@@ -64,6 +80,6 @@ python3 scripts/trade_alert_daemon.py --daemon
 python3 scripts/build_index.py
 python3 scripts/build_second_leg_playbook.py
 
-# 运行完整测试套件 (27 项测试)
+# 运行完整测试套件 (28 项测试)
 python3 -m unittest discover -s tests -p "test_*.py"
 ```
