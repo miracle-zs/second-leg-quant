@@ -40,6 +40,7 @@ def run_step(desc: str, cmd: list) -> bool:
 def main():
     parser = argparse.ArgumentParser(description="刷新候选池、账户报表与看板")
     parser.add_argument("--refresh-only", action="store_true", help="跳过风控评测和预警推送")
+    parser.add_argument("--account-database", type=Path, help="将账户报表写入 SQLite 并跳过账户页构建")
     args = parser.parse_args()
 
     print("=======================================================")
@@ -50,9 +51,13 @@ def main():
         ("扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与三大机会区)", [sys.executable, "scripts/scan_second_leg_pool.py"]),
         ("重构并编译总控制台首页 (index.html)", [sys.executable, "scripts/build_index.py"]),
         ("编译突破追多与移动保本战法手册 (strategy_second_leg_playbook.html)", [sys.executable, "scripts/build_second_leg_playbook.py"]),
-        ("更新账户数据分析引擎与量化风控指标 (runs/account_analytics.json)", [sys.executable, "scripts/account_analytics_engine.py"]),
-        ("编译生成账户数据分析看板 (account.html)", [sys.executable, "scripts/build_account_analytics.py"]),
     ]
+    account_command = [sys.executable, "scripts/account_analytics_engine.py"]
+    if args.account_database is not None:
+        account_command.extend(["--database", str(args.account_database)])
+    steps.append(("更新账户数据分析与量化风控指标", account_command))
+    if args.account_database is None:
+        steps.append(("编译生成账户数据分析看板", [sys.executable, "scripts/build_account_analytics.py"]))
     if not args.refresh_only:
         steps.append((
             "执行交易风控与四重预警评测",

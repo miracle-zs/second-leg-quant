@@ -912,15 +912,44 @@ class AccountAnalyticsEngine:
 
         return summary, equity_curve, daily_pnl
 
-    def run(self, output_path: Optional[Path] = None) -> dict:
+    def run(
+        self, output_path: Optional[Path] = None, *, database: Optional[Path] = None,
+        recording_start_ms: Optional[int] = None,
+    ) -> dict:
         """执行全套账户数据清洗、接口拉取、风控指标核算与报表持久化"""
         out_file = Path(output_path or DEFAULT_OUTPUT_PATH)
 
         # 1. 获取币安实盘合约数据 (含优雅降级)
         account_info, income_list, active_positions_binance, api_status = self.fetch_binance_data()
 
+        previous_report = None
+        recording = None
+        if database is not None:
+            from account_dashboard_api import load_report, publish_report
+
+            if api_status["mode"] != "BINANCE_REALTIME":
+                raise RuntimeError("币安账户快照不完整，保留上一次完整实盘快照")
+            previous_report = load_report(database)
+            recording = previous_report.get("recording") if previous_report is not None else None
+            if recording_start_ms is not None:
+                if recording is not None:
+                    raise ValueError("账户记录起点已设置")
+                recording = {
+                    "start_ms": recording_start_ms,
+                    "started_at": get_beijing_time_str(recording_start_ms / 1000),
+                    "initial_equity": float(account_info["totalMarginBalance"]),
+                }
+
         # 2. 获取本地 trade_positions.json 持仓
         local_positions, local_history = self.load_local_positions_store()
+        income_page_full = len(income_list) >= INCOME_PAGE_LIMIT
+        if recording is not None:
+            cutoff = recording["start_ms"]
+            income_list = [item for item in income_list if int(item["time"]) >= cutoff]
+            local_history = [
+                trade for trade in local_history
+                if parse_to_timestamp(trade.get("closed_at") or trade.get("exit_time")) * 1000 >= cutoff
+            ]
 
         # 3. 持仓与流水合并:
         raw_active_positions = active_positions_binance if api_status["positions_available"] else local_positions
@@ -936,7 +965,6 @@ class AccountAnalyticsEngine:
 
         # 提取币安历史转账净充值作为默认本金基准
         income_times = [int(item["time"]) for item in income_list]
-        income_page_full = len(income_list) >= INCOME_PAGE_LIMIT
         net_transfers = None
         if income_list and not income_page_full:
             net_transfers = sum(float(x["income"]) for x in income_list if x["incomeType"] == "TRANSFER")
@@ -948,6 +976,41 @@ class AccountAnalyticsEngine:
             account_info=account_info,
             net_transfers=net_transfers
         )
+
+        if recording is not None:
+            initial_equity = recording["initial_equity"]
+            equity = float(account_info["totalMarginBalance"])
+            now_ms = int(time.time() * 1000)
+            if recording_start_ms is not None:
+                equity_curve = [{
+                    "timestamp": recording["start_ms"],
+                    "datetime": recording["started_at"],
+                    "equity": initial_equity,
+                    "cash": summary["wallet_balance"],
+                    "cumulative_pnl": 0.0,
+                    "drawdown_usd": 0.0,
+                    "drawdown_pct": 0.0,
+                    "event": "开始记录",
+                }]
+            else:
+                equity_curve = previous_report["equity_curve"]
+
+            peak_equity = max(equity, max(point["equity"] for point in equity_curve))
+            drawdown = peak_equity - equity
+            equity_curve.append({
+                "timestamp": now_ms,
+                "datetime": get_beijing_time_str(now_ms / 1000),
+                "equity": equity,
+                "cash": summary["wallet_balance"],
+                "cumulative_pnl": round(equity - initial_equity, 2),
+                "drawdown_usd": round(drawdown, 2),
+                "drawdown_pct": round(drawdown / peak_equity * 100, 2) if peak_equity > 0 else 0.0,
+                "event": "币安账户快照",
+            })
+            summary["initial_capital"] = initial_equity
+            summary["total_return_pct"] = round((equity - initial_equity) / initial_equity * 100, 2) if initial_equity > 0 else 0.0
+            summary["max_drawdown_usd"] = max(point["drawdown_usd"] for point in equity_curve)
+            summary["max_drawdown_pct"] = max(point["drawdown_pct"] for point in equity_curve)
 
         # 6. 流水明细分类聚合 (Income Breakdown)
         income_breakdown = {
@@ -961,7 +1024,8 @@ class AccountAnalyticsEngine:
             "page_full": income_page_full,
             "available": api_status["income_available"],
             "principal_source": (
-                "configured" if self.custom_initial_capital is not None
+                "recording_start" if recording is not None
+                else "configured" if self.custom_initial_capital is not None
                 else "income_window" if net_transfers is not None and net_transfers > 0
                 else "default"
             ),
@@ -1038,9 +1102,16 @@ class AccountAnalyticsEngine:
             "income_breakdown": income_breakdown
         }
 
+        if recording is not None:
+            report["recording"] = recording
+
         # 7. 原子化写入结果文件
-        atomic_write_json(out_file, report)
-        logger.info(f"✅ 账户量化分析报表已成功生成并写入: {out_file}")
+        if database is None:
+            atomic_write_json(out_file, report)
+            logger.info(f"✅ 账户量化分析报表已成功生成并写入: {out_file}")
+        else:
+            publish_report(database, report)
+            logger.info("✅ 账户实盘快照已写入 SQLite: %s", database)
 
         return report
 
@@ -1116,12 +1187,17 @@ def print_cli_summary(report: dict):
 
 def main():
     parser = argparse.ArgumentParser(description="币安合约账户量化风控数据分析引擎")
-    parser.add_argument("--output", "-o", type=str, default=str(DEFAULT_OUTPUT_PATH), help="输出 JSON 文件路径")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--output", "-o", type=Path, help="输出 JSON 文件路径")
+    output.add_argument("--database", type=Path, help="将完整实盘快照保存到 SQLite")
     parser.add_argument("--initial-capital", type=float, default=None, help="初始基准资金 (USDT)，缺省时自动根据币安历史转账充值净额推导")
     parser.add_argument("--offline", action="store_true", help="强制启用离线回退模式 (不请求网络)")
     parser.add_argument("--sync-binance", action="store_true", help="显式触发币安实盘合约 API 同步")
     parser.add_argument("--json", action="store_true", help="仅输出 JSON 内容到终端")
+    parser.add_argument("--recording-start-ms", type=int, help="开始记录的 Unix 时间戳（毫秒）")
     args = parser.parse_args()
+    if args.recording_start_ms is not None and args.database is None:
+        parser.error("--recording-start-ms requires --database")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
@@ -1130,11 +1206,11 @@ def main():
         offline_mode=args.offline
     )
 
-    report = engine.run(output_path=Path(args.output))
+    report = engine.run(output_path=args.output, database=args.database, recording_start_ms=args.recording_start_ms)
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
-    else:
+    elif args.database is None:
         print_cli_summary(report)
 
 

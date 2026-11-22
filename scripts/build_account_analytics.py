@@ -598,10 +598,6 @@ def render_global_nav_header(active_tab: str = "account", updated_at: str = "", 
         )
 
         extra_actions = (
-            f'<input type="file" id="local-file-picker" accept=".json" style="display:none;" />'
-            f'<button id="btn-import-file" type="button" onclick="document.getElementById(\'local-file-picker\').click()" class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 transition-all flex items-center gap-1.5" title="导入本地 runs/account_analytics.json">'
-            f'<span>📂 导入数据</span>'
-            f'</button>'
             f'<button id="btn-manual-refresh" type="button" class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 transition-all flex items-center gap-1.5 focus-visible:outline-2 focus-visible:outline-sky-400" title="重新获取账户最新资产与流水数据">'
             f'<span id="refresh-spinner" class="inline-block transition-transform duration-300">🔄</span>'
             f'<span>刷新</span>'
@@ -615,6 +611,7 @@ def render_global_nav_header(active_tab: str = "account", updated_at: str = "", 
             "BINANCE_API": "币安实盘直连",
             "BINANCE_PARTIAL": "币安部分数据可用",
             "BINANCE_LIVE": "币安实盘直连",
+            "DYNAMIC_FETCH": "等待账户数据",
         }.get(data_source.upper(), "离线风控同步")
         
         return render_global_header(
@@ -1340,9 +1337,6 @@ CLIENT_JS = """
           }
         }
 
-        const notice = document.getElementById('file-cors-notice');
-        if (notice) notice.classList.add('hidden');
-
         // Income page limit notice
         const incomeNotice = document.getElementById('income-page-full-banner');
         if (accountData.income_breakdown && accountData.income_breakdown.page_full) {
@@ -1353,7 +1347,7 @@ CLIENT_JS = """
             banner.id = 'income-page-full-banner';
             banner.className = 'px-3.5 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-center justify-between';
             banner.innerHTML = `<span>⚠️ 已达单页上限，更早流水未纳入 (流水覆盖区间: ${cStart} 至 ${cEnd})</span>`;
-            const mainContent = document.getElementById('main-content');
+            const mainContent = document.getElementById('account-report');
             const kpiSection = document.getElementById('kpi-matrix-section');
             if (mainContent && kpiSection) {
               mainContent.insertBefore(banner, kpiSection);
@@ -1865,52 +1859,31 @@ CLIENT_JS = """
         });
       }
 
-      // Auto-load data on startup
+      let latestSnapshot = '';
+      let refreshInFlight = false;
       async function tryLoadData() {
+        if (refreshInFlight) return;
+        refreshInFlight = true;
+        const status = document.getElementById('account-load-status');
+        const report = document.getElementById('account-report');
         try {
-          const res = await fetch('runs/account_analytics.json?t=' + Date.now());
-          if (res.ok) {
-            const json = await res.json();
-            renderDashboard(json);
-            return true;
+          const response = await fetch('api/account', { cache: 'no-store' });
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          const snapshot = await response.text();
+          if (snapshot !== latestSnapshot) {
+            const data = JSON.parse(snapshot);
+            report.hidden = false;
+            renderDashboard(data);
+            latestSnapshot = snapshot;
           }
-        } catch(e) {
-          console.warn("Auto-fetch runs/account_analytics.json failed:", e);
+          status.hidden = true;
+        } catch (error) {
+          report.hidden = !latestSnapshot;
+          status.hidden = false;
+          status.textContent = latestSnapshot ? '更新失败，显示上次读取的账户快照。' : '暂时无法加载账户数据，将自动重试。';
+        } finally {
+          refreshInFlight = false;
         }
-
-        // Check embedded json fallback
-        try {
-          const raw = document.getElementById('account-data').textContent;
-          const parsed = JSON.parse(raw);
-          if (parsed && parsed.trade_history && parsed.trade_history.length > 0) {
-            renderDashboard(parsed);
-            return true;
-          }
-        } catch(e) {}
-
-        // Show file:// hint
-        const hint = document.getElementById('file-cors-notice');
-        if (hint) hint.classList.remove('hidden');
-        return false;
-      }
-
-      // File picker setup
-      const picker = document.getElementById('local-file-picker');
-      if (picker) {
-        picker.addEventListener('change', function(e) {
-          const file = e.target.files[0];
-          if (!file) return;
-          const reader = new FileReader();
-          reader.onload = function(evt) {
-            try {
-              const data = JSON.parse(evt.target.result);
-              renderDashboard(data);
-            } catch(err) {
-              alert("解析 JSON 失败: " + err.message);
-            }
-          };
-          reader.readAsText(file);
-        });
       }
 
       const refreshBtn = document.getElementById('btn-manual-refresh');
@@ -1931,7 +1904,12 @@ CLIENT_JS = """
         tryLoadData();
       }
 
-      window.renderAccountDashboard = renderDashboard;
+      setInterval(() => {
+        if (!document.hidden) tryLoadData();
+      }, 30000);
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) tryLoadData();
+      });
     })();
 """
 
@@ -2023,16 +2001,11 @@ def render_account_html(data: Optional[Dict[str, Any]] = None) -> str:
         data_source=data_source
     )
     ribbon_html = render_discipline_ribbon()
-    file_notice_html = """    <!-- Local File CORS Notice (for file:// protocol) -->
-    <div id="file-cors-notice" class="hidden px-3.5 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-      <div class="flex items-center gap-2">
-        <span class="text-base">💡</span>
-        <span>本地浏览器安全策略（<code>file://</code>）限制了跨域异步读取。请点击右侧按钮选择 <code>runs/account_analytics.json</code> 即可立即查看看板，或在终端执行 <code>python3 -m http.server 8080</code> 启动本地服务。</span>
-      </div>
-      <button type="button" onclick="document.getElementById('local-file-picker').click()" class="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 font-bold shrink-0 self-start sm:self-auto transition-colors">
-        📂 选择本地 JSON
-      </button>
-    </div>"""
+    load_status_html = (
+        '<p id="account-load-status" role="status" class="px-3 py-2 text-sm text-slate-300">'
+        '正在读取账户数据…</p>'
+    )
+    report_hidden = ' hidden' if data is None else ''
 
     income_bd = render_data.get("income_breakdown") or {}
     income_notice_html = ""
@@ -2082,8 +2055,8 @@ def render_account_html(data: Optional[Dict[str, Any]] = None) -> str:
         "",
         ribbon_html,
         "",
-        file_notice_html,
-        "",
+        load_status_html,
+        f'<section id="account-report" class="space-y-3.5"{report_hidden}>',
         income_notice_html,
         "",
         kpi_matrix_html,
@@ -2093,6 +2066,7 @@ def render_account_html(data: Optional[Dict[str, Any]] = None) -> str:
         positions_panel_html,
         "",
         history_table_html,
+        '    </section>',
         "",
         '    <footer class="text-center py-4 text-slate-500 text-xs font-mono space-y-1">',
         "      <div>突破追多与移动保本系统 · 账户数据分析引擎 v3.5 Pro · 顶级量化执行终端</div>",
@@ -2119,15 +2093,12 @@ def build_account_analytics(
     output_path: Optional[Path] = None
 ) -> Path:
     """
-    主构建函数：生成完全脱敏纯净的前端 HTML 看板 (account.html)，
-    页面在浏览器端通过 JavaScript 动态异步拉取本地 runs/account_analytics.json，
-    确保 HTML 源码中绝不包含任何个人资产与真实交易记录，100% 可安全提交至 GitHub 公开仓库。
+    生成静态账户页，浏览器从同源接口读取账户数据。
     """
     out = output_path or OUTPUT_HTML
-    template_data = get_clean_template_data()
-    html_content = render_account_html(template_data)
+    html_content = render_account_html()
     out.write_text(html_content, encoding="utf-8")
-    print(f"Successfully compiled {out.name} (Privacy-Safe Dynamic Template) | Ready for Git & Public Push")
+    print(f"Successfully compiled {out.name}")
     return out
 
 
