@@ -1,11 +1,13 @@
 {
   "version": 1,
-  "last_updated": "2026-11-22 16:51:57",
+  "last_updated": "2026-11-22 20:35:53",
   "active_resonance_symbols": [
     "BLESSUSDT",
-    "ENSOUSDT",
-    "INITUSDT",
-    "SKYAIUSDT"
+    "BULLAUSDT",
+    "ELSAUSDT",
+    "JCTUSDT",
+    "MMTUSDT",
+    "RAREUSDT"
   ],
   "history": {
     "CYBERUSDT": {
@@ -172,6 +174,28 @@
         "双核黄金共振"
       ],
       "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:BLESSUSDT.P&interval=15"
+    },
+    "MMTUSDT": {
+      "symbol": "MMTUSDT",
+      "first_detected": "2026-11-22 17:02:42",
+      "last_notified_at": "2026-11-22 17:02:42",
+      "last_notified_time": 1795338162,
+      "res_score": 1,
+      "zones": [
+        "贴水双核(空头浓厚)"
+      ],
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:MMTUSDT.P&interval=15"
+    },
+    "BULLAUSDT": {
+      "symbol": "BULLAUSDT",
+      "first_detected": "2026-11-22 20:35:52",
+      "last_notified_at": "2026-11-22 20:35:52",
+      "last_notified_time": 1795350952,
+      "res_score": 2,
+      "zones": [
+        "双核黄金共振"
+      ],
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:BULLAUSDT.P&interval=15"
     }
   },
   "notified_breakout_keys": [
@@ -180,6 +204,8 @@
     "ENSOUSDT_5ClGio",
     "ENSOUSDT_1795309200",
     "CYBERUSDT_5NdyuJ",
-    "CYBERUSDT_1795317300"
+    "CYBERUSDT_1795317300",
+    "RAREUSDT_UMfDz1",
+    "RAREUSDT_1795341600"
   ]
 }
