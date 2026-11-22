@@ -1,11 +1,10 @@
 {
   "version": 1,
-  "last_updated": "2026-11-22 11:16:14",
+  "last_updated": "2026-11-22 16:51:57",
   "active_resonance_symbols": [
     "BLESSUSDT",
-    "CYBERUSDT",
-    "ELSAUSDT",
     "ENSOUSDT",
+    "INITUSDT",
     "SKYAIUSDT"
   ],
   "history": {
@@ -179,6 +178,8 @@
     "ELSAUSDT_KDTNlr",
     "ELSAUSDT_1795306500",
     "ENSOUSDT_5ClGio",
-    "ENSOUSDT_1795309200"
+    "ENSOUSDT_1795309200",
+    "CYBERUSDT_5NdyuJ",
+    "CYBERUSDT_1795317300"
   ]
 }

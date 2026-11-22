@@ -290,7 +290,7 @@ def render_candidate_rows(candidates: list, row_class_name: str = "candidate-row
 
         resonance_badge = ""
         if is_res and is_neg_fr:
-            resonance_badge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30" title="1h顺势+高换手，但4h负费率，警惕现货抛压">⚠️ 贴水双核(抛压警示)</span>'
+            resonance_badge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30" title="1h顺势+高换手，但4h负费率，合约端做空情绪浓厚">⚠️ 贴水双核(空头浓厚)</span>'
         elif is_res:
             resonance_badge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30" title="1h顺势+高换手，资金面健康">👑 双核黄金共振</span>'
 
@@ -300,7 +300,7 @@ def render_candidate_rows(candidates: list, row_class_name: str = "candidate-row
         if is_high_tr:
             zone_tags.append(f'<span class="px-1 py-0.2 rounded text-[9px] bg-purple-950/60 text-purple-300 border border-purple-500/20">换手{tr:.1f}x</span>')
         if is_neg_fr:
-            zone_tags.append('<span class="px-1 py-0.2 rounded text-[9px] bg-rose-950/60 text-rose-300 border border-rose-500/20" title="合约贴水，警惕现货抛压">⚠️负费率贴水</span>')
+            zone_tags.append('<span class="px-1 py-0.2 rounded text-[9px] bg-rose-950/60 text-rose-300 border border-rose-500/20" title="合约相对现货深度贴水，空头情绪极强">⚠️负费率贴水</span>')
 
         status_html = f"""<div class="flex items-center gap-1.5 flex-wrap">
       {resonance_badge}
@@ -536,7 +536,7 @@ def render_hud_script(
 
     const zoneNames = {{
       'resonance': '👑 顺势高换手共振区',
-      'neg_fr': '⚠️ 负费率贴水区(警惕抛压)',
+      'neg_fr': '⚠️ 负费率贴水区(空头主导)',
       'high_tr': '⚡ 巨量高换手区',
       'ema_bull': '📈 1h EMA顺势区',
       'all': '🌐 全量候选底池'
@@ -1480,7 +1480,7 @@ def render_index_body(candidates: list, stats: dict) -> str:
         </div>
         <div class="flex items-baseline justify-between gap-2">
           <div class="text-xl font-black font-mono text-white tabular-nums">{stats['n_neg_fr']} <span class="text-[11px] font-normal text-slate-400 font-sans">标的</span></div>
-          <div class="text-[10px] text-rose-400/90 font-mono truncate">警惕现货抛压</div>
+          <div class="text-[10px] text-rose-400/90 font-mono truncate">空头过度拥挤</div>
         </div>
         <div class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate" title="{stats['sample_neg_fr']}">
           贴水深: {stats['sample_neg_fr']}

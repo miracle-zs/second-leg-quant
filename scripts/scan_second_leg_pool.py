@@ -424,7 +424,7 @@ def scan_pool():
         zones = []
         if is_resonance:
             if is_neg_fr:
-                zones.append("贴水双核(抛压警示)")
+                zones.append("贴水双核(空头浓厚)")
             else:
                 zones.append("双核黄金共振")
         else:
@@ -437,7 +437,7 @@ def scan_pool():
         c["is_resonance"] = is_resonance
         c["zones"] = zones
         
-        # 评分机制 (用户风控准则：负费率大多伴随阴跌/现货抛压，极少真逼空，故取消逼空加分，负费率扣分降权)：
+        # 评分机制 (用户风控准则：负费率大多伴随阴跌/空头过度堆积，极少真逼空，故取消逼空加分，负费率扣分降权)：
         # 👑 双核黄金共振 (1h顺势 + 高换手 + 正常费率) = 2 (最高优先级)
         # ⚠️ 贴水双核 (1h顺势 + 高换手 + 负费率贴水) = 1 (降权扣分，置于黄金共振之后)
         # 单机会区 (无负费率) = 1
@@ -457,7 +457,7 @@ def scan_pool():
         if is_resonance and not is_neg_fr:
             c["status"] = f"👑 双核黄金共振：1h顺势+换手{c['turnover_ratio']:.1f}x (资金面健康){overflow_tag}"
         elif is_resonance and is_neg_fr:
-            c["status"] = f"⚠️ 贴水双核：1h顺势+换手{c['turnover_ratio']:.1f}x+负费率{c['funding_rate_4h_pct']:+.4f}% (警惕抛压){overflow_tag}"
+            c["status"] = f"⚠️ 贴水双核：1h顺势+换手{c['turnover_ratio']:.1f}x+负费率{c['funding_rate_4h_pct']:+.4f}% (空头主导){overflow_tag}"
         elif is_ema_bull and is_neg_fr:
             c["status"] = f"顺势负费率：1h金叉但贴水{overflow_tag}"
         elif is_ema_bull:
