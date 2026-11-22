@@ -4,6 +4,12 @@
 config/alerts_config.json
 config/*secret*
 
+# Private Account & Trading History Data (Never commit to Git)
+runs/account_analytics.json
+runs/trade_positions.json
+runs/trade_positions.json.*
+runs/*account*
+
 
 # macOS system files
 .DS_Store

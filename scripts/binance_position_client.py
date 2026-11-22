@@ -124,24 +124,24 @@ class BinanceFuturesClient:
             logger.debug(f"拉取币安服务器时间异常，使用本地时间: {e}")
             return int(time.time() * 1000)
 
-    def get_account_positions(self) -> List[dict]:
+    def _send_signed_request(self, endpoint: str, params: Optional[dict] = None) -> Tuple[Optional[Any], Optional[dict]]:
         """
-        请求 /fapi/v2/positionRisk 获取账户所有合约头寸信息。
-        需要有效的 API-Key 与 HMAC-SHA256 签名。
+        发送已签名的 GET 请求至币安合约 API。
+        返回 (data, error_info)。如果成功 error_info 为 None；若失败 data 为 None，error_info 包含 code 和 msg。
         """
         if not self.is_configured():
-            logger.warning("币安 API 凭据未配置，无法拉取实盘持仓。")
-            return []
+            logger.warning("币安 API 凭据未配置，跳过网络请求。")
+            return None, {"code": "NOT_CONFIGURED", "msg": "API keys not configured"}
 
         server_ts = self.get_server_time()
-        params = {
-            "timestamp": server_ts,
-            "recvWindow": 5000,
-        }
-        query_str = urllib.parse.urlencode(params)
+        p = dict(params or {})
+        p["timestamp"] = server_ts
+        p["recvWindow"] = 5000
+
+        query_str = urllib.parse.urlencode(p)
         signature = self._generate_signature(query_str)
         full_query = f"{query_str}&signature={signature}"
-        url = f"{self.base_url}{POSITION_RISK_ENDPOINT}?{full_query}"
+        url = f"{self.base_url}{endpoint}?{full_query}"
 
         req = urllib.request.Request(
             url,
@@ -156,31 +156,94 @@ class BinanceFuturesClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-                if isinstance(data, list):
-                    return data
-                elif isinstance(data, dict) and data.get("code"):
-                    logger.error(f"币安持仓接口返回错误: [{data.get('code')}] {data.get('msg')}")
-                    return []
-                return []
+                if isinstance(data, dict) and data.get("code") and int(data.get("code")) < 0:
+                    logger.error(f"币安接口返回错误 [{endpoint}]: [{data.get('code')}] {data.get('msg')}")
+                    return None, {"code": data.get("code"), "msg": data.get("msg")}
+                return data, None
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8") if e.fp else ""
-            logger.error(f"币安 HTTP 请求失败 ({e.code}): {err_body}")
-            return []
+            logger.warning(f"币安 HTTP 请求失败 [{endpoint}] ({e.code}): {err_body}")
+            return None, {"code": e.code, "msg": err_body}
         except Exception as e:
-            logger.error(f"请求币安持仓风险接口网络异常: {e}")
-            return []
+            logger.warning(f"请求币安接口网络异常 [{endpoint}]: {e}")
+            return None, {"code": "NETWORK_ERROR", "msg": str(e)}
 
-    def get_active_long_positions(self) -> List[dict]:
+    def get_account_positions(self) -> Optional[List[dict]]:
+        """
+        请求 /fapi/v2/positionRisk 获取账户所有合约头寸信息。
+        需要有效的 API-Key 与 HMAC-SHA256 签名。请求失败返回 None。
+        """
+        data, _ = self._send_signed_request(POSITION_RISK_ENDPOINT)
+        return data if isinstance(data, list) else None
+
+    def get_account_info(self) -> Optional[dict]:
+        """
+        请求 /fapi/v2/account 获取合约账户全量资产、钱包余额与保证金信息。
+        """
+        data, _ = self._send_signed_request("/fapi/v2/account")
+        return data if isinstance(data, dict) else None
+
+    def get_income(
+        self,
+        income_type: Optional[str] = None,
+        symbol: Optional[str] = None,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: int = 1000
+    ) -> List[dict]:
+        """
+        请求 /fapi/v1/income 获取合约账户资金流水（已实现盈亏、手续费、资金费率、转账等）。
+        """
+        params: Dict[str, Any] = {"limit": min(limit, 1000)}
+        if income_type:
+            params["incomeType"] = income_type
+        if symbol:
+            params["symbol"] = clean_symbol(symbol)
+        if start_time:
+            params["startTime"] = int(start_time)
+        if end_time:
+            params["endTime"] = int(end_time)
+        data, _ = self._send_signed_request("/fapi/v1/income", params)
+        return data if isinstance(data, list) else []
+
+    def get_user_trades(
+        self,
+        symbol: str,
+        start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        from_id: Optional[int] = None,
+        limit: int = 1000
+    ) -> List[dict]:
+        """
+        请求 /fapi/v1/userTrades 获取指定交易对的历史成交记录。
+        """
+        params: Dict[str, Any] = {
+            "symbol": clean_symbol(symbol),
+            "limit": min(limit, 1000)
+        }
+        if start_time:
+            params["startTime"] = int(start_time)
+        if end_time:
+            params["endTime"] = int(end_time)
+        if from_id:
+            params["fromId"] = int(from_id)
+        data, _ = self._send_signed_request("/fapi/v1/userTrades", params)
+        return data if isinstance(data, list) else []
+
+    def get_active_long_positions(self) -> Optional[List[dict]]:
         """
         筛选并标准化当前有效开仓的多头持仓 (positionAmt > 0)。
         """
         raw_list = self.get_account_positions()
+        if raw_list is None:
+            return None
+
         active_longs = []
 
         for p in raw_list:
-            amt = float(p.get("positionAmt", 0.0))
+            amt = float(p["positionAmt"])
             if amt > 0:  # 仅追踪多头多单
-                sym = clean_symbol(p.get("symbol", ""))
+                sym = clean_symbol(p["symbol"])
                 entry_p = float(p.get("entryPrice", 0.0))
                 mark_p = float(p.get("markPrice", entry_p))
                 pnl = float(p.get("unRealizedProfit", 0.0))
@@ -222,6 +285,14 @@ def sync_binance_positions(
         }
 
     active_longs = client.get_active_long_positions()
+    if active_longs is None:
+        return {
+            "synced": False,
+            "reason": "POSITION_SNAPSHOT_FAILED",
+            "active_count": len(pos_store.get_open_positions()),
+            "new_added": [],
+            "auto_closed": [],
+        }
     binance_symbols = {p["symbol"]: p for p in active_longs}
 
     # 获取当前 TV 云端画线用于自动挂载对数趋势线
@@ -249,7 +320,7 @@ def sync_binance_positions(
 
             # 自动录入新持仓
             notes = f"Binance Real-Time Auto-Sync (Leverage: {b_pos['leverage']}x)"
-            new_pos = pos_store.add_position(
+            pos_store.add_position(
                 symbol=sym,
                 entry_price=b_pos["entry_price"],
                 amount=b_pos["amount"],
@@ -258,9 +329,6 @@ def sync_binance_positions(
                 source="BINANCE_SYNC",
                 leverage=b_pos["leverage"]
             )
-            new_pos["source"] = "BINANCE_SYNC"
-            new_pos["leverage"] = b_pos["leverage"]
-            pos_store.save()
             new_added.append(sym)
             logger.info(f"⚡ [币安实盘自动同步] 发现新开多仓: {sym} @ {b_pos['entry_price']} (数量: {b_pos['amount']})")
         else:
@@ -270,8 +338,8 @@ def sync_binance_positions(
                 logger.info(f"🔄 [币安实盘自动同步] 更新持仓均价/数量: {sym} {local_p['entry_price']} -> {b_pos['entry_price']}")
                 local_p["entry_price"] = b_pos["entry_price"]
                 local_p["amount"] = b_pos["amount"]
-                local_p["source"] = "BINANCE_SYNC"
-                pos_store.save()
+            local_p["source"] = "BINANCE_SYNC"
+            local_p["leverage"] = b_pos["leverage"]
 
     # 2. 检查本地中由币安同步创建但币安已平仓 (positionAmt == 0) 的仓位 -> 自动归档
     for p in pos_store.get_open_positions():
@@ -305,6 +373,8 @@ if __name__ == "__main__":
         server_ts = client.get_server_time()
         print(f"Server Time: {server_ts}")
         positions = client.get_active_long_positions()
+        if positions is None:
+            raise SystemExit("Failed to fetch Binance positions")
         print(f"Active Long Positions ({len(positions)}):")
         for p in positions:
             print(f"  - {p['symbol']}: {p['amount']} @ {p['entry_price']} (mark: {p['mark_price']}, pnl: {p['unrealized_pnl']})")

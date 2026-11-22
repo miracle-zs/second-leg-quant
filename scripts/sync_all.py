@@ -5,6 +5,9 @@
 1. 扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与机会区排序)
 2. 重构并编译总控制台首页 (index.html)
 3. 编译突破追多与移动保本战法手册 (strategy_second_leg_playbook.html)
+4. 更新账户数据分析引擎与量化风控指标 (runs/account_analytics.json)
+5. 编译生成账户数据分析看板 (account.html)
+6. 执行交易风控与四重预警评测 (新共振/突破/止损/移动锁利)
 """
 
 import sys
@@ -23,7 +26,7 @@ def run_step(desc: str, cmd: list) -> bool:
         print(f"    [✓ 成功] ({dt:.2f}s)")
         if res.stdout:
             for line in res.stdout.strip().splitlines():
-                if any(k in line for k in ["✅", "🎉", "🔥 三重共振", "★ 通道④", "★ 7天溢出", "HTML"]):
+                if any(k in line for k in ["✅", "🎉", "🔥 三重共振", "★ 通道④", "★ 7天溢出", "HTML", "总资金净值", "账户量化分析", "Compiled"]):
                     print(f"      {line.strip()}")
         return True
     else:
@@ -39,10 +42,12 @@ def main():
     print("=======================================================\n")
 
     steps = [
-        ("1/4 扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与三大机会区)", [sys.executable, "scripts/scan_second_leg_pool.py"]),
-        ("2/4 重构并编译总控制台首页 (index.html)", [sys.executable, "scripts/build_index.py"]),
-        ("3/4 编译突破追多与移动保本战法手册 (strategy_second_leg_playbook.html)", [sys.executable, "scripts/build_second_leg_playbook.py"]),
-        ("4/4 执行交易风控与四重预警评测 (新共振/突破/止损)", [sys.executable, "scripts/trade_alert_daemon.py", "--check-once"]),
+        ("1/6 扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与三大机会区)", [sys.executable, "scripts/scan_second_leg_pool.py"]),
+        ("2/6 重构并编译总控制台首页 (index.html)", [sys.executable, "scripts/build_index.py"]),
+        ("3/6 编译突破追多与移动保本战法手册 (strategy_second_leg_playbook.html)", [sys.executable, "scripts/build_second_leg_playbook.py"]),
+        ("4/6 更新账户数据分析引擎与量化风控指标 (runs/account_analytics.json)", [sys.executable, "scripts/account_analytics_engine.py"]),
+        ("5/6 编译生成账户数据分析看板 (account.html)", [sys.executable, "scripts/build_account_analytics.py"]),
+        ("6/6 执行交易风控与四重预警评测 (新共振/突破/止损)", [sys.executable, "scripts/trade_alert_daemon.py", "--check-once"]),
     ]
 
     all_ok = True

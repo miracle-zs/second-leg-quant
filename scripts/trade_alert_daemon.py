@@ -1044,12 +1044,15 @@ def check_feature_3_stop_loss(
     if not open_positions:
         return []
 
-    drawings_map = fetch_layout_drawings(layout_id)
+    drawings_map = fetch_layout_drawings(layout_id) if any(not p.get("trendline") for p in open_positions) else {}
     stop_loss_alerts = []
 
     for pos in open_positions:
+        if pos.get("stop_loss_notified", False):
+            continue
+
         sym = pos["symbol"]
-        candle = get_binance_closed_15m_candle(sym)
+        candle = pos.get("pending_stop_loss_candle") or get_binance_closed_15m_candle(sym)
         if not candle:
             continue
 
@@ -1089,16 +1092,15 @@ def check_feature_3_stop_loss(
         if support_price <= 0:
             continue
 
-        # 检查是否跌破趋势线
-        if close_price < support_price:
-            # 破线止损
-            if not pos.get("stop_loss_notified", False):
-                drop_pct = (support_price - close_price) / support_price * 100.0
-                pnl_pct = (close_price - entry_price) / entry_price * 100.0
-                tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
+        if close_price >= support_price:
+            continue
 
-                title = f"🚨 【破线止损预警】{sym} 15m 跌破趋势线，请立即平多止损！"
-                desp = f"""### 🚨 【破线无条件止损】纪律执行警报！
+        drop_pct = (support_price - close_price) / support_price * 100.0
+        pnl_pct = (close_price - entry_price) / entry_price * 100.0
+        tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
+
+        title = f"🚨 【破线止损预警】{sym} 15m 跌破趋势线，请立即平多止损！"
+        desp = f"""### 🚨 【破线无条件止损】纪律执行警报！
 
 - **持仓标的**: `{sym}`
 - **开仓价格**: `${entry_price:.4f}`
@@ -1116,17 +1118,23 @@ def check_feature_3_stop_loss(
 
 👉 **[查看 TradingView 图表]({tv_link})**
 """
-                notifier.send_alert(title, desp)
-                pos["stop_loss_notified"] = True
-                pos["status"] = "STOP_LOSS_TRIGGERED"
-                pos["closed_at"] = get_beijing_time_str()
-                pos["exit_price"] = close_price
-                if pos in pos_store.data["positions"]:
-                    pos_store.data["positions"].remove(pos)
-                    pos_store.data["history"].append(pos)
+        if not notifier.send_alert(title, desp):
+            if "pending_stop_loss_candle" not in pos:
+                pos["pending_stop_loss_candle"] = candle
                 pos_store.save()
-                stop_loss_alerts.append(pos)
-                logger.warning(f"🚨 标的 {sym} 跌破趋势线，已发送止损警报！")
+            continue
+
+        pos.pop("pending_stop_loss_candle", None)
+        pos["stop_loss_notified"] = True
+        if pos.get("source") != "BINANCE_SYNC":
+            pos["status"] = "STOP_LOSS_TRIGGERED"
+            pos["closed_at"] = get_beijing_time_str()
+            pos["exit_price"] = close_price
+            pos_store.data["positions"].remove(pos)
+            pos_store.data["history"].append(pos)
+        pos_store.save()
+        stop_loss_alerts.append(pos)
+        logger.warning(f"🚨 标的 {sym} 跌破趋势线，已发送止损警报！")
 
     return stop_loss_alerts
 
@@ -1155,73 +1163,82 @@ def check_feature_4_trailing_stops(
     for pos in open_positions:
         sym = pos["symbol"]
         curr_price = get_binance_ticker_price(sym)
-        if curr_price <= 0:
+        if curr_price <= 0 and not (
+            "pending_trailing_activation_price" in pos or "pending_profit_lock_price" in pos
+        ):
             continue
 
         entry_price = float(pos["entry_price"])
         highest_price = max(pos.get("highest_price", entry_price), curr_price)
         pos["highest_price"] = highest_price
-        pos["current_price"] = curr_price
-        
-        gain_pct = (curr_price - entry_price) / entry_price * 100.0
-        pos["pnl_pct"] = round(gain_pct, 2)
+        if curr_price > 0:
+            pos["current_price"] = curr_price
+            pos["pnl_pct"] = round((curr_price - entry_price) / entry_price * 100.0, 2)
 
-        # 检查是否激活移动止盈 (涨幅 >= +6%)
-        if not pos.get("trailing_stop_triggered", False):
-            target_activation_price = entry_price * (1.0 + activation_pct / 100.0)
-            if curr_price >= target_activation_price:
-                # 触发移动止损线上移至 +1%
-                lock_price = round(entry_price * (1.0 + lock_pct / 100.0), 8)
-                pos["trailing_stop_triggered"] = True
-                pos["trailing_stop_price"] = lock_price
-                pos["trailing_stop_activated_at"] = get_beijing_time_str()
+        target_activation_price = entry_price * (1.0 + activation_pct / 100.0)
+        if not pos.get("trailing_stop_triggered", False) and curr_price >= target_activation_price:
+            pos["trailing_stop_triggered"] = True
+            pos["trailing_stop_price"] = round(entry_price * (1.0 + lock_pct / 100.0), 8)
+            pos["trailing_stop_activated_at"] = get_beijing_time_str()
+            pos["pending_trailing_activation_price"] = curr_price
+            pos_store.save()
 
-                title = f"🎯 【移动止盈锁定】{sym} 浮盈达 +{gain_pct:.1f}%，已启动 +{lock_pct:.0f}% 保本锁利！"
-                desp = f"""### 🎯 【动态移动止盈启动】锁定确定性收益！
+        if "pending_trailing_activation_price" in pos:
+            activation_price = pos["pending_trailing_activation_price"]
+            activation_gain = (activation_price - entry_price) / entry_price * 100.0
+            lock_price = pos["trailing_stop_price"]
+            title = f"🎯 【移动止盈锁定】{sym} 浮盈达 +{activation_gain:.1f}%，已启动 +{lock_pct:.0f}% 保本锁利！"
+            desp = f"""### 🎯 【动态移动止盈启动】移动锁利提醒
 
 - **持仓标的**: `{sym}`
 - **开仓价格**: `${entry_price:.4f}`
-- **当前市价**: `${curr_price:.4f}` (最高: `${highest_price:.4f}`)
-- **当前涨幅**: `+{gain_pct:.2f}%` (已突破 +{activation_pct:.0f}% 门槛)
+- **激活时行情价**: `${activation_price:.4f}` (最高: `${highest_price:.4f}`)
+- **激活时涨幅**: `+{activation_gain:.2f}%` (已突破 +{activation_pct:.0f}% 门槛)
 - **移动止损新价**: `${lock_price:.4f}` (+{lock_pct:.1f}% 利润安全线)
 - **触发时间**: {get_beijing_time_str()}
 
 ---
-> 🛡️ **利润垫保护已锁死**:
-> 恭喜！当前盈利已达成第一目标，止损位已自动提拉至开仓价上方 +{lock_pct:.1f}%。
-> 后续即便行情深度回撤，亦能确保斩获稳健收益。若现价回跌触及 `${lock_price:.4f}`，系统将发出离场指引。
+> 系统已记录锁利预警线 `${lock_price:.4f}`。实时巡检发现价格触线时会发出离场通知。
 """
-                notifier.send_alert(title, desp)
+            if notifier.send_alert(title, desp):
+                del pos["pending_trailing_activation_price"]
                 pos_store.save()
                 events.append({"type": "TRAILING_ACTIVATED", "pos": pos})
-                logger.info(f"🎯 {sym} 浮盈 +{gain_pct:.2f}% 激活移动止损，锁定保本价: {lock_price}")
+                logger.info(f"🎯 {sym} 已发送移动止损激活通知: {lock_price}")
 
         # 检查是否跌破移动止盈线 (已激活移动止盈的状态下)
         if pos.get("trailing_stop_triggered", False) and not pos.get("profit_lock_notified", False):
             lock_price = float(pos["trailing_stop_price"])
-            if curr_price <= lock_price:
-                pos["profit_lock_notified"] = True
-                pos["status"] = "PROFIT_LOCKED"
-                pos["closed_at"] = get_beijing_time_str()
-                pos["exit_price"] = curr_price
-                realized_pct = (curr_price - entry_price) / entry_price * 100.0
+            if "pending_profit_lock_price" in pos or 0 < curr_price <= lock_price:
+                trigger_price = pos.get("pending_profit_lock_price", curr_price)
+                trigger_pct = (trigger_price - entry_price) / entry_price * 100.0
 
                 title = f"🔔 【移动止盈离场】{sym} 触及移动止盈线，请平仓锁利离场！"
                 desp = f"""### 🔔 【移动止盈触发】建议市价平多落袋为安！
 
 - **持仓标的**: `{sym}`
 - **开仓价格**: `${entry_price:.4f}`
-- **触发行情价**: `${curr_price:.4f}`
+- **触发行情价**: `${trigger_price:.4f}`
 - **锁利触发线**: `${lock_price:.4f}` (+{lock_pct:.1f}%)
-- **锁定收益率**: `+{realized_pct:+.2f}%`
+- **触发时浮动收益率**: `{trigger_pct:+.2f}%`
 - **触发时间**: {get_beijing_time_str()}
 
 ---
 > 💰 **操作指引**:
-> 行情出现回踩并触及移动保本线，请严格执行锁利纪律，市价平多离场，确保利润安全入袋！
+> 行情出现回踩并触及移动保本线，请在币安确认当前仓位与可执行价格。
 """
-                notifier.send_alert(title, desp)
-                if pos in pos_store.data["positions"]:
+                if not notifier.send_alert(title, desp):
+                    if "pending_profit_lock_price" not in pos:
+                        pos["pending_profit_lock_price"] = trigger_price
+                        pos_store.save()
+                    continue
+
+                pos.pop("pending_profit_lock_price", None)
+                pos["profit_lock_notified"] = True
+                if pos.get("source") != "BINANCE_SYNC":
+                    pos["status"] = "PROFIT_LOCKED"
+                    pos["closed_at"] = get_beijing_time_str()
+                    pos["exit_price"] = trigger_price
                     pos_store.data["positions"].remove(pos)
                     pos_store.data["history"].append(pos)
                 pos_store.save()
@@ -1373,12 +1390,19 @@ class TradeAlertDaemon:
                         self.state_store,
                         self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
                     )
+                    self.last_evaluated_15m_bucket = current_bucket
+                    evaluate_stop_loss = True
+                else:
+                    evaluate_stop_loss = any(
+                        "pending_stop_loss_candle" in pos for pos in self.pos_store.get_open_positions()
+                    )
+
+                if evaluate_stop_loss:
                     check_feature_3_stop_loss(
                         self.notifier,
                         self.pos_store,
                         self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
                     )
-                    self.last_evaluated_15m_bucket = current_bucket
 
                 # 每 10 秒高频巡检 Feature 4: 持仓动态移动止盈
                 check_feature_4_trailing_stops(
@@ -1457,7 +1481,8 @@ def main():
         res = bpc.sync_binance_positions(b_client, store, cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID))
         print("\n========================= 币安实盘持仓同步结果 =========================")
         print(f"• 同步状态: {'成功' if res['synced'] else '失败'} ({res['reason']})")
-        print(f"• 币安多头持仓数: {res['active_count']}")
+        count_label = "币安多头持仓数" if res["synced"] else "保留的本地持仓数"
+        print(f"• {count_label}: {res['active_count']}")
         print(f"• 新增同步标的: {', '.join(res['new_added']) if res['new_added'] else '无'}")
         print(f"• 自动归档平仓: {', '.join(res['auto_closed']) if res['auto_closed'] else '无'}")
         if res.get("active_positions"):

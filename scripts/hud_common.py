@@ -1370,6 +1370,199 @@ def render_hud_script(
   </script>"""
 
 
+def render_global_nav_tabs(current_page: str = "index", active_tab: str = None, **kwargs) -> str:
+    """
+    提炼并标准化全局顶部导航栏三核心视图标签组 (Global HUD Header Nav Tabs)
+    - 策略监控看板 (index.html - 当前生效的二段突破与趋势线监控)
+    - 账户数据分析 (account.html - 资金走势、风控指标、开平仓流水)
+    - 二段爆发战法 (reports/strategy_second_leg_playbook.html - 战法解析与规则手册)
+    自动计算相对路径并高亮当前激活的页面。
+    """
+    page_norm = (active_tab or current_page or "index").lower().strip()
+    is_in_reports = (page_norm == "playbook" or "playbook" in page_norm or "report" in page_norm)
+
+    # 路径解析：保证在根目录与子目录 (reports/...) 下均能无缝互相跳转
+    index_url = "../index.html" if is_in_reports else "index.html"
+    account_url = "../account.html" if is_in_reports else "account.html"
+    playbook_url = "strategy_second_leg_playbook.html" if is_in_reports else "reports/strategy_second_leg_playbook.html"
+
+    tab_configs = [
+        (
+            "index",
+            index_url,
+            "📊",
+            "策略监控看板",
+            "二段突破与趋势线监控",
+            "bg-sky-500/20 text-sky-400 border-sky-500/40 shadow-sky-500/10",
+            "bg-sky-400",
+        ),
+        (
+            "account",
+            account_url,
+            "💼",
+            "账户数据分析",
+            "资金走势、风控指标、开平仓流水",
+            "bg-emerald-500/20 text-emerald-400 border-emerald-500/40 shadow-emerald-500/10",
+            "bg-emerald-400",
+        ),
+        (
+            "playbook",
+            playbook_url,
+            "📖",
+            "二段爆发战法",
+            "战法解析与实战规则手册",
+            "bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-amber-500/10",
+            "bg-amber-400",
+        ),
+    ]
+
+    items = []
+    for key, url, icon, title, hint, active_classes, dot_color in tab_configs:
+        is_active = (
+            (key == "index" and page_norm in ["index", "home", "main", "strategy"])
+            or (key == "account" and page_norm in ["account", "analytics", "trade", "positions"])
+            or (key == "playbook" and page_norm in ["playbook", "report", "manual", "strategy_second_leg_playbook"])
+        )
+
+        if is_active:
+            items.append(
+                f'<a href="{url}" title="{hint}" aria-current="page" '
+                f'class="px-2.5 sm:px-3 py-1.5 text-xs font-bold rounded-lg border shadow-sm {active_classes} flex items-center gap-1.5 transition-all">'
+                f'<span class="w-1.5 h-1.5 rounded-full {dot_color} animate-pulse" aria-hidden="true"></span>'
+                f'<span>{icon} {title}</span>'
+                f'</a>'
+            )
+        else:
+            items.append(
+                f'<a href="{url}" title="{hint}" '
+                f'class="px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg text-slate-300 hover:text-white hover:bg-slate-800/80 border border-transparent hover:border-slate-700/60 flex items-center gap-1.5 transition-all">'
+                f'<span class="w-1.5 h-1.5 rounded-full bg-slate-600" aria-hidden="true"></span>'
+                f'<span>{icon} {title}</span>'
+                f'</a>'
+            )
+
+    return (
+        f'<nav aria-label="全系统核心视图导航" class="flex flex-wrap items-center p-1 bg-slate-950/80 border border-slate-800 rounded-xl gap-1 shrink-0">'
+        f'{"".join(items)}'
+        f'</nav>'
+    )
+
+
+def render_global_header(
+    current_page: str = "index",
+    title: str = "突破追多与移动保本系统",
+    title_badge: str = "v3.5 Pro",
+    badges_html: str = "",
+    extra_actions_html: str = "",
+    settle_countdown_id: str = "settle-countdown",
+    sync_badge_text: str = "币安 5s 轮询",
+    sync_badge_id: str = "sync-status-badge",
+    active_tab: str = None,
+    **kwargs,
+) -> str:
+    """
+    生成标准化的机构级暗色 HUD 全局顶部导航栏 (Global HUD Header Nav)
+    """
+    page_effective = active_tab or current_page or "index"
+    nav_tabs_html = render_global_nav_tabs(current_page=page_effective)
+
+    sync_badge = ""
+    if sync_badge_text:
+        pulse_anim = "animate-ping" if "轮询" in sync_badge_text else "animate-pulse"
+        sync_badge = (
+            f'<span id="{sync_badge_id}" class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1.5" role="status" aria-live="polite">'
+            f'<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 {pulse_anim}" aria-hidden="true"></span>'
+            f'<span>{sync_badge_text}</span>'
+            f'</span>'
+        )
+
+    settle_badge = ""
+    if settle_countdown_id:
+        settle_badge = (
+            f'<span id="settle-timer-badge" class="px-2 py-0.5 text-[11px] font-mono font-semibold rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/20 flex items-center gap-1" title="距离下个整点资费结算窗口倒计时">'
+            f'<span>⏱️ 结算:</span>'
+            f'<span id="{settle_countdown_id}">--:--</span>'
+            f'</span>'
+        )
+
+    title_badge_html = ""
+    if title_badge:
+        title_badge_html = f'<span class="text-[10px] px-1.5 py-0.5 rounded font-mono font-normal bg-slate-800 text-slate-300 border border-slate-700">{title_badge}</span>'
+
+    actions_html = ""
+    if extra_actions_html:
+        actions_html = f'<div class="flex items-center gap-1.5 shrink-0">{extra_actions_html}</div>'
+
+    return f"""    <!-- Global HUD Header Nav -->
+    <header class="bg-slate-900/95 border border-slate-800 rounded-xl px-3.5 py-2.5 shadow-lg backdrop-blur-sm">
+      <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
+        <div class="flex flex-wrap items-center gap-2">
+          <h1 class="text-lg md:text-xl font-black tracking-tight text-white flex items-center gap-1.5 mr-1">
+            <span>{title}</span>
+            {title_badge_html}
+          </h1>
+          {badges_html}
+          {sync_badge}
+          {settle_badge}
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2 shrink-0">
+          {nav_tabs_html}
+          {actions_html}
+        </div>
+      </div>
+    </header>"""
+
+
+# 标准化组件别名导出，确保多模块间无缝兼容
+render_global_nav = render_global_nav_tabs
+render_nav_header = render_global_header
+
+
+def inject_or_replace_global_nav(
+    html_content: str,
+    current_page: str = "account",
+    title: str = "突破追多与移动保本系统 · 账户分析",
+    title_badge: str = "实盘风控",
+    badges_html: str = '<span class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Binance Futures</span>',
+    extra_actions_html: str = "",
+) -> str:
+    """
+    在已有的 HTML 内容中检测并注入或替换全局 HUD Header Nav，确保三视图标签与页面风格一致。
+    """
+    import re
+    header_html = render_global_header(
+        current_page=current_page,
+        title=title,
+        title_badge=title_badge,
+        badges_html=badges_html,
+        extra_actions_html=extra_actions_html,
+        settle_countdown_id="",
+        sync_badge_text="",
+    )
+
+    if re.search(r"<!--\s*Global HUD Header Nav\s*-->\s*<header.*?</header>", html_content, re.DOTALL):
+        return re.sub(r"<!--\s*Global HUD Header Nav\s*-->\s*<header.*?</header>", header_html.strip(), html_content, count=1, flags=re.DOTALL)
+    elif re.search(r"<header.*?</header>", html_content, re.DOTALL):
+        return re.sub(r"<header.*?</header>", header_html.strip(), html_content, count=1, flags=re.DOTALL)
+    elif "<body" in html_content:
+        return re.sub(r"(<body[^>]*>\s*(?:<main[^>]*>|<div[^>]*>)?)", rf"\1\n{header_html}\n", html_content, count=1)
+    return header_html + "\n" + html_content
+
+
+def sync_nav_to_html_file(file_path: Path, current_page: str = "account", **kwargs) -> bool:
+    """
+    检查并同步指定 HTML 文件中的全局导航栏。
+    """
+    p = Path(file_path)
+    if not p.exists():
+        return False
+    content = p.read_text(encoding="utf-8")
+    new_content = inject_or_replace_global_nav(content, current_page=current_page, **kwargs)
+    p.write_text(new_content, encoding="utf-8")
+    return True
+
+
 def render_index_body(candidates: list, stats: dict) -> str:
     rows_html = render_candidate_rows(candidates, row_class_name="candidate-row")
     script_html = render_hud_script(
@@ -1389,44 +1582,27 @@ def render_index_body(candidates: list, stats: dict) -> str:
         close_drawer_btn_id="btn-close-drawer",
     )
 
+    header_html = render_global_header(
+        current_page="index",
+        title="突破追多与移动保本系统",
+        title_badge="v3.5 Pro",
+        badges_html='<span class="px-2 py-0.5 text-[11px] font-bold rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">CMC Pro &lt;$30M</span>',
+        extra_actions_html="""<button id="btn-manual-sync" type="button" class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 transition-all flex items-center gap-1 focus-visible:outline-2 focus-visible:outline-sky-400" title="立即手动刷新全池价格与资金费率">
+            <span aria-hidden="true">🔄</span>
+            <span class="hidden sm:inline">刷新</span>
+          </button>
+          <button id="btn-toggle-drawer" type="button" class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all flex items-center gap-1" title="展开/收起 TV 趋势线战法与风控速查抽屉">
+            <span>📐 <span class="hidden sm:inline">TV </span>画线速查</span>
+          </button>""",
+        settle_countdown_id="settle-countdown",
+        sync_badge_text="币安 5s 轮询",
+        sync_badge_id="sync-status-badge",
+    )
+
     return f"""<body class="p-2 md:p-3.5 antialiased custom-scrollbar">
   <main id="main-content" class="w-full max-w-[1600px] mx-auto space-y-2">
 
-    <!-- Compact Command HUD & Navigation Bar -->
-    <header class="bg-slate-900/95 border border-slate-800 rounded-xl px-3.5 py-2.5 shadow-lg backdrop-blur-sm">
-      <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
-        <div class="flex flex-wrap items-center gap-2">
-          <h1 class="text-lg md:text-xl font-black tracking-tight text-white flex items-center gap-1.5 mr-1">
-            <span>突破追多与移动保本系统</span>
-            <span class="text-[10px] px-1.5 py-0.5 rounded font-mono font-normal bg-slate-800 text-slate-300 border border-slate-700">v3.5 Pro</span>
-          </h1>
-          <span class="px-2 py-0.5 text-[11px] font-bold rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            CMC Pro &lt;$30M
-          </span>
-          <span id="sync-status-badge" class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1.5" role="status" aria-live="polite">
-            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" aria-hidden="true"></span>
-            <span>币安 5s 轮询</span>
-          </span>
-          <span id="settle-timer-badge" class="px-2 py-0.5 text-[11px] font-mono font-semibold rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/20 flex items-center gap-1" title="距离下个整点资费结算窗口倒计时">
-            <span>⏱️ 结算:</span>
-            <span id="settle-countdown">--:--</span>
-          </span>
-        </div>
-
-        <nav aria-label="快捷实战与复盘入口" class="flex flex-wrap items-center gap-1.5 shrink-0">
-          <button id="btn-manual-sync" type="button" class="px-2.5 py-1 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 transition-all flex items-center gap-1 focus-visible:outline-2 focus-visible:outline-sky-400" title="立即手动刷新全池价格与资金费率">
-            <span aria-hidden="true">🔄</span>
-            <span>刷新</span>
-          </button>
-          <a href="reports/strategy_second_leg_playbook.html" class="px-2.5 py-1 text-xs font-bold rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition-all flex items-center gap-1">
-            <span>📖 战法手册</span>
-          </a>
-          <button id="btn-toggle-drawer" type="button" class="px-2.5 py-1 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all flex items-center gap-1">
-            <span>📐 TV 画线速查</span>
-          </button>
-        </nav>
-      </div>
-    </header>
+{header_html}
 
     <!-- Collapsible TV Trendline & Risk Management Quick Reference -->
     <div id="tv-drawer" class="hidden bg-slate-900/90 border border-amber-500/30 rounded-xl p-3 text-xs space-y-2.5 transition-all animate-fadeIn">
@@ -1621,41 +1797,24 @@ def render_playbook_body(candidates: list, stats: dict) -> str:
         settle_countdown_id="settle-countdown-pb",
     )
 
+    playbook_header = render_global_header(
+        current_page="playbook",
+        title="突破追多与移动保本战法手册",
+        title_badge="v3.5 Pro",
+        badges_html='<span class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">CMC Pro &lt;$30M</span><span class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20">4 步战法 + 移动锁利风控</span>',
+        extra_actions_html="""<button id="btn-manual-sync-playbook" type="button" class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 transition-all flex items-center gap-1 focus-visible:outline-2 focus-visible:outline-sky-400" title="立即手动刷新全池价格与资金费率">
+          <span aria-hidden="true">🔄</span>
+          <span class="hidden sm:inline">刷新</span>
+        </button>""",
+        settle_countdown_id="settle-countdown-pb",
+        sync_badge_text="5s 同步",
+        sync_badge_id="sync-status-badge",
+    )
+
     return f"""<body class="p-2 md:p-3.5 antialiased custom-scrollbar">
   <div class="w-full max-w-[1600px] mx-auto space-y-2.5">
 
-    <!-- Compact Header -->
-    <header class="bg-slate-900/90 border border-slate-800 rounded-xl px-3.5 py-2.5 shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-2">
-      <div class="flex flex-wrap items-center gap-2">
-        <h1 class="text-lg md:text-xl font-black tracking-tight text-white mr-1">
-          突破追多与移动保本战法手册
-        </h1>
-        <span class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-          CMC Pro &lt;$30M
-        </span>
-        <span class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20">
-          4 步战法 + 移动锁利风控
-        </span>
-        <span id="sync-status-badge" class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1.5" role="status" aria-live="polite">
-          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>
-          <span>5s 同步</span>
-        </span>
-        <span id="settle-timer-badge" class="px-2 py-0.5 text-[11px] font-mono font-semibold rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/20 flex items-center gap-1" title="距离下个整点资费结算窗口倒计时">
-          <span>⏱️ 结算:</span>
-          <span id="settle-countdown-pb">--:--</span>
-        </span>
-      </div>
-
-      <nav aria-label="战法终端快捷导航" class="flex flex-wrap items-center gap-1.5 shrink-0">
-        <button id="btn-manual-sync-playbook" type="button" class="px-2.5 py-1 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 transition-all flex items-center gap-1 focus-visible:outline-2 focus-visible:outline-sky-400" title="立即手动刷新全池价格与资金费率">
-          <span aria-hidden="true">🔄</span>
-          <span>刷新</span>
-        </button>
-        <a href="../index.html" class="px-3 py-1 text-xs font-bold rounded-lg bg-sky-600 hover:bg-sky-500 text-white transition-all shadow-md shadow-sky-600/20">
-          <span>➔ 返回实战工作台</span>
-        </a>
-      </nav>
-    </header>
+{playbook_header}
 
     <!-- Compact 3 Pillars -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs leading-snug">

@@ -55,7 +55,24 @@ class TestTVCloudAndFallback(unittest.TestCase):
 
     def test_tv_cloud_drawing_reading_structure(self):
         """Verify layout reading parses drawings with all required geometric fields."""
-        drawings = tve.get_layout_drawings(layout_id="ig0LuDL8", save_cache=False)
+        sources = {
+            str(i): {
+                "symbol": "BINANCE:YBUSDT.P",
+                "state": {
+                    "type": "LineToolTrendLine",
+                    "points": [
+                        {"time_t": 1795200000 + i * 900, "price": 1.2},
+                        {"time_t": 1795210000 + i * 900, "price": 1.0},
+                    ],
+                },
+            }
+            for i in range(2)
+        }
+        response = json.dumps({"payload": {"sources": sources}}).encode()
+        with patch.object(tve, "get_chart_token", return_value="test-token"), patch.object(
+            tve, "get_layout_chart_ids", return_value=["test-chart"]
+        ), patch.object(tve, "_request_with_retry", return_value=response):
+            drawings = tve.get_layout_drawings(layout_id="test-layout", save_cache=False)
         self.assertIsInstance(drawings, dict)
         self.assertTrue(len(drawings) > 0)
 
@@ -79,25 +96,29 @@ class TestTVCloudAndFallback(unittest.TestCase):
 
     def test_tv_cache_fallback_when_offline(self):
         """Verify cached layout is loaded seamlessly when offline or remote is unreachable."""
-        cache_file = ROOT_DIR / "runs" / "tradingview_drawings_ig0LuDL8.json"
-        self.assertTrue(cache_file.exists(), "Cache file must exist for fallback testing")
-
-        with open(cache_file, "r", encoding="utf-8") as f:
-            cached_data = json.load(f)
-
-        # Mock network failure
-        with patch("tv_trendline_engine._request_with_retry", side_effect=RuntimeError("Network unreachable")):
-            # When network fails, calling get_chart_token will raise RuntimeError
-            with self.assertRaises(RuntimeError):
-                tve.get_chart_token(layout_id="ig0LuDL8", force_refresh=True)
-
-        # But daemon's fetch_layout_drawings or direct cache reads handle it gracefully
-        self.assertIn("drawings_by_symbol", cached_data)
-        self.assertIn("YBUSDT", cached_data["drawings_by_symbol"])
+        layout_id = "test-layout"
+        cached_drawings = {"YBUSDT": [{"p1": 1.2, "t1": 100, "p2": 1.0, "t2": 200}]}
+        with tempfile.TemporaryDirectory() as directory:
+            runs_dir = Path(directory)
+            cache_file = runs_dir / f"tradingview_drawings_{layout_id}.json"
+            cache_file.write_text(json.dumps({"drawings_by_symbol": cached_drawings}))
+            with patch.object(tad, "RUNS_DIR", runs_dir), patch.object(
+                tad, "_DRAWINGS_CACHE", {"data": None, "layout_id": None, "ts": 0}
+            ), patch.object(tve, "_request_with_retry", side_effect=AssertionError("unexpected request")) as request:
+                self.assertEqual(tad.fetch_layout_drawings(layout_id), cached_drawings)
+                request.assert_not_called()
 
     def test_binance_candle_close_confirmation(self):
         """Verify candle close confirmation guarantees close_time <= server_time."""
-        candle = tve.fetch_latest_closed_candle("YBUSDT", interval="15m", limit=5)
+        klines = [
+            [1795200000000, "1.0", "1.2", "0.9", "1.1", "100", 1795200899999, "100", 10],
+            [1795200900000, "1.1", "1.3", "1.0", "1.2", "100", 1795201799999, "100", 10],
+        ]
+        with patch.object(tve, "_request_with_retry", side_effect=[
+            b'{"serverTime": 1795201000000}', json.dumps(klines).encode()
+        ]):
+            candle = tve.fetch_latest_closed_candle("YBUSDT", interval="15m", limit=5)
+        self.assertEqual(candle["close"], 1.1)
         self.assertEqual(candle["symbol"], "YBUSDT")
         self.assertTrue(candle["is_closed"])
         self.assertGreater(candle["close"], 0)
@@ -766,6 +787,25 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
             self.assertEqual(alerts[0]["exit_price"], 7.60)
             self.assertEqual(len(self.pos_store.get_open_positions()), 0)
 
+    def test_failed_stop_loss_retries_and_keeps_live_position_open(self):
+        trendline = {"p1": 10.0, "t1": 0, "p2": 6.4, "t2": 100}
+        self.pos_store.add_position(
+            "TESTUSDT", 9.0, amount=1.0, trendline=trendline, source="BINANCE_SYNC"
+        )
+        candle = {"close_time": 50, "close": 7.6}
+        with patch.object(self.notifier, "send_alert", side_effect=[False, True]) as send:
+            with patch.object(tad, "get_binance_closed_15m_candle", return_value=candle):
+                self.assertEqual(tad.check_feature_3_stop_loss(self.notifier, self.pos_store), [])
+
+            store = tad.PositionStore(self.pos_path)
+            self.assertFalse(store.get_open_positions()[0]["stop_loss_notified"])
+            with patch.object(tad, "get_binance_closed_15m_candle", return_value=None):
+                self.assertEqual(len(tad.check_feature_3_stop_loss(self.notifier, store)), 1)
+                self.assertTrue(store.get_open_positions()[0]["stop_loss_notified"])
+                self.assertEqual(store.data["history"], [])
+                self.assertEqual(tad.check_feature_3_stop_loss(self.notifier, store), [])
+            self.assertEqual(send.call_count, 2)
+
     def test_no_stop_loss_when_holding_above_trendline(self):
         """Verify position remains OPEN when candle close holds above trendline."""
         trendline = {
@@ -850,6 +890,22 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
             self.assertEqual(len(self.pos_store.get_open_positions()), 0)
 
 
+    def test_failed_profit_lock_retries_after_price_rebounds(self):
+        self.pos_store.add_position("COINUSDT", 1.0, amount=1.0, source="BINANCE_SYNC")
+        with patch.object(self.notifier, "send_alert", side_effect=[False, True, False, True]) as send:
+            with patch.object(tad, "get_binance_ticker_price", side_effect=[1.07, 1.009, 1.03]):
+                self.assertEqual(tad.check_feature_4_trailing_stops(self.notifier, self.pos_store), [])
+                store = tad.PositionStore(self.pos_path)
+                events = tad.check_feature_4_trailing_stops(self.notifier, store)
+                self.assertEqual([event["type"] for event in events], ["TRAILING_ACTIVATED"])
+                store = tad.PositionStore(self.pos_path)
+                events = tad.check_feature_4_trailing_stops(self.notifier, store)
+                self.assertEqual([event["type"] for event in events], ["PROFIT_LOCK_EXIT"])
+            self.assertTrue(store.get_open_positions()[0]["profit_lock_notified"])
+            self.assertEqual(store.data["history"], [])
+            self.assertIn("$1.0090", send.call_args.args[1])
+
+
 class TestCLIOperations(unittest.TestCase):
     """7. CLI verification: --add-pos, --list-pos, --check-once, --close-pos"""
 
@@ -898,9 +954,11 @@ class TestCLIOperations(unittest.TestCase):
         self.assertEqual(closed["exit_price"], 0.058)
         self.assertEqual(len(store.get_open_positions()), 0)
 
-    def test_cli_check_once_cycle(self):
+    @patch.dict(os.environ, clear=True)
+    @patch.object(tad, "fetch_layout_drawings", return_value={})
+    def test_cli_check_once_cycle(self, _drawings):
         """Verify run_evaluation_cycle orchestration returns clean summary dict."""
-        cfg = tad.load_config(self.cfg_file)
+        cfg = tad.load_config(self.cfg_file, env_path=self.cfg_file.with_suffix(".env"))
         notifier = tad.ServerChanNotifier(dry_run=True)
         state_store = tad.ResonanceStateStore(self.state_file)
         pos_store = tad.PositionStore(self.pos_file)
@@ -914,6 +972,7 @@ class TestCLIOperations(unittest.TestCase):
         self.assertIn("active_resonance_count", res)
         self.assertIn("open_positions_count", res)
 
+    @patch.dict(os.environ, clear=True)
     def test_load_config_from_dotenv(self):
         """Test unified configuration loading from custom .env file."""
         test_env = Path(self.test_dir) / ".env.test"
@@ -927,7 +986,7 @@ class TestCLIOperations(unittest.TestCase):
             "TRAILING_LOCK_PCT=1.5\n",
             encoding="utf-8"
         )
-        loaded = tad.load_config(env_path=test_env)
+        loaded = tad.load_config(self.cfg_file, env_path=test_env)
         self.assertEqual(loaded.get("cmc_api_key"), "test_cmc_key_123")
         self.assertEqual(loaded.get("serverchan_sendkey"), "SCTtestkey999")
         self.assertEqual(loaded.get("binance_api_key"), "binance_key_abc")

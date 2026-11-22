@@ -95,10 +95,10 @@ class TestBinanceFuturesClient(unittest.TestCase):
             self.assertGreater(t_fallback, 1000000000000)
 
     def test_get_account_positions_unconfigured(self):
-        """Verify unconfigured client gracefully returns empty list without making HTTP requests."""
+        """Verify unconfigured client returns no snapshot without making HTTP requests."""
         client = bpc.BinanceFuturesClient(api_key="", api_secret="")
         positions = client.get_account_positions()
-        self.assertEqual(positions, [])
+        self.assertIsNone(positions)
 
     def test_get_active_long_positions_filtering(self):
         """Verify filtering extracts only positionAmt > 0 and cleans symbols."""
@@ -333,9 +333,27 @@ class TestCLIAndDaemonIntegration(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_run_evaluation_cycle_includes_binance_sync(self):
+    def test_failed_position_snapshot_does_not_archive_open_position(self):
+        store = tad.PositionStore(self.pos_file)
+        store.add_position("YBUSDT", 1.0, amount=1.0, source="BINANCE_SYNC")
+        client = bpc.BinanceFuturesClient("dummy_key", "dummy_secret")
+
+        with patch.object(client, "_send_signed_request", return_value=(None, {"code": "NETWORK_ERROR"})):
+            with patch.object(bpc.tve, "get_layout_drawings", return_value={}):
+                report = bpc.sync_binance_positions(client, store)
+
+        self.assertFalse(report["synced"])
+        reloaded = tad.PositionStore(self.pos_file)
+        self.assertEqual(len(reloaded.get_open_positions()), 1)
+        self.assertEqual(reloaded.data["history"], [])
+
+    @patch.dict(os.environ, clear=True)
+    @patch.object(tad, "fetch_layout_drawings", return_value={})
+    @patch.object(tad, "get_binance_ticker_price", return_value=0)
+    @patch.object(tad, "get_binance_closed_15m_candle", return_value=None)
+    def test_run_evaluation_cycle_includes_binance_sync(self, _candle, _ticker, _drawings):
         """Verify run_evaluation_cycle executes Binance sync when client is configured."""
-        cfg = tad.load_config(self.cfg_file)
+        cfg = tad.load_config(self.cfg_file, env_path=self.cfg_file.with_suffix(".env"))
         notifier = tad.ServerChanNotifier(dry_run=True)
         state_store = tad.ResonanceStateStore(self.state_file)
         pos_store = tad.PositionStore(self.pos_file)

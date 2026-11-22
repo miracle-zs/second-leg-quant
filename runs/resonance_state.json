@@ -1,11 +1,10 @@
 {
   "version": 1,
-  "last_updated": "2026-11-22 20:35:53",
+  "last_updated": "2026-11-22 23:30:10",
   "active_resonance_symbols": [
     "BLESSUSDT",
     "BULLAUSDT",
     "ELSAUSDT",
-    "JCTUSDT",
     "MMTUSDT",
     "RAREUSDT"
   ],
@@ -196,6 +195,17 @@
         "双核黄金共振"
       ],
       "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:BULLAUSDT.P&interval=15"
+    },
+    "COOKIEUSDT": {
+      "symbol": "COOKIEUSDT",
+      "first_detected": "2026-11-22 21:03:57",
+      "last_notified_at": "2026-11-22 21:03:57",
+      "last_notified_time": 1795352637,
+      "res_score": 1,
+      "zones": [
+        "贴水双核(空头浓厚)"
+      ],
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:COOKIEUSDT.P&interval=15"
     }
   },
   "notified_breakout_keys": [
