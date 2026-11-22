@@ -424,25 +424,29 @@ def scan_pool():
         zones = []
         if is_resonance:
             if is_neg_fr:
-                zones.append("双核共振+逼空")
+                zones.append("贴水双核(抛压警示)")
             else:
                 zones.append("双核黄金共振")
         else:
             if is_ema_bull: zones.append("1h顺势")
             if is_high_tr: zones.append("高换手")
-            if is_neg_fr: zones.append("负费率")
+            if is_neg_fr: zones.append("负费率贴水")
 
         c["is_neg_funding"] = is_neg_fr
         c["is_high_turnover"] = is_high_tr
         c["is_resonance"] = is_resonance
         c["zones"] = zones
         
-        # 评分机制：双核共振+负费率=3，双核黄金共振=2，单机会区=1，其他=0
-        if is_resonance and is_neg_fr:
-            res_score = 3
-        elif is_resonance:
+        # 评分机制 (用户风控准则：负费率大多伴随阴跌/现货抛压，极少真逼空，故取消逼空加分，负费率扣分降权)：
+        # 👑 双核黄金共振 (1h顺势 + 高换手 + 正常费率) = 2 (最高优先级)
+        # ⚠️ 贴水双核 (1h顺势 + 高换手 + 负费率贴水) = 1 (降权扣分，置于黄金共振之后)
+        # 单机会区 (无负费率) = 1
+        # 单纯负费率或其他 = 0
+        if is_resonance and not is_neg_fr:
             res_score = 2
-        elif is_neg_fr or is_high_tr or is_ema_bull:
+        elif is_resonance and is_neg_fr:
+            res_score = 1
+        elif (is_high_tr or is_ema_bull) and not is_neg_fr:
             res_score = 1
         else:
             res_score = 0
@@ -450,23 +454,32 @@ def scan_pool():
 
         # 动态更新 status 状态诊断
         overflow_tag = f" ★7d溢出跟踪(剩{c['overflow_days_left']:.1f}天)" if c.get("is_overflow_7d") else ""
-        if is_resonance and is_neg_fr:
-            c["status"] = f"🔥 双核共振+逼空加成：1h顺势+换手{c['turnover_ratio']:.1f}x+负费率{overflow_tag}"
-        elif is_resonance:
-            c["status"] = f"👑 双核黄金共振：1h顺势+换手{c['turnover_ratio']:.1f}x{overflow_tag}"
+        if is_resonance and not is_neg_fr:
+            c["status"] = f"👑 双核黄金共振：1h顺势+换手{c['turnover_ratio']:.1f}x (资金面健康){overflow_tag}"
+        elif is_resonance and is_neg_fr:
+            c["status"] = f"⚠️ 贴水双核：1h顺势+换手{c['turnover_ratio']:.1f}x+负费率{c['funding_rate_4h_pct']:+.4f}% (警惕抛压){overflow_tag}"
         elif is_ema_bull and is_neg_fr:
-            c["status"] = f"顺势负费率：1h金叉+逼空贴水{overflow_tag}"
+            c["status"] = f"顺势负费率：1h金叉但贴水{overflow_tag}"
         elif is_ema_bull:
             c["status"] = f"1h顺势多头{overflow_tag}"
         elif is_high_tr:
             c["status"] = f"巨量高换手 ({c['turnover_ratio']:.1f}x){overflow_tag}"
         elif is_neg_fr:
-            c["status"] = f"负费率逼空 (4h等效{c['funding_rate_4h_pct']:+.4f}%){overflow_tag}"
+            c["status"] = f"负费率贴水 (4h等效{c['funding_rate_4h_pct']:+.4f}%){overflow_tag}"
         else:
             c["status"] = f"常规收敛{overflow_tag}"
 
-    # 排序：优先按“双核共振得分 (3>2>1>0)”降序，同分按“换手倍率”降序、“4h资金费率”升序
-    verified_candidates.sort(key=lambda x: (-x["resonance_score"], -x["turnover_ratio"], x["funding_rate_4h_pct"]))
+    # 排序：
+    # 1. resonance_score 降序 (2 黄金双核 > 1 贴水双核/单区 > 0)
+    # 2. is_neg_funding 升序 (0 无负费率优先排前，1 负费率降权置底)
+    # 3. turnover_ratio 降序 (换手越高越优先)
+    # 4. funding_rate_4h_pct 降序 (健康正费率优先，深度负费率排在后)
+    verified_candidates.sort(key=lambda x: (
+        -x["resonance_score"],
+        1 if x.get("is_neg_funding") else 0,
+        -x["turnover_ratio"],
+        -x["funding_rate_4h_pct"]
+    ))
     
     # 防灾兜底：严禁在未拉取到任何数据时覆盖破坏历史数据文件
     if not verified_candidates:
@@ -482,9 +495,9 @@ def scan_pool():
         
     n_overflow = len([c for c in verified_candidates if c.get('is_overflow_7d')])
     print(f"\n✅ 官方权威校验完成！纯加密候选标的共 {len(verified_candidates)} 个 (含 {n_overflow} 个 7 天溢出跟踪标的):")
-    print(f"  • 🔥 三重共振标的: {len([c for c in verified_candidates if c['resonance_score'] == 3])} 个")
-    print(f"  • ⚡ 双重共振标的: {len([c for c in verified_candidates if c['resonance_score'] == 2])} 个")
-    print(f"  • 第一类 负费率逼空区 (< 0): {len([c for c in verified_candidates if c['is_neg_funding']])} 个")
+    print(f"  • 👑 双核黄金共振标的 (健康费率): {len([c for c in verified_candidates if c['resonance_score'] == 2])} 个")
+    print(f"  • ⚠️ 贴水双核标的 (负费率警示): {len([c for c in verified_candidates if c.get('is_resonance') and c.get('is_neg_funding')])} 个")
+    print(f"  • 第一类 负费率贴水区 (< 0): {len([c for c in verified_candidates if c['is_neg_funding']])} 个")
     print(f"  • 第二类 巨量高换手区 (≥ 1.5x): {len([c for c in verified_candidates if c['is_high_turnover']])} 个")
     print(f"  • 第三类 1h EMA5>EMA10 顺势区: {len([c for c in verified_candidates if c['is_ema_bull']])} 个")
     print(f"  • ★ 7天溢出跟踪标的 (曾<3000wu现突破): {n_overflow} 个")

@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "last_updated": "2026-11-22 10:55:35",
+  "last_updated": "2026-11-22 11:16:14",
   "active_resonance_symbols": [
     "BLESSUSDT",
+    "CYBERUSDT",
     "ELSAUSDT",
     "ENSOUSDT",
-    "JCTUSDT",
     "SKYAIUSDT"
   ],
   "history": {

@@ -781,12 +781,19 @@ def check_feature_1_resonance(
                 )
                 continue
 
-        if res_score == 3 or is_neg_fr:
-            res_tag = "🔥 三重共振 (双核共振 + 4h负费率逼空)"
-            res_badge = "🔥 三重共振"
+        if is_neg_fr:
+            res_tag = "⚠️ 贴水双核 (1h顺势+高换手，但负费率警惕现货抛压)"
+            res_badge = "⚠️ 贴水双核"
+            guidance_block = f"""> ⚠️ **风控严正警示 (警惕现货抛压/做空对冲)**:
+> 该标的 4h 资金费率为 `{coin.get('funding_rate_4h_pct', 0):+.4f}%` (贴水)。
+> 大多数负费率标的易遭遇现货抛压或阴跌，极少为真逼空！
+> 若绘制 15m 趋势线，**必须极度警惕假突破与诱多**，坚决以 15m 阳线实体收盘突破为准，开仓必须以趋势线严设止损！"""
         else:
-            res_tag = "👑 双核黄金共振 (1h顺势EMA + 高换手)"
-            res_badge = "👑 双核共振"
+            res_tag = "👑 双核黄金共振 (1h顺势EMA + 高换手，资金面健康)"
+            res_badge = "👑 黄金双核"
+            guidance_block = """> 🎯 **操作指引**:
+> 该标的资金面健康，已进入第二段量化严选共振区！请立即打开下方 TradingView 专属布局，在 15m 图表连接近期下行高点绘制对数趋势线。
+> 系统将持续监控该线，在 15m K 线收盘放量突破时发出买点②开多提醒。"""
 
         tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
 
@@ -802,9 +809,7 @@ def check_feature_1_resonance(
 - **触发时间**: {now_str}
 
 ---
-> 🎯 **操作指引**:
-> 该标的已进入第二段量化严选共振区！请立即打开下方 TradingView 专属布局，在 15m 图表连接近期下行高点绘制对数趋势线。
-> 系统将持续监控该线，在 15m K 线收盘放量突破时发出买点②开多提醒。
+{guidance_block}
 
 👉 **[点击立即前往 TradingView 专属画线图表]({tv_link})**
 """

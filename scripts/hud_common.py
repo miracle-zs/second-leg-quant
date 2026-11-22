@@ -290,9 +290,9 @@ def render_candidate_rows(candidates: list, row_class_name: str = "candidate-row
 
         resonance_badge = ""
         if is_res and is_neg_fr:
-            resonance_badge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">🔥 双核共振+逼空</span>'
+            resonance_badge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30" title="1h顺势+高换手，但4h负费率，警惕现货抛压">⚠️ 贴水双核(抛压警示)</span>'
         elif is_res:
-            resonance_badge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">👑 双核黄金共振</span>'
+            resonance_badge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30" title="1h顺势+高换手，资金面健康">👑 双核黄金共振</span>'
 
         zone_tags = []
         if is_ema_bull:
@@ -300,7 +300,7 @@ def render_candidate_rows(candidates: list, row_class_name: str = "candidate-row
         if is_high_tr:
             zone_tags.append(f'<span class="px-1 py-0.2 rounded text-[9px] bg-purple-950/60 text-purple-300 border border-purple-500/20">换手{tr:.1f}x</span>')
         if is_neg_fr:
-            zone_tags.append('<span class="px-1 py-0.2 rounded text-[9px] bg-rose-950/60 text-rose-300 border border-rose-500/20">负费率</span>')
+            zone_tags.append('<span class="px-1 py-0.2 rounded text-[9px] bg-rose-950/60 text-rose-300 border border-rose-500/20" title="合约贴水，警惕现货抛压">⚠️负费率贴水</span>')
 
         status_html = f"""<div class="flex items-center gap-1.5 flex-wrap">
       {resonance_badge}
@@ -536,7 +536,7 @@ def render_hud_script(
 
     const zoneNames = {{
       'resonance': '👑 顺势高换手共振区',
-      'neg_fr': '🔥 负费率逼空区',
+      'neg_fr': '⚠️ 负费率贴水区(警惕抛压)',
       'high_tr': '⚡ 巨量高换手区',
       'ema_bull': '📈 1h EMA顺势区',
       'all': '🌐 全量候选底池'
@@ -1466,7 +1466,7 @@ def render_index_body(candidates: list, stats: dict) -> str:
         </div>
         <div class="flex items-baseline justify-between gap-2">
           <div class="text-xl font-black font-mono text-white tabular-nums">{stats['n_resonance']} <span class="text-[11px] font-normal text-slate-400 font-sans">标的</span></div>
-          <div class="text-[10px] text-amber-400/90 font-mono truncate">含{stats['n_triple']}逼空加成</div>
+          <div class="text-[10px] text-amber-400/90 font-mono truncate">{stats['n_double']}纯黄金 / {stats['n_triple']}贴水</div>
         </div>
         <div class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate" title="{stats['sample_resonance']}">
           代表: {stats['sample_resonance']}
@@ -1475,12 +1475,12 @@ def render_index_body(candidates: list, stats: dict) -> str:
 
       <div data-zone="neg_fr" class="kpi-card card-neg-fr px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-rose-500/40 flex flex-col justify-between space-y-1">
         <div class="flex items-center justify-between gap-1">
-          <span class="font-semibold text-rose-400 text-xs truncate">🔥 负费率逼空区</span>
+          <span class="font-semibold text-rose-400 text-xs truncate">⚠️ 负费率贴水区</span>
           <span class="px-1.5 py-0.2 rounded text-[9px] font-mono text-rose-300/80 bg-rose-500/10 border border-rose-500/20 shrink-0">4h&lt;0</span>
         </div>
         <div class="flex items-baseline justify-between gap-2">
           <div class="text-xl font-black font-mono text-white tabular-nums">{stats['n_neg_fr']} <span class="text-[11px] font-normal text-slate-400 font-sans">标的</span></div>
-          <div class="text-[10px] text-rose-400/90 font-mono truncate">空头贴水倒挂</div>
+          <div class="text-[10px] text-rose-400/90 font-mono truncate">警惕现货抛压</div>
         </div>
         <div class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate" title="{stats['sample_neg_fr']}">
           贴水深: {stats['sample_neg_fr']}
@@ -1684,14 +1684,14 @@ def render_playbook_body(candidates: list, stats: dict) -> str:
           </div>
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl font-black font-mono text-white tabular-nums">{stats['n_resonance']} <span class="text-[11px] font-normal text-slate-400">标的</span></div>
-            <div class="text-[10px] text-amber-400/90 font-mono truncate">含{stats['n_triple']}逼空</div>
+            <div class="text-[10px] text-amber-400/90 font-mono truncate">{stats['n_double']}纯黄金 / {stats['n_triple']}贴水</div>
           </div>
           <div class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">{stats['sample_resonance']}</div>
         </div>
 
         <div data-zone="neg_fr" class="kpi-card card-neg-fr px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-rose-500/40 flex flex-col justify-between space-y-1">
           <div class="flex items-center justify-between gap-1">
-            <span class="font-semibold text-rose-400 text-xs truncate">🔥 负费率逼空区</span>
+            <span class="font-semibold text-rose-400 text-xs truncate">⚠️ 负费率贴水区</span>
             <span class="text-[9px] font-mono text-rose-300/80 shrink-0">&lt;0</span>
           </div>
           <div class="text-xl font-black font-mono text-white tabular-nums">{stats['n_neg_fr']} <span class="text-[11px] font-normal text-slate-400">标的</span></div>
