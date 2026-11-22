@@ -1274,7 +1274,9 @@ def run_evaluation_cycle(
             cfg.get("binance_api_secret", "")
         )
         if b_client.is_configured():
-            binance_sync_info = bpc.sync_binance_positions(b_client, pos_store, layout_id)
+            binance_sync_info = bpc.sync_binance_positions(
+                b_client, pos_store, layout_id, load_drawings=fetch_layout_drawings
+            )
 
     # 1. Feature 1: 新共振标的检测
     res_alerts = check_feature_1_resonance(notifier, state_store, pool_file, layout_id)
@@ -1367,7 +1369,8 @@ class TradeAlertDaemon:
                         bpc.sync_binance_positions(
                             self.binance_client,
                             self.pos_store,
-                            self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
+                            self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID),
+                            load_drawings=fetch_layout_drawings,
                         )
                     except Exception as e:
                         logger.debug(f"后台自动同步币安持仓异常: {e}")
@@ -1478,7 +1481,10 @@ def main():
             return
 
         store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
-        res = bpc.sync_binance_positions(b_client, store, cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID))
+        res = bpc.sync_binance_positions(
+            b_client, store, cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID),
+            load_drawings=fetch_layout_drawings,
+        )
         print("\n========================= 币安实盘持仓同步结果 =========================")
         print(f"• 同步状态: {'成功' if res['synced'] else '失败'} ({res['reason']})")
         count_label = "币安多头持仓数" if res["synced"] else "保留的本地持仓数"

@@ -25,7 +25,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Callable, Dict, List, Optional, Any, Tuple
 
 # 路径基准
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -266,7 +266,9 @@ class BinanceFuturesClient:
 def sync_binance_positions(
     client: BinanceFuturesClient,
     pos_store: Any,
-    layout_id: str = "ig0LuDL8"
+    layout_id: str = "ig0LuDL8",
+    *,
+    load_drawings: Optional[Callable[[str], dict[str, list[dict]]]] = None,
 ) -> dict:
     """
     自动双向同步币安实盘持仓到本地 PositionStore:
@@ -295,19 +297,21 @@ def sync_binance_positions(
         }
     binance_symbols = {p["symbol"]: p for p in active_longs}
 
-    # 获取当前 TV 云端画线用于自动挂载对数趋势线
+    current_open_positions = {p["symbol"]: p for p in pos_store.get_open_positions()}
+
+    # 只有新仓需要匹配画线。同一批新仓共用一份布局。
     drawings_map = {}
-    if tve and hasattr(tve, "get_layout_drawings"):
-        try:
-            drawings_map = tve.get_layout_drawings(layout_id)
-        except Exception as e:
-            logger.debug(f"同步拉取 TV 画线异常: {e}")
+    if binance_symbols.keys() - current_open_positions.keys():
+        if load_drawings is None and tve is not None:
+            load_drawings = tve.get_layout_drawings
+        if load_drawings is not None:
+            try:
+                drawings_map = load_drawings(layout_id)
+            except (RuntimeError, TimeoutError, urllib.error.URLError) as e:
+                logger.warning(f"同步拉取 TV 画线失败: {e}")
 
     new_added = []
     auto_closed = []
-
-    # 1. 遍历币安当前持仓 -> 写入或刷新本地持仓
-    current_open_positions = {p["symbol"]: p for p in pos_store.get_open_positions()}
 
     for sym, b_pos in binance_symbols.items():
         if sym not in current_open_positions:

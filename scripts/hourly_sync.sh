@@ -8,8 +8,8 @@
 
 set -u
 
-PROJECT_DIR="/Users/zhangshuai/PycharmProjects/ai选币"
-PYTHON_BIN="/opt/homebrew/bin/python3"
+PROJECT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 LOG_FILE="$PROJECT_DIR/runs/cron_sync.log"
 LOCK_DIR="$PROJECT_DIR/runs/.hourly_sync.lock"
 LAST_OK_FILE="$PROJECT_DIR/runs/.last_sync_ok_ts"
@@ -52,7 +52,7 @@ echo "=======================================================" >> "$LOG_FILE"
 echo "⏰ [$(date '+%Y-%m-%d %H:%M:%S')] 启动每小时自动化同步任务 (PID: $$)" >> "$LOG_FILE"
 echo "=======================================================" >> "$LOG_FILE"
 
-"$PYTHON_BIN" scripts/sync_all.py >> "$LOG_FILE" 2>&1
+"$PYTHON_BIN" scripts/sync_all.py --refresh-only >> "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 0 ]; then

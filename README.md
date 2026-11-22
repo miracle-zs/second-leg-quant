@@ -73,6 +73,10 @@ cp .env.example .env
 # 一键全量同步（扫描候选池 + 编译双端 HTML + 执行单次风控评测）
 python3 scripts/sync_all.py
 
+# 服务器定时任务：只刷新数据和看板，风控由常驻守护进程执行
+bash scripts/hourly_sync.sh
+# 可用 PYTHON_BIN 指定 Python 解释器路径
+
 # 启动交易预警与风控守护后台进程 (10s 移动锁利巡检 + 15m 突破/止损确认)
 python3 scripts/trade_alert_daemon.py --daemon
 

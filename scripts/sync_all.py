@@ -10,6 +10,7 @@
 6. 执行交易风控与四重预警评测 (新共振/突破/止损/移动锁利)
 """
 
+import argparse
 import sys
 import subprocess
 import time
@@ -37,22 +38,30 @@ def run_step(desc: str, cmd: list) -> bool:
         return False
 
 def main():
+    parser = argparse.ArgumentParser(description="刷新候选池、账户报表与看板")
+    parser.add_argument("--refresh-only", action="store_true", help="跳过风控评测和预警推送")
+    args = parser.parse_args()
+
     print("=======================================================")
-    print("🚀 启动“突破追多与移动保本系统”全量同步流水线")
+    print("🚀 启动“突破追多与移动保本系统”同步流水线")
     print("=======================================================\n")
 
     steps = [
-        ("1/6 扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与三大机会区)", [sys.executable, "scripts/scan_second_leg_pool.py"]),
-        ("2/6 重构并编译总控制台首页 (index.html)", [sys.executable, "scripts/build_index.py"]),
-        ("3/6 编译突破追多与移动保本战法手册 (strategy_second_leg_playbook.html)", [sys.executable, "scripts/build_second_leg_playbook.py"]),
-        ("4/6 更新账户数据分析引擎与量化风控指标 (runs/account_analytics.json)", [sys.executable, "scripts/account_analytics_engine.py"]),
-        ("5/6 编译生成账户数据分析看板 (account.html)", [sys.executable, "scripts/build_account_analytics.py"]),
-        ("6/6 执行交易风控与四重预警评测 (新共振/突破/止损)", [sys.executable, "scripts/trade_alert_daemon.py", "--check-once"]),
+        ("扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与三大机会区)", [sys.executable, "scripts/scan_second_leg_pool.py"]),
+        ("重构并编译总控制台首页 (index.html)", [sys.executable, "scripts/build_index.py"]),
+        ("编译突破追多与移动保本战法手册 (strategy_second_leg_playbook.html)", [sys.executable, "scripts/build_second_leg_playbook.py"]),
+        ("更新账户数据分析引擎与量化风控指标 (runs/account_analytics.json)", [sys.executable, "scripts/account_analytics_engine.py"]),
+        ("编译生成账户数据分析看板 (account.html)", [sys.executable, "scripts/build_account_analytics.py"]),
     ]
+    if not args.refresh_only:
+        steps.append((
+            "执行交易风控与四重预警评测",
+            [sys.executable, "scripts/trade_alert_daemon.py", "--check-once"],
+        ))
 
     all_ok = True
-    for desc, cmd in steps:
-        ok = run_step(desc, cmd)
+    for index, (desc, cmd) in enumerate(steps, start=1):
+        ok = run_step(f"{index}/{len(steps)} {desc}", cmd)
         if not ok:
             all_ok = False
 

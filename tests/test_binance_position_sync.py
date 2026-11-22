@@ -207,23 +207,30 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
         mock_drawings = {"YBUSDT": [mock_trendline]}
 
         with patch.object(self.client, "get_active_long_positions", return_value=mock_active_longs):
-            with patch("tv_trendline_engine.get_layout_drawings", return_value=mock_drawings):
-                res = bpc.sync_binance_positions(self.client, self.pos_store, layout_id="ig0LuDL8")
+            load_drawings = MagicMock(return_value=mock_drawings)
+            res = bpc.sync_binance_positions(
+                self.client, self.pos_store, layout_id="ig0LuDL8", load_drawings=load_drawings
+            )
+            load_drawings.assert_called_once_with("ig0LuDL8")
+            bpc.sync_binance_positions(
+                self.client, self.pos_store, layout_id="ig0LuDL8", load_drawings=load_drawings
+            )
+            load_drawings.assert_called_once()
 
-                self.assertTrue(res["synced"])
-                self.assertIn("YBUSDT", res["new_added"])
-                self.assertEqual(res["active_count"], 1)
+            self.assertTrue(res["synced"])
+            self.assertIn("YBUSDT", res["new_added"])
+            self.assertEqual(res["active_count"], 1)
 
-                # Verify PositionStore state
-                open_positions = self.pos_store.get_open_positions()
-                self.assertEqual(len(open_positions), 1)
-                pos = open_positions[0]
-                self.assertEqual(pos["symbol"], "YBUSDT")
-                self.assertEqual(pos["entry_price"], 0.0515)
-                self.assertEqual(pos["amount"], 2500.0)
-                self.assertEqual(pos["source"], "BINANCE_SYNC")
-                self.assertEqual(pos["leverage"], 10)
-                self.assertEqual(pos["trendline"]["id"], "SFzHy9")
+            # Verify PositionStore state
+            open_positions = self.pos_store.get_open_positions()
+            self.assertEqual(len(open_positions), 1)
+            pos = open_positions[0]
+            self.assertEqual(pos["symbol"], "YBUSDT")
+            self.assertEqual(pos["entry_price"], 0.0515)
+            self.assertEqual(pos["amount"], 2500.0)
+            self.assertEqual(pos["source"], "BINANCE_SYNC")
+            self.assertEqual(pos["leverage"], 10)
+            self.assertEqual(pos["trendline"]["id"], "SFzHy9")
 
     def test_auto_update_on_scale_in(self):
         """
@@ -249,8 +256,9 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
         ]
 
         with patch.object(self.client, "get_active_long_positions", return_value=scaled_in_longs):
-            with patch("tv_trendline_engine.get_layout_drawings", return_value={}):
+            with patch("tv_trendline_engine.get_layout_drawings", return_value={}) as load_drawings:
                 res = bpc.sync_binance_positions(self.client, self.pos_store)
+                load_drawings.assert_not_called()
                 self.assertTrue(res["synced"])
                 self.assertEqual(len(res["new_added"]), 0)
 
@@ -274,8 +282,9 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
         empty_longs = []
 
         with patch.object(self.client, "get_active_long_positions", return_value=empty_longs):
-            with patch("tv_trendline_engine.get_layout_drawings", return_value={}):
+            with patch("tv_trendline_engine.get_layout_drawings", return_value={}) as load_drawings:
                 res = bpc.sync_binance_positions(self.client, self.pos_store)
+                load_drawings.assert_not_called()
                 self.assertTrue(res["synced"])
                 self.assertIn("YBUSDT", res["auto_closed"])
 
@@ -297,8 +306,9 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
 
         empty_longs = []
         with patch.object(self.client, "get_active_long_positions", return_value=empty_longs):
-            with patch("tv_trendline_engine.get_layout_drawings", return_value={}):
+            with patch("tv_trendline_engine.get_layout_drawings", return_value={}) as load_drawings:
                 res = bpc.sync_binance_positions(self.client, self.pos_store)
+                load_drawings.assert_not_called()
                 self.assertEqual(len(res["auto_closed"]), 0)
                 self.assertEqual(len(self.pos_store.get_open_positions()), 1)
                 self.assertEqual(self.pos_store.get_open_positions()[0]["symbol"], "MANUALUSDT")
