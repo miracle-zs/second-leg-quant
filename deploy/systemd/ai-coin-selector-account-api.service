@@ -1,0 +1,14 @@
+[Unit]
+Description=AI Coin Selector dashboard API
+ConditionPathExists=/opt/ai-coin-selector/runs/account.sqlite3
+
+[Service]
+User=ai-coin-selector
+WorkingDirectory=/opt/ai-coin-selector
+ExecStart=/usr/bin/python3 scripts/account_dashboard_api.py --database runs/account.sqlite3 --port 18083
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

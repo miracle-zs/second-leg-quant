@@ -27,3 +27,14 @@ runs/.hourly_sync.lock
 
 # Scratch & temporary inspection crops
 scratch/inspection_crops/
+
+# Generated dashboards and market snapshots
+/index.html
+/account.html
+/reports/strategy_second_leg_playbook.html
+/runs/resonance_state.json
+/runs/second_leg_candidates_pool.json
+/runs/sub_30m_history.json
+/runs/tradingview_drawings_*.json
+/runs/*.sqlite3
+/runs/*.sqlite3-*

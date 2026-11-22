@@ -1286,7 +1286,6 @@ def render_hud_script(
                       ? "text-purple-400 font-semibold bg-purple-500/5 px-1 py-0.5 rounded border border-purple-500/15"
                       : (trVal >= 0.8 ? "text-slate-300" : "text-slate-500"));
                   elements.rowEl.setAttribute('data-val-tr', trVal);
-                  elements.rowEl.setAttribute('data-high-tr', trVal >= 1.5 ? '1' : '0');
                 }}
                 elements.rowEl.setAttribute('data-val-mc', currentMcap);
               }}
@@ -1313,11 +1312,6 @@ def render_hud_script(
             }}
             if (elements.rowEl && !isNaN(fr4hVal)) {{
               elements.rowEl.setAttribute('data-val-fr', fr4hVal);
-              const isNeg = fr4hVal < -0.00005;
-              elements.rowEl.setAttribute('data-neg-fr', isNeg ? '1' : '0');
-              const isHighTr = elements.rowEl.getAttribute('data-high-tr') === '1';
-              const isEmaBull = elements.rowEl.getAttribute('data-ema-bull') === '1';
-              elements.rowEl.setAttribute('data-resonance', (isEmaBull && isHighTr) ? '1' : '0');
             }}
           }}
         }});
@@ -1628,7 +1622,7 @@ def render_index_body(candidates: list, stats: dict) -> str:
         </div>
         <div class="p-2.5 bg-slate-950/60 rounded-lg border border-slate-800 space-y-0.5">
           <span class="text-amber-400 font-bold block">4. 止损与锁利 (币安持仓自动风控)</span>
-          <span class="text-slate-400 block">15m 收盘跌回趋势线下方无条件清仓止损；涨幅 ≥ +6% 自动提升止损至 +1% 保本锁利，盈利随时可手动止盈。</span>
+          <span class="text-slate-400 block">15m 收盘跌回趋势线下方无条件清仓止损；涨幅 ≥ +6% 后记录 +1% 锁利提醒线，触及时发送通知。</span>
         </div>
       </div>
     </div>
@@ -1782,33 +1776,13 @@ def render_index_body(candidates: list, stats: dict) -> str:
 
 
 def render_playbook_body(candidates: list, stats: dict) -> str:
-    rows_html = render_candidate_rows(candidates, row_class_name="playbook-row")
-    script_html = render_hud_script(
-        candidates,
-        row_class_name="playbook-row",
-        sync_btn_id="btn-manual-sync-playbook",
-        count_badge_id="playbook-count-badge",
-        active_zone_pill_id="playbook-active-zone-pill",
-        search_input_id="symbol-search-playbook",
-        reset_btn_id="btn-reset-playbook",
-        table_body_id="playbook-table-body",
-        batch_copy_btn_id="btn-batch-copy-playbook",
-        batch_export_btn_id="btn-batch-export-playbook",
-        settle_countdown_id="settle-countdown-pb",
-    )
-
     playbook_header = render_global_header(
         current_page="playbook",
         title="突破追多与移动保本战法手册",
         title_badge="v3.5 Pro",
         badges_html='<span class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">CMC Pro &lt;$30M</span><span class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-purple-500/10 text-purple-400 border border-purple-500/20">4 步战法 + 移动锁利风控</span>',
-        extra_actions_html="""<button id="btn-manual-sync-playbook" type="button" class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 transition-all flex items-center gap-1 focus-visible:outline-2 focus-visible:outline-sky-400" title="立即手动刷新全池价格与资金费率">
-          <span aria-hidden="true">🔄</span>
-          <span class="hidden sm:inline">刷新</span>
-        </button>""",
-        settle_countdown_id="settle-countdown-pb",
-        sync_badge_text="5s 同步",
-        sync_badge_id="sync-status-badge",
+        settle_countdown_id="",
+        sync_badge_text="",
     )
 
     return f"""<body class="p-2 md:p-3.5 antialiased custom-scrollbar">
@@ -1829,117 +1803,6 @@ def render_playbook_body(candidates: list, stats: dict) -> str:
       <div class="px-3 py-2 bg-emerald-950/15 border border-emerald-500/40 rounded-xl">
         <span class="font-bold text-emerald-400">3. 突破追多：</span>
         <span class="text-slate-300">1h EMA顺势 + 巨量高换手共振，15m突破下降趋势线开多，极窄止损博弈翻倍主升。</span>
-      </div>
-    </div>
-
-    <!-- Step 1: Candidate Pool & Opportunity Zones -->
-    <div class="bg-slate-900 border border-slate-800 rounded-xl p-2.5 md:p-3 shadow-sm space-y-2">
-      <!-- Compact 5 KPI Cards -->
-      <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2 text-xs">
-        <div data-zone="resonance" class="kpi-card card-resonance active px-3 py-2 rounded-xl bg-slate-950/60 border border-amber-500/40 flex flex-col justify-between space-y-1">
-          <div class="flex items-center justify-between gap-1">
-            <span class="font-bold text-amber-300 text-xs truncate">👑 顺势高换手共振区</span>
-            <span class="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 shrink-0">破线开多</span>
-          </div>
-          <div class="flex items-baseline justify-between gap-2">
-            <div class="text-xl font-black font-mono text-white tabular-nums">{stats['n_resonance']} <span class="text-[11px] font-normal text-slate-400">标的</span></div>
-            <div class="text-[10px] text-amber-400/90 font-mono truncate">{stats['n_double']}纯黄金 / {stats['n_triple']}贴水</div>
-          </div>
-          <div class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">{stats['sample_resonance']}</div>
-        </div>
-
-        <div data-zone="neg_fr" class="kpi-card card-neg-fr px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-rose-500/40 flex flex-col justify-between space-y-1">
-          <div class="flex items-center justify-between gap-1">
-            <span class="font-semibold text-rose-400 text-xs truncate">⚠️ 负费率贴水区</span>
-            <span class="text-[9px] font-mono text-rose-300/80 shrink-0">&lt;0</span>
-          </div>
-          <div class="text-xl font-black font-mono text-white tabular-nums">{stats['n_neg_fr']} <span class="text-[11px] font-normal text-slate-400">标的</span></div>
-          <div class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">{stats['sample_neg_fr']}</div>
-        </div>
-
-        <div data-zone="high_tr" class="kpi-card card-high-tr px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-purple-500/40 flex flex-col justify-between space-y-1">
-          <div class="flex items-center justify-between gap-1">
-            <span class="font-semibold text-purple-400 text-xs truncate">⚡ 巨量高换手区</span>
-            <span class="text-[9px] font-mono text-purple-300/80 shrink-0">&ge;1.5x</span>
-          </div>
-          <div class="text-xl font-black font-mono text-white tabular-nums">{stats['n_high_tr']} <span class="text-[11px] font-normal text-slate-400">标的</span></div>
-          <div class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">{stats['sample_high_tr']}</div>
-        </div>
-
-        <div data-zone="ema_bull" class="kpi-card card-ema-bull px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-emerald-500/40 flex flex-col justify-between space-y-1">
-          <div class="flex items-center justify-between gap-1">
-            <span class="font-semibold text-emerald-400 text-xs truncate">📈 1h EMA顺势区</span>
-            <span class="text-[9px] font-mono text-emerald-300/80 shrink-0">5&gt;10</span>
-          </div>
-          <div class="text-xl font-black font-mono text-white tabular-nums">{stats['n_ema_bull']} <span class="text-[11px] font-normal text-slate-400">标的</span></div>
-          <div class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">{stats['sample_ema_bull']}</div>
-        </div>
-
-        <div data-zone="all" class="kpi-card card-all px-3 py-2 rounded-xl bg-slate-950/60 border border-slate-800 hover:border-sky-500/40 flex flex-col justify-between space-y-1 col-span-2 md:col-span-1">
-          <div class="flex items-center justify-between gap-1">
-            <span class="font-semibold text-sky-400 text-xs truncate">🌐 全量底池</span>
-            <span class="text-[9px] font-mono text-sky-300/80 shrink-0">&lt;3000w</span>
-          </div>
-          <div class="flex items-baseline justify-between gap-2">
-            <div class="text-xl font-black font-mono text-white tabular-nums">{stats['n_total']} <span class="text-[11px] font-normal text-slate-400">标的</span></div>
-            <div class="text-[10px] text-sky-400/90 font-mono truncate">含{stats['n_overflow']}溢出</div>
-          </div>
-          <div class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">&lt;3000wu 底池 + 7d 溢出跟踪</div>
-        </div>
-      </div>
-
-{EXECUTION_DISCIPLINE_RIBBON_HTML}
-
-      <!-- Quick Search & TV Watchlist Controls -->
-      <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2 bg-slate-950/70 px-2.5 py-1.5 rounded-xl border border-slate-800">
-        <div class="flex items-center gap-1.5 flex-wrap">
-          <div id="playbook-active-zone-pill" class="text-xs font-bold text-amber-300 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/20">
-            当前筛选: 👑 顺势高换手共振区
-          </div>
-          <span id="playbook-count-badge" class="text-xs font-mono px-2 py-0.5 rounded-md bg-slate-900 text-slate-300 border border-slate-800">
-            {stats['n_resonance']} / {stats['n_total']} 标的
-          </span>
-
-          <div class="flex items-center gap-1.5 border-l border-slate-800 pl-2">
-            <div class="relative group">
-              <button id="btn-batch-copy-playbook" type="button" class="px-2 py-0.5 text-xs font-semibold rounded-md bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 transition-all flex items-center gap-1 shadow-sm">
-                <span>📋 复制 TV 自选</span>
-              </button>
-              <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-30 w-56 p-2 bg-slate-800 text-[11px] text-slate-200 rounded-lg shadow-xl border border-slate-700 pointer-events-none text-center">
-                💡 复制后在 TradingView 自选列表直接按 Ctrl+V (或 Cmd+V) 即可批量添加！
-              </div>
-            </div>
-            <div class="relative group">
-              <button id="btn-batch-export-playbook" type="button" class="px-2 py-0.5 text-xs font-semibold rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all flex items-center gap-1">
-                <span>💾 导出 .txt</span>
-              </button>
-              <div class="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 hidden group-hover:block z-30 w-60 p-2 bg-slate-800 text-[11px] text-slate-200 rounded-lg shadow-xl border border-slate-700 pointer-events-none text-center">
-                💡 在 TradingView 自选列表右上角点击「...」菜单 → 选择「导入列表」导入此 .txt 文件！
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-1.5">
-          <div class="relative shrink-0 w-full sm:w-56">
-            <input id="symbol-search-playbook" type="search" placeholder="搜代号 [/] (如 PIPPIN, ZKC)..." class="w-full px-2.5 py-1 text-xs bg-slate-900 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500">
-            <span class="absolute right-2 top-1.5 text-xs text-slate-500 pointer-events-none">🔍</span>
-          </div>
-          <button id="btn-reset-playbook" type="button" class="px-2.5 py-1 text-xs text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-all shrink-0">
-            重置
-          </button>
-        </div>
-      </div>
-
-      <!-- Live Candidates Table -->
-      <div tabindex="0" role="region" aria-label="第二段候选池实时数据表" class="overflow-x-auto max-h-[calc(100vh-280px)] min-h-[380px] rounded-xl border border-slate-800 focus-visible:outline-2 focus-visible:outline-sky-400 custom-scrollbar">
-        <table class="w-full text-left text-xs font-mono relative">
-          <caption class="sr-only">突破追多与移动保本候选池标的列表</caption>
-{TABLE_THEAD_HTML}
-          <tbody id="playbook-table-body" class="divide-y divide-slate-800/60 text-slate-300">
-{EMPTY_SEARCH_ROW_HTML}{rows_html}
-          </tbody>
-        </table>
       </div>
     </div>
 
@@ -1966,7 +1829,7 @@ def render_playbook_body(candidates: list, stats: dict) -> str:
               <span class="text-slate-400 font-mono text-[10px]">TV 布局 ig0LuDL8</span>
             </div>
             <p class="text-slate-400 mt-0.5 text-[11px]">
-              点击直达 TV 专属云端图表，开启对数坐标 (Alt+L)，在 15m 周期连接回踩高点绘制下降趋势线。云端守护进程自动秒级感知并提取对数几何坐标。
+              点击直达 TV 专属云端图表，开启对数坐标 (Alt+L)，在 15m 周期连接回踩高点绘制下降趋势线。守护进程在收盘检查或新持仓匹配时读取画线。
             </p>
           </div>
           <div class="p-2 bg-slate-950/60 rounded-lg border border-slate-800/80">
@@ -1984,7 +1847,7 @@ def render_playbook_body(candidates: list, stats: dict) -> str:
               <span class="text-amber-300 font-mono text-[10px]">破线止损 · +6%保本锁利</span>
             </div>
             <p class="text-slate-400 mt-0.5 text-[11px]">
-              入场后若 15m 收盘跌回趋势线下方无条件清仓止损；当浮盈突破 ≥ +6% 后，自动将止损线拉升至开仓价 +1% 保本锁利，盈利随时可自由止盈。
+              入场后若 15m 收盘跌回趋势线下方无条件清仓止损；当浮盈达到 +6% 后，系统记录开仓价 +1% 的锁利提醒线，触及时发送通知。
             </p>
           </div>
         </div>
@@ -2022,7 +1885,7 @@ def render_playbook_body(candidates: list, stats: dict) -> str:
               <span class="text-emerald-300 font-mono">止损提至 +1.0%</span>
             </div>
             <p class="text-slate-400 text-[11px] leading-relaxed">
-              当标的涨幅相比开仓均价拉开 ≥ +6% 安全垫时，系统自动锁定保本止损线至 +1%，确保该笔交易绝不会转盈为亏，从容博弈第二段翻倍主升。
+              当标的涨幅相比开仓均价拉开 ≥ +6% 安全垫时，系统记录 +1% 锁利提醒线，价格触及时发送离场通知。
             </p>
           </div>
         </div>
@@ -2031,9 +1894,6 @@ def render_playbook_body(candidates: list, stats: dict) -> str:
 
   </div>
 
-{CHART_MODAL_AND_TOAST_HTML}
-
-{script_html}
 </body>
 </html>
 """

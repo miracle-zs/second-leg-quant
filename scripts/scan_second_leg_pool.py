@@ -485,6 +485,27 @@ def scan_pool():
     if not verified_candidates:
         raise RuntimeError("❌ 致命异常：未拉取到任何有效候选标的，拒绝写入 runs/ 以防清空历史数据！")
 
+    database = os.environ.get("COIN_DATABASE")
+    if database:
+        import sqlite3
+        from contextlib import closing
+
+        payload = json.dumps(verified_candidates, ensure_ascii=False, allow_nan=False)
+        with closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS candidate_snapshot (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    updated_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                )
+            """)
+            connection.execute("""
+                INSERT INTO candidate_snapshot (id, updated_at, payload)
+                VALUES (1, datetime('now'), ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    updated_at = excluded.updated_at, payload = excluded.payload
+            """, (payload,))
+
     out_file = ROOT / "runs" / "second_leg_candidates_pool.json"
     out_file.parent.mkdir(parents=True, exist_ok=True)
     with open(out_file, "w", encoding="utf-8") as f:

@@ -49,9 +49,12 @@ def main():
 
     steps = [
         ("扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与三大机会区)", [sys.executable, "scripts/scan_second_leg_pool.py"]),
-        ("重构并编译总控制台首页 (index.html)", [sys.executable, "scripts/build_index.py"]),
-        ("编译突破追多与移动保本战法手册 (strategy_second_leg_playbook.html)", [sys.executable, "scripts/build_second_leg_playbook.py"]),
     ]
+    if args.account_database is None:
+        steps.extend([
+            ("重构并编译总控制台首页 (index.html)", [sys.executable, "scripts/build_index.py"]),
+            ("编译突破追多与移动保本战法手册", [sys.executable, "scripts/build_second_leg_playbook.py"]),
+        ])
     account_command = [sys.executable, "scripts/account_analytics_engine.py"]
     if args.account_database is not None:
         account_command.extend(["--database", str(args.account_database)])

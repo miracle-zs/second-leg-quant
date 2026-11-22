@@ -1,0 +1,13 @@
+[Unit]
+Description=AI Coin Selector data refresh
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/opt/ai-coin-selector/.env
+
+[Service]
+Type=oneshot
+User=ai-coin-selector
+WorkingDirectory=/opt/ai-coin-selector
+Environment=COIN_DATABASE=/opt/ai-coin-selector/runs/account.sqlite3
+ExecStart=/usr/bin/python3 scripts/sync_all.py --refresh-only --account-database runs/account.sqlite3
+UMask=0027

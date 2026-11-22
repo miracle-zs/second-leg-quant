@@ -444,6 +444,68 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         self.assertIn(coverage["coverage_start"], dashboard)
         self.assertIn(coverage["coverage_end"], dashboard)
 
+    def test_database_with_candidates_initializes_account_recording(self):
+        import sqlite3
+        client = bpc.BinanceFuturesClient("test", "test")
+        engine = aae.AccountAnalyticsEngine(client=client)
+        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "account.sqlite3"
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE candidate_snapshot (id INTEGER PRIMARY KEY, updated_at TEXT, payload TEXT)")
+            with patch.object(engine, "fetch_binance_data", return_value=(
+                {"totalWalletBalance": "1000", "totalMarginBalance": "1000"}, [], [], status
+            )), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
+                client, "_send_signed_request", return_value=([], None)
+            ):
+                report = engine.run(database=database)
+            self.assertEqual(report["recording"]["initial_equity"], 1000)
+            self.assertGreater(report["recording"]["start_ms"], 0)
+
+    def test_recording_sync_persists_and_deduplicates_exchange_events(self):
+        from account_dashboard_api import publish_report
+        client = bpc.BinanceFuturesClient("test", "test")
+        engine = aae.AccountAnalyticsEngine(client=client)
+        start = 1795200000000
+        previous = {
+            "recording": {"start_ms": start, "started_at": "2026-11-21 00:00:00", "initial_equity": 1000},
+            "equity_curve": [{"timestamp": start, "equity": 1000, "drawdown_usd": 0, "drawdown_pct": 0}],
+        }
+        income = [
+            {"incomeType": "TRANSFER", "tranId": 1, "time": start + 1, "income": "100", "asset": "USDT", "symbol": ""},
+            {"incomeType": "REALIZED_PNL", "tranId": 2, "tradeId": "5", "time": start + 2, "income": "10", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "COMMISSION", "tranId": 3, "tradeId": "5", "time": start + 2, "income": "-0.2", "asset": "USDT", "symbol": "BTCUSDT"},
+        ]
+        fill = {"symbol": "BTCUSDT", "id": 5, "time": start + 2, "positionSide": "LONG", "price": "110", "qty": "1", "quoteQty": "110"}
+        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "account.sqlite3"
+            publish_report(database, previous)
+            with patch.object(engine, "fetch_binance_data", return_value=(
+                {"totalWalletBalance": "1110", "totalMarginBalance": "1110"}, income, [], status
+            )), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
+                client, "_send_signed_request", side_effect=lambda endpoint, params: (
+                    income if endpoint == "/fapi/v1/income" else [fill], None
+                )
+            ):
+                report = engine.run(database=database)
+                engine.run(database=database)
+            import sqlite3
+            with sqlite3.connect(database) as connection:
+                self.assertEqual(connection.execute("SELECT count(*) FROM income_ledger").fetchone()[0], 3)
+                self.assertEqual(connection.execute("SELECT count(*) FROM trade_fills").fetchone()[0], 1)
+                self.assertGreaterEqual(connection.execute("SELECT count(*) FROM equity_observations").fetchone()[0], 2)
+                self.assertEqual(connection.execute("SELECT count(*) FROM account_recording").fetchone()[0], 1)
+            self.assertEqual(report["trade_history"][0]["exit_price"], 110)
+            self.assertEqual(report["trade_history"][0]["fee"], 0.2)
+            self.assertEqual(report["trade_history"][0]["net_pnl"], 9.8)
+            self.assertEqual(report["summary"]["total_fee"], 0.2)
+            self.assertEqual(report["daily_pnl"][0]["net_pnl"], 9.8)
+            self.assertEqual(report["summary"]["net_external_transfers"], 100)
+            self.assertEqual(report["summary"]["total_return_pct"], 1)
+            self.assertEqual(report["equity_curve"][-1]["cumulative_pnl"], 10)
+            self.assertEqual(report["equity_curve"][-1]["drawdown_usd"], 0)
+
     def test_client_http_451_graceful_fallback(self):
         """测试遇到 HTTP 451 区域受限时平滑降级至本地离线模式"""
         client = bpc.BinanceFuturesClient(api_key="mock_key", api_secret="mock_sec")
@@ -515,8 +577,11 @@ class TestAccountHTMLGenerationAndIntegrity(unittest.TestCase):
     """5. 测试 account.html 生成物与 DOM 结构完整性"""
 
     def setUp(self):
-        self.html_path = ROOT_DIR / "account.html"
-        self.analytics_path = ROOT_DIR / "runs" / "account_analytics.json"
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.html_path = Path(self.temp_dir.name) / "account.html"
+        self.html_path.write_text(baa.render_account_html(), encoding="utf-8")
+        self.analytics_path = Path(self.temp_dir.name) / "account_analytics.json"
 
     def test_build_account_analytics_execution(self):
         """测试 build_account_analytics 主构建函数正常执行并产出文件"""

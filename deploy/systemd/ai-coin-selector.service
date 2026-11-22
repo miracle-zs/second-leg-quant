@@ -1,0 +1,17 @@
+[Unit]
+Description=AI Coin Selector risk alert daemon
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/opt/ai-coin-selector/.env
+
+[Service]
+User=ai-coin-selector
+WorkingDirectory=/opt/ai-coin-selector
+Environment=COIN_DATABASE=/opt/ai-coin-selector/runs/account.sqlite3
+ExecStart=/usr/bin/python3 scripts/trade_alert_daemon.py --daemon
+Restart=on-failure
+RestartSec=10s
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

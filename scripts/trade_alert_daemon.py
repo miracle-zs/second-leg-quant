@@ -700,16 +700,25 @@ def check_feature_1_resonance(
     # 强制在校验前从磁盘拉取最新共振状态，防止多进程 (如 hourly sync) 写入后内存未同步
     state_store.load()
 
-    if not pool_file.exists():
-        logger.warning(f"候选池文件不存在: {pool_file}")
-        return []
+    database = os.environ.get("COIN_DATABASE")
+    if database:
+        import sqlite3
+        from contextlib import closing
 
-    try:
+        with closing(sqlite3.connect(Path(database).resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            snapshot = connection.execute(
+                "SELECT payload FROM candidate_snapshot WHERE id = 1"
+            ).fetchone()
+        if snapshot is None:
+            logger.warning("候选池尚未生成")
+            return []
+        candidates = json.loads(snapshot[0])
+    else:
+        if not pool_file.exists():
+            logger.warning(f"候选池文件不存在: {pool_file}")
+            return []
         with open(pool_file, "r", encoding="utf-8") as f:
             candidates = json.load(f)
-    except Exception as e:
-        logger.error(f"读取候选池文件异常: {e}")
-        return []
 
     # 提取当前处于共振状态的标的 (三重共振 或 双核黄金共振)
     current_resonance_coins = {}
@@ -836,7 +845,9 @@ def check_feature_1_resonance(
 def check_feature_2_breakout(
     notifier: ServerChanNotifier,
     state_store: ResonanceStateStore,
-    layout_id: str = DEFAULT_TV_LAYOUT_ID
+    layout_id: str = DEFAULT_TV_LAYOUT_ID,
+    *,
+    retry_only: bool = False,
 ) -> List[dict]:
     """
     Feature 2 (15m 突破开多提醒):
@@ -851,6 +862,21 @@ def check_feature_2_breakout(
        阻力价 <= 0 或 当前价 > 阻力价 * 1.25 (失控/陈旧衰减死线) 强制跳过。
     """
     state_store.load()
+    pending = state_store.data.setdefault("pending_breakouts", {})
+    for key, event in list(pending.items()):
+        if _send_breakout_notification(
+            notifier, event["symbol"], event["res_price"], event["close_price"],
+            event["pct"], event["candle"], event["layout_id"]
+        ):
+            keys = state_store.data.setdefault("notified_breakout_keys", [])
+            keys.extend(k for k in event["keys"] if k not in keys)
+            state_store.data["notified_breakout_keys"] = keys[-200:]
+            del pending[key]
+            state_store.save()
+
+    if retry_only:
+        return []
+
     drawings_map = fetch_layout_drawings(layout_id)
     if not drawings_map:
         logger.debug(f"TV 布局 {layout_id} 暂无可用画线数据")
@@ -887,7 +913,7 @@ def check_feature_2_breakout(
             trendline_key = f"{sym}_{line_id}"
 
             # 1. 单线消费去重: 一条线 ID 仅触发一次
-            if state_store.has_breakout_notified(trendline_key):
+            if trendline_key in pending or state_store.has_breakout_notified(trendline_key):
                 logger.debug(f"趋势线 {trendline_key} 已触发消费，跳过重复检测。")
                 continue
 
@@ -967,11 +993,6 @@ def check_feature_2_breakout(
                 continue
 
             if is_breakout:
-                # 标记该趋势线已消费，后续 15m K 线绝不重复预警该线
-                state_store.mark_breakout_notified(trendline_key)
-                if c_ts:
-                    state_store.mark_breakout_notified(f"{sym}_{c_ts}")
-
                 info = {
                     "symbol": sym,
                     "close_price": close_price,
@@ -981,8 +1002,21 @@ def check_feature_2_breakout(
                     "trendline": line,
                     "trendline_id": line_id
                 }
-                breakout_alerts.append(info)
-                _send_breakout_notification(notifier, sym, res_price, close_price, pct, candle_info, layout_id)
+                keys = [trendline_key]
+                if c_ts:
+                    keys.append(f"{sym}_{c_ts}")
+                pending[trendline_key] = {
+                    "symbol": sym, "res_price": res_price, "close_price": close_price,
+                    "pct": pct, "candle": candle_info, "layout_id": layout_id, "keys": keys
+                }
+                state_store.save()
+                if _send_breakout_notification(notifier, sym, res_price, close_price, pct, candle_info, layout_id):
+                    notified = state_store.data.setdefault("notified_breakout_keys", [])
+                    notified.extend(key for key in keys if key not in notified)
+                    state_store.data["notified_breakout_keys"] = notified[-200:]
+                    del pending[trendline_key]
+                    state_store.save()
+                    breakout_alerts.append(info)
                 break  # 单标的单轮巡检最多发出一次突破提醒
 
     return breakout_alerts
@@ -1021,11 +1055,11 @@ def _send_breakout_notification(
 > 🎯 **实战交易指令**:
 > 1. **开仓买入**: 建议按纪律执行突破追多开仓。
 > 2. **无条件止损**: 以突破的下行趋势线作为铁律生命线，若 15m 收盘价跌回线下方，立即坚决止损！
-> 3. **动态止盈保护**: 浮盈达到 +6% 自动上移止损至 +1% 保本锁利！
+> 3. **动态止盈保护**: 浮盈达到 +6% 后设立 +1% 锁利提醒线，触及时发送通知。
 
 👉 **[查看 TradingView 15m 实战图表]({tv_link})**
 """
-    notifier.send_alert(title, desp)
+    return notifier.send_alert(title, desp)
 
 
 def check_feature_3_stop_loss(
@@ -1088,7 +1122,9 @@ def check_feature_3_stop_loss(
         if p1_price is None or p2_price is None or p1_time is None or p2_time is None:
             continue
 
-        support_price = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, close_time)
+        # TradingView 的趋势线锚点使用 K 线开盘时间作为横坐标。
+        candle_time = candle.get("candle_timestamp", candle.get("open_time", close_time))
+        support_price = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, candle_time)
         if support_price <= 0:
             continue
 
@@ -1396,6 +1432,13 @@ class TradeAlertDaemon:
                     self.last_evaluated_15m_bucket = current_bucket
                     evaluate_stop_loss = True
                 else:
+                    self.state_store.load()
+                    if self.state_store.data.get("pending_breakouts"):
+                        check_feature_2_breakout(
+                            self.notifier, self.state_store,
+                            self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID),
+                            retry_only=True,
+                        )
                     evaluate_stop_loss = any(
                         "pending_stop_loss_candle" in pos for pos in self.pos_store.get_open_positions()
                     )

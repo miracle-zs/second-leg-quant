@@ -931,6 +931,8 @@ class AccountAnalyticsEngine:
                 raise RuntimeError("币安账户快照不完整，保留上一次完整实盘快照")
             previous_report = load_report(database)
             recording = previous_report.get("recording") if previous_report is not None else None
+            if previous_report is None and recording_start_ms is None:
+                recording_start_ms = int(time.time() * 1000)
             if recording_start_ms is not None:
                 if recording is not None:
                     raise ValueError("账户记录起点已设置")
@@ -940,9 +942,99 @@ class AccountAnalyticsEngine:
                     "initial_equity": float(account_info["totalMarginBalance"]),
                 }
 
+        # 从记录起点分段读取资金流水，满页时继续缩小区间，避免漏掉同一批流水。
+        new_income = []
+        new_fills = []
+        income_page_full = len(income_list) >= INCOME_PAGE_LIMIT
+        if database is not None and recording is not None:
+            import sqlite3
+            from contextlib import closing
+
+            start_ms = recording["start_ms"]
+            end_ms = int(time.time() * 1000)
+            last_sync_ms = recording.get("ledger_synced_until_ms", start_ms)
+            query_start = max(start_ms, last_sync_ms - 86400 * 1000)
+            if end_ms - query_start > 89 * 86400 * 1000:
+                raise RuntimeError("账户流水同步间断超过币安接口可查询范围，请核对历史数据")
+            ranges = [(query_start, end_ms)]
+            while ranges:
+                start, end = ranges.pop()
+                page, error = self.client._send_signed_request(
+                    "/fapi/v1/income",
+                    {"startTime": start, "endTime": end, "limit": INCOME_PAGE_LIMIT},
+                )
+                if error is not None or not isinstance(page, list):
+                    raise RuntimeError(f"币安资金流水读取失败: {error}")
+                if len(page) >= INCOME_PAGE_LIMIT:
+                    if start == end:
+                        raise RuntimeError("同一毫秒资金流水超过接口单页上限")
+                    middle = (start + end) // 2
+                    ranges.extend([(start, middle), (middle + 1, end)])
+                else:
+                    new_income.extend(page)
+
+            existing_income = []
+            existing_fills = []
+            if database.exists():
+                with closing(sqlite3.connect(database)) as connection:
+                    tables = {row[0] for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    )}
+                    if "income_ledger" in tables:
+                        existing_income = [json.loads(row[0]) for row in connection.execute(
+                            "SELECT payload FROM income_ledger WHERE timestamp >= ?", (start_ms,)
+                        )]
+                    if "trade_fills" in tables:
+                        existing_fills = [json.loads(row[0]) for row in connection.execute(
+                            "SELECT payload FROM trade_fills WHERE timestamp >= ?", (start_ms,)
+                        )]
+                    if "equity_observations" in tables:
+                        previous_report["equity_curve"] = [
+                            json.loads(row[0]) for row in connection.execute(
+                                "SELECT payload FROM equity_observations WHERE timestamp >= ? ORDER BY timestamp",
+                                (start_ms,),
+                            )
+                        ]
+            income_by_id = {
+                (item["incomeType"], str(item["tranId"])): item
+                for item in existing_income + new_income
+            }
+            income_list = list(income_by_id.values())
+            symbols = {
+                item["symbol"] for item in income_list
+                if item.get("symbol") and item["incomeType"] in ("REALIZED_PNL", "COMMISSION")
+            }
+            symbols.update(item["symbol"] for item in existing_fills)
+            for symbol in sorted(symbols):
+                window_start = query_start
+                while window_start <= end_ms:
+                    window_end = min(window_start + 7 * 86400 * 1000 - 1, end_ms)
+                    trade_ranges = [(window_start, window_end)]
+                    while trade_ranges:
+                        start, end = trade_ranges.pop()
+                        page, error = self.client._send_signed_request(
+                            "/fapi/v1/userTrades",
+                            {"symbol": symbol, "startTime": start, "endTime": end, "limit": 1000},
+                        )
+                        if error is not None or not isinstance(page, list):
+                            raise RuntimeError(f"币安成交读取失败 ({symbol}): {error}")
+                        if len(page) >= 1000:
+                            if start == end:
+                                raise RuntimeError(f"{symbol} 同一毫秒成交超过接口单页上限")
+                            middle = (start + end) // 2
+                            trade_ranges.extend([(start, middle), (middle + 1, end)])
+                        else:
+                            new_fills.extend(page)
+                    window_start = window_end + 1
+            fills_by_id = {
+                (item["symbol"], str(item["id"])): item
+                for item in existing_fills + new_fills
+            }
+            recording["ledger_synced_until_ms"] = end_ms
+            income_page_full = False
+
         # 2. 获取本地 trade_positions.json 持仓
         local_positions, local_history = self.load_local_positions_store()
-        income_page_full = len(income_list) >= INCOME_PAGE_LIMIT
         if recording is not None:
             cutoff = recording["start_ms"]
             income_list = [item for item in income_list if int(item["time"]) >= cutoff]
@@ -955,7 +1047,57 @@ class AccountAnalyticsEngine:
         raw_active_positions = active_positions_binance if api_status["positions_available"] else local_positions
 
         # 优先从币安真实流水重构实盘历史交易
-        if api_status["income_available"]:
+        if database is not None and recording is not None:
+            commissions = {}
+            for item in income_list:
+                if item["incomeType"] == "COMMISSION" and item.get("tradeId"):
+                    key = (item["symbol"], str(item["tradeId"]))
+                    if item["asset"] == "USDT":
+                        commissions[key] = commissions.get(key, 0.0) - float(item["income"])
+            trade_history = []
+            for item in sorted(income_list, key=lambda value: value["time"]):
+                if item["incomeType"] != "REALIZED_PNL" or item["asset"] != "USDT":
+                    continue
+                key = (item["symbol"], str(item.get("tradeId", "")))
+                fill = fills_by_id.get(key)
+                realized = float(item["income"])
+                fee = commissions.get(key, 0.0)
+                closed_ts = int(item["time"])
+                trade_history.append({
+                    "trade_id": f"{item['incomeType']}-{item['tranId']}",
+                    "symbol": item["symbol"],
+                    "side": fill["positionSide"] if fill else "UNKNOWN",
+                    "entry_price": 0.0,
+                    "exit_price": float(fill["price"]) if fill else 0.0,
+                    "amount": float(fill["qty"]) if fill else 0.0,
+                    "entry_notional": 0.0,
+                    "exit_notional": float(fill["quoteQty"]) if fill else 0.0,
+                    "realized_pnl": realized,
+                    "fee": fee,
+                    "net_pnl": round(realized - fee, 4),
+                    "pnl_pct": None,
+                    "roe_pct": None,
+                    "leverage": self.default_leverage,
+                    "entry_time": "--",
+                    "closed_at": get_beijing_time_str(closed_ts / 1000),
+                    "entry_ts": closed_ts,
+                    "closed_ts": closed_ts,
+                    "duration_seconds": 0,
+                    "duration_str": "--",
+                    "outcome": "WIN" if realized - fee > 0 else "LOSS" if realized - fee < 0 else "BREAKEVEN",
+                    "status": "BINANCE_REALTIME_TRADE",
+                    "close_reason": "币安实盘成交",
+                    "close_reason_code": "BINANCE_REALTIME",
+                    "highest_price": 0.0,
+                    "trailing_stop_triggered": False,
+                    "trailing_stop_price": None,
+                    "trendline_id": None,
+                    "trendline_label": "--",
+                    "trendline_info": None,
+                    "source": "BINANCE_REALTIME",
+                    "notes": "币安成交" if fill else "币安已实现盈亏流水",
+                })
+        elif api_status["income_available"]:
             trade_history = self.reconstruct_binance_trades(income_list, local_history)
         else:
             trade_history = [self.enrich_trade_record(t, idx) for idx, t in enumerate(local_history)]
@@ -978,6 +1120,15 @@ class AccountAnalyticsEngine:
         )
 
         if recording is not None:
+            # 汇总全部 USDT 手续费，包括尚未平仓的开仓成交。
+            ledger_fee = -sum(
+                float(item["income"]) for item in income_list
+                if item["incomeType"] == "COMMISSION" and item["asset"] == "USDT"
+            )
+            summary["total_fee"] = round(ledger_fee, 2)
+            summary["net_realized_pnl"] = round(
+                summary["cumulative_realized_pnl"] - ledger_fee, 2
+            )
             initial_equity = recording["initial_equity"]
             equity = float(account_info["totalMarginBalance"])
             now_ms = int(time.time() * 1000)
@@ -995,22 +1146,79 @@ class AccountAnalyticsEngine:
             else:
                 equity_curve = previous_report["equity_curve"]
 
-            peak_equity = max(equity, max(point["equity"] for point in equity_curve))
-            drawdown = peak_equity - equity
             equity_curve.append({
                 "timestamp": now_ms,
                 "datetime": get_beijing_time_str(now_ms / 1000),
                 "equity": equity,
                 "cash": summary["wallet_balance"],
-                "cumulative_pnl": round(equity - initial_equity, 2),
-                "drawdown_usd": round(drawdown, 2),
-                "drawdown_pct": round(drawdown / peak_equity * 100, 2) if peak_equity > 0 else 0.0,
                 "event": "币安账户快照",
             })
+            transfers = sorted(
+                (int(item["time"]), float(item["income"]))
+                for item in income_list
+                if item["incomeType"] == "TRANSFER" and item["asset"] == "USDT"
+            )
+            net_flow = 0.0
+            transfer_index = 0
+            peak_equity = initial_equity
+            for point in equity_curve:
+                while transfer_index < len(transfers) and transfers[transfer_index][0] <= point["timestamp"]:
+                    net_flow += transfers[transfer_index][1]
+                    transfer_index += 1
+                adjusted_equity = point["equity"] - net_flow
+                peak_equity = max(peak_equity, adjusted_equity)
+                drawdown = peak_equity - adjusted_equity
+                point["cumulative_pnl"] = round(adjusted_equity - initial_equity, 2)
+                point["drawdown_usd"] = round(drawdown, 2)
+                point["drawdown_pct"] = round(drawdown / peak_equity * 100, 2) if peak_equity > 0 else 0.0
+            net_flow = sum(amount for _, amount in transfers)
             summary["initial_capital"] = initial_equity
-            summary["total_return_pct"] = round((equity - initial_equity) / initial_equity * 100, 2) if initial_equity > 0 else 0.0
+            summary["total_return_pct"] = round(
+                (equity - initial_equity - net_flow) / initial_equity * 100, 2
+            ) if initial_equity > 0 else 0.0
+            summary["net_external_transfers"] = round(net_flow, 4)
             summary["max_drawdown_usd"] = max(point["drawdown_usd"] for point in equity_curve)
             summary["max_drawdown_pct"] = max(point["drawdown_pct"] for point in equity_curve)
+
+            # 每日汇总以资金流水为准，计入开仓手续费和资金费。
+            daily_by_date = {entry["date"]: entry for entry in daily_pnl}
+            for entry in daily_by_date.values():
+                entry["realized_pnl"] = 0.0
+                entry["fee"] = 0.0
+                entry["funding_fee"] = 0.0
+            for item in income_list:
+                if item["asset"] != "USDT" or item["incomeType"] not in (
+                    "REALIZED_PNL", "COMMISSION", "FUNDING_FEE"
+                ):
+                    continue
+                date = get_beijing_time_str(int(item["time"]) / 1000)[:10]
+                entry = daily_by_date.setdefault(date, {
+                    "date": date, "realized_pnl": 0.0, "fee": 0.0,
+                    "funding_fee": 0.0, "trades_count": 0, "wins": 0,
+                    "losses": 0, "breakeven": 0,
+                })
+                amount = float(item["income"])
+                if item["incomeType"] == "REALIZED_PNL":
+                    entry["realized_pnl"] += amount
+                elif item["incomeType"] == "COMMISSION":
+                    entry["fee"] -= amount
+                else:
+                    entry["funding_fee"] += amount
+            daily_pnl = []
+            day_equity = initial_equity
+            for date in sorted(daily_by_date):
+                entry = daily_by_date[date]
+                entry["realized_pnl"] = round(entry["realized_pnl"], 2)
+                entry["fee"] = round(entry["fee"], 2)
+                entry["funding_fee"] = round(entry["funding_fee"], 2)
+                entry["net_pnl"] = round(
+                    entry["realized_pnl"] - entry["fee"] + entry["funding_fee"], 2
+                )
+                entry["return_pct"] = round(
+                    entry["net_pnl"] / day_equity * 100, 2
+                ) if day_equity > 0 else 0.0
+                day_equity += entry["net_pnl"]
+                daily_pnl.append(entry)
 
         # 6. 流水明细分类聚合 (Income Breakdown)
         income_breakdown = {
@@ -1110,7 +1318,7 @@ class AccountAnalyticsEngine:
             atomic_write_json(out_file, report)
             logger.info(f"✅ 账户量化分析报表已成功生成并写入: {out_file}")
         else:
-            publish_report(database, report)
+            publish_report(database, report, new_income, new_fills)
             logger.info("✅ 账户实盘快照已写入 SQLite: %s", database)
 
         return report

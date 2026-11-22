@@ -126,6 +126,24 @@ class TestTVCloudAndFallback(unittest.TestCase):
         self.assertGreater(candle["close_time"], candle["open_time"])
 
 
+class TestSharedCandidateSnapshot(unittest.TestCase):
+    def test_resonance_check_reads_database_candidate_batch(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "account.sqlite3"
+            store = tad.ResonanceStateStore(root / "resonance.json")
+            notifier = tad.ServerChanNotifier(dry_run=True)
+            batch = [{"symbol": "TESTUSDT", "is_resonance": True}]
+            with sqlite3.connect(database) as connection:
+                connection.execute("CREATE TABLE candidate_snapshot (id INTEGER PRIMARY KEY, updated_at TEXT, payload TEXT)")
+                connection.execute("INSERT INTO candidate_snapshot VALUES (1, ?, ?)", ("2026-11-23 00:00:00", json.dumps(batch)))
+            with patch.dict(os.environ, {"COIN_DATABASE": str(database)}):
+                tad.check_feature_1_resonance(notifier, store, root / "missing.json")
+            self.assertEqual(store.get_active_symbols(), {"TESTUSDT"})
+
+
 class TestLogarithmicVsLinearFormula(unittest.TestCase):
     """2. Logarithmic formula accuracy vs Linear (ensure no distortion)"""
 
@@ -758,6 +776,30 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
+    def test_pending_breakout_retries_after_restart(self):
+        state_path = Path(self.test_dir) / "resonance.json"
+        store = tad.ResonanceStateStore(state_path)
+        store.data["pending_breakouts"] = {
+            "TEST_line": {
+                "symbol": "TEST", "res_price": 1.0, "close_price": 1.1,
+                "pct": 10.0, "candle": {"close_time": 50},
+                "layout_id": "test", "keys": ["TEST_line"],
+            }
+        }
+        store.save()
+        with patch.object(self.notifier, "send_alert", side_effect=[False, True]) as send, patch.object(
+            tad, "fetch_layout_drawings", return_value={}
+        ):
+            tad.check_feature_2_breakout(self.notifier, store)
+            store = tad.ResonanceStateStore(state_path)
+            self.assertIn("TEST_line", store.data["pending_breakouts"])
+            self.assertFalse(store.has_breakout_notified("TEST_line"))
+            tad.check_feature_2_breakout(self.notifier, store)
+            store = tad.ResonanceStateStore(state_path)
+            self.assertNotIn("TEST_line", store.data["pending_breakouts"])
+            self.assertTrue(store.has_breakout_notified("TEST_line"))
+            self.assertEqual(send.call_count, 2)
+
     def test_stop_loss_triggered_on_closing_below_trendline(self):
         """Verify position automatically marks STOP_LOSS_TRIGGERED when 15m close drops below trendline."""
         # Trendline support: at t=50, log resistance is sqrt(10.0 * 6.4) = 8.0000
@@ -805,6 +847,14 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
                 self.assertEqual(store.data["history"], [])
                 self.assertEqual(tad.check_feature_3_stop_loss(self.notifier, store), [])
             self.assertEqual(send.call_count, 2)
+
+    def test_stop_loss_uses_candle_open_time_for_trendline(self):
+        trendline = {"p1": 10.0, "t1": 0, "p2": 5.0, "t2": 100}
+        self.pos_store.add_position("TESTUSDT", 9.0, amount=1, trendline=trendline)
+        candle = {"open_time": 50, "close_time": 100, "close": 6.0}
+        with patch.object(tad, "get_binance_closed_15m_candle", return_value=candle):
+            alerts = tad.check_feature_3_stop_loss(self.notifier, self.pos_store)
+        self.assertEqual(len(alerts), 1)
 
     def test_no_stop_loss_when_holding_above_trendline(self):
         """Verify position remains OPEN when candle close holds above trendline."""

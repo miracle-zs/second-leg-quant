@@ -659,11 +659,11 @@ def render_discipline_ribbon() -> str:
         </span>
         <span class="text-slate-600">|</span>
         <span class="text-slate-300">
-          <strong>保本锁利:</strong> 浮盈触及 +6% 自动推移动止损至 +1%
+          <strong>保本锁利:</strong> 浮盈触及 +6% 后设立 +1% 锁利提醒线
         </span>
         <span class="text-slate-600">|</span>
         <span class="text-slate-300">
-          <strong>坚决斩仓:</strong> 15m 收盘跌破趋势线支撑即刻无条件清仓
+          <strong>坚决斩仓:</strong> 15m 收盘跌破趋势线支撑时发送止损提醒
         </span>
       </div>
       <div class="flex items-center gap-2 shrink-0 font-mono text-[11px]">
@@ -1461,10 +1461,10 @@ CLIENT_JS = """
             histTbody.innerHTML = history.map(h => {
               const sym = h.symbol || '--';
               const pnl = h.net_pnl !== undefined ? h.net_pnl : (h.realized_pnl || 0);
-              const pnlPct = h.pnl_pct || 0;
+              const pnlPct = h.pnl_pct == null ? null : Number(h.pnl_pct);
               const pnlCls = pnl >= 0 ? 'text-emerald-400' : 'text-rose-400';
-              const pnlSign = pnl > 0 ? '+' : '';
-              const pctSign = pnlPct > 0 ? '+' : '';
+              const pnlSign = pnl > 0 ? '+' : (pnl < 0 ? '-' : '');
+              const pctText = pnlPct == null ? '--' : (pnlPct > 0 ? '+' : '') + pnlPct.toFixed(2) + '%';
               const cTime = h.closed_at || '--';
               const eTime = h.entry_time || '--';
               const dur = h.duration_str || h.holding_duration || '--';
@@ -1494,7 +1494,7 @@ CLIENT_JS = """
                     data-winloss="${winLossTag}"
                     data-status="${statusTag}"
                     data-pnl="${pnl}"
-                    data-pnlpct="${pnlPct}"
+                    data-pnlpct="${pnlPct == null ? '' : pnlPct}"
                     data-closetime="${cTime}">
                   <td class="px-3 py-2.5 text-slate-400">
                     <div class="text-white font-medium">${cTime}</div>
@@ -1514,7 +1514,7 @@ CLIENT_JS = """
                   <td class="px-3 py-2.5 tabular-nums text-slate-300">${entryStr}</td>
                   <td class="px-3 py-2.5 tabular-nums text-white font-bold">${exitStr}</td>
                   <td class="px-3 py-2.5 tabular-nums font-bold ${pnlCls}"><div>${pnlSign}$${Math.abs(pnl).toFixed(2)}</div></td>
-                  <td class="px-3 py-2.5 tabular-nums font-bold ${pnlCls}"><div>${pctSign}${pnlPct.toFixed(2)}%</div></td>
+                  <td class="px-3 py-2.5 tabular-nums font-bold ${pnlCls}"><div>${pctText}</div></td>
                   <td class="px-3 py-2.5 text-slate-300">${dur}</td>
                   <td class="px-3 py-2.5">${badgeHtml}</td>
                   <td class="px-3 py-2.5 text-slate-400">${h.trendline_label || '--'}</td>
@@ -1546,7 +1546,7 @@ CLIENT_JS = """
           const ctxEq = document.getElementById('chart-equity-curve');
           if (ctxEq) {
             if (chartInstances.eq) chartInstances.eq.destroy();
-            const eqLabels = equityCurve.map(p => (p.timestamp || '').length > 10 ? (p.timestamp || '').substring(5, 16) : (p.timestamp || ''));
+            const eqLabels = equityCurve.map(p => (p.datetime || String(p.timestamp || '')).slice(5, 16));
             const eqValues = equityCurve.map(p => p.equity);
             const benchValues = equityCurve.map(p => p.benchmark || summary.initial_capital || 1000);
 
@@ -1609,9 +1609,9 @@ CLIENT_JS = """
           const ctxDd = document.getElementById('chart-pnl-drawdown');
           if (ctxDd) {
             if (chartInstances.dd) chartInstances.dd.destroy();
-            const ddLabels = equityCurve.map(p => (p.timestamp || '').length > 10 ? (p.timestamp || '').substring(5, 16) : (p.timestamp || ''));
+            const ddLabels = equityCurve.map(p => (p.datetime || String(p.timestamp || '')).slice(5, 16));
             const cumPnlValues = equityCurve.map(p => p.cumulative_pnl || 0);
-            const ddValues = equityCurve.map(p => p.drawdown_pct || 0);
+            const ddValues = equityCurve.map(p => -Math.abs(p.drawdown_pct || 0));
 
             chartInstances.dd = new Chart(ctxDd, {
               type: 'line',
@@ -1668,7 +1668,7 @@ CLIENT_JS = """
           if (ctxDaily) {
             if (chartInstances.daily) chartInstances.daily.destroy();
             const dLabels = dailyPnl.map(d => d.date);
-            const dValues = dailyPnl.map(d => d.pnl);
+            const dValues = dailyPnl.map(d => d.net_pnl ?? d.pnl ?? 0);
             const bgColors = dValues.map(v => v >= 0 ? '#10b981' : '#f43f5e');
 
             chartInstances.daily = new Chart(ctxDaily, {
@@ -1692,7 +1692,7 @@ CLIENT_JS = """
                     callbacks: {
                       label: c => {
                         const item = dailyPnl[c.dataIndex];
-                        return ['当日盈亏: $' + Number(c.raw).toFixed(2), '成交笔数: ' + (item ? item.trade_count : 0) + ' 笔'];
+                        return ['当日盈亏: $' + Number(c.raw).toFixed(2), '成交笔数: ' + (item ? (item.trades_count ?? item.trade_count ?? 0) : 0) + ' 笔'];
                       }
                     }
                   },
@@ -1712,10 +1712,10 @@ CLIENT_JS = """
             if (chartInstances.dist) chartInstances.dist.destroy();
             const scatterData = history.map((h, i) => ({
               x: i + 1,
-              y: h.pnl_pct !== undefined ? h.pnl_pct : (h.net_pnl > 0 ? 5.0 : -5.0),
+              y: h.pnl_pct,
               symbol: h.symbol,
               pnl: h.net_pnl !== undefined ? h.net_pnl : (h.realized_pnl || 0)
-            }));
+            })).filter(point => point.y != null);
 
             chartInstances.dist = new Chart(ctxDist, {
               type: 'scatter',
