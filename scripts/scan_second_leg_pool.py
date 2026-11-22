@@ -376,6 +376,16 @@ def scan_pool():
     with ThreadPoolExecutor(max_workers=25) as executor:
         kline_results = {r[0]: r[1:] for r in executor.map(check_1h_klines, symbols_list)}
 
+    # 加载已记录的共振历史记忆 (精确追踪同时满足 1h顺势+换手>=1.5x 的真实共振驻留时长)
+    resonance_state_file = ROOT / "runs" / "resonance_state.json"
+    res_history = {}
+    if resonance_state_file.exists():
+        try:
+            with open(resonance_state_file, "r", encoding="utf-8") as f:
+                res_history = json.load(f).get("history", {})
+        except Exception:
+            res_history = {}
+
     for c in verified_candidates:
         sym = c["symbol"]
         res = kline_results.get(sym, (None, None, False, 0.0, 0, ""))
@@ -384,13 +394,32 @@ def scan_pool():
         c["ema10"] = ema10
         c["is_ema_bull"] = is_ema_bull
         c["ema_spread_pct"] = ema_spread
+        c["ema_streak_hours"] = bull_streak if is_ema_bull else 0
 
         is_neg_fr = c["funding_rate_4h_pct"] < 0
         is_high_tr = c["turnover_ratio"] >= 1.5
         is_resonance = is_ema_bull and is_high_tr  # 黄金双核共振：1h顺势 + 换手>=1.5x
 
-        c["resonance_duration_hours"] = bull_streak if is_resonance else 0
-        c["resonance_entry_time"] = entry_dt_str if is_resonance else ""
+        # 精确计算“共振驻留时长” (而非单纯的1h均线顺势时长):
+        if is_resonance:
+            res_hist_item = res_history.get(sym)
+            if res_hist_item and "first_detected" in res_hist_item:
+                try:
+                    f_dt = datetime.datetime.strptime(res_hist_item["first_detected"], "%Y-%m-%d %H:%M:%S")
+                    f_ts = f_dt.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8))).timestamp()
+                    dur_h = max(0, int((now_ts - f_ts) // 3600))
+                    ent_str = f_dt.strftime("%m-%d %H:%M")
+                except Exception:
+                    dur_h = 0
+                    ent_str = datetime.datetime.fromtimestamp(now_ts, datetime.timezone(datetime.timedelta(hours=8))).strftime("%m-%d %H:%M")
+            else:
+                dur_h = 0
+                ent_str = datetime.datetime.fromtimestamp(now_ts, datetime.timezone(datetime.timedelta(hours=8))).strftime("%m-%d %H:%M")
+            c["resonance_duration_hours"] = dur_h
+            c["resonance_entry_time"] = ent_str
+        else:
+            c["resonance_duration_hours"] = 0
+            c["resonance_entry_time"] = ""
 
         zones = []
         if is_resonance:

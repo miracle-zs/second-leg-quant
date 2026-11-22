@@ -277,7 +277,8 @@ def render_candidate_rows(candidates: list, row_class_name: str = "candidate-row
             entry_sub = f'<div class="text-[9px] font-mono text-slate-400 mt-0.5">入圈: {res_entry_time}</div>' if res_entry_time else ''
             duration_cell_html = f'<div>{time_badge}{entry_sub}</div>'
         elif is_res:
-            duration_cell_html = '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>⚡ 刚刚进入</span>'
+            entry_sub = f'<div class="text-[9px] font-mono text-slate-400 mt-0.5">入圈: {res_entry_time}</div>' if res_entry_time else ''
+            duration_cell_html = f'<div><span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>⚡ 刚刚进入</span>{entry_sub}</div>'
         else:
             duration_cell_html = '<span class="text-slate-600 font-mono text-xs">--</span>'
         if is_res and is_neg_fr:
