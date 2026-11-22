@@ -254,10 +254,13 @@ def sync_binance_positions(
                 entry_price=b_pos["entry_price"],
                 amount=b_pos["amount"],
                 trendline=matched_trendline,
-                notes=notes
+                notes=notes,
+                source="BINANCE_SYNC",
+                leverage=b_pos["leverage"]
             )
             new_pos["source"] = "BINANCE_SYNC"
             new_pos["leverage"] = b_pos["leverage"]
+            pos_store.save()
             new_added.append(sym)
             logger.info(f"⚡ [币安实盘自动同步] 发现新开多仓: {sym} @ {b_pos['entry_price']} (数量: {b_pos['amount']})")
         else:

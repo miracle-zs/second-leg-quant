@@ -1,10 +1,11 @@
 {
   "version": 1,
-  "last_updated": "2026-11-22 09:17:16",
+  "last_updated": "2026-11-22 10:55:35",
   "active_resonance_symbols": [
+    "BLESSUSDT",
     "ELSAUSDT",
     "ENSOUSDT",
-    "INITUSDT",
+    "JCTUSDT",
     "SKYAIUSDT"
   ],
   "history": {
@@ -161,6 +162,17 @@
         "双核黄金共振"
       ],
       "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:SKYAIUSDT.P&interval=15"
+    },
+    "BLESSUSDT": {
+      "symbol": "BLESSUSDT",
+      "first_detected": "2026-11-22 10:15:13",
+      "last_notified_at": "2026-11-22 10:15:13",
+      "last_notified_time": 1795313713,
+      "res_score": 2,
+      "zones": [
+        "双核黄金共振"
+      ],
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:BLESSUSDT.P&interval=15"
     }
   },
   "notified_breakout_keys": [

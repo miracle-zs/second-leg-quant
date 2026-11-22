@@ -345,6 +345,52 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
         )
         self.assertEqual(len(alerts3), 1, "Alert should fire again once 24h debounce window has expired")
 
+    def test_cross_process_state_sync_prevents_duplicate_alert(self):
+        """
+        Verify multi-process / cross-process synchronization:
+        Simulate daemon holding in-memory store while cron process (check-once) updates state on disk.
+        Daemon's subsequent check must reload disk state and suppress duplicate alerts.
+        """
+        candidates = [
+            {
+                "symbol": "BLESSUSDT",
+                "price": 0.05,
+                "is_resonance": True,
+                "resonance_score": 2,
+                "funding_rate_4h_pct": 0.01,
+                "turnover_ratio": 15.0,
+                "is_ema_bull": True,
+                "zones": ["双核黄金共振"]
+            }
+        ]
+        with open(self.pool_path, "w", encoding="utf-8") as f:
+            json.dump(candidates, f)
+
+        notifier = tad.ServerChanNotifier(dry_run=True)
+
+        # 1. Simulate daemon initialized at 09:17 with baseline
+        daemon_store = tad.ResonanceStateStore(self.state_path)
+        daemon_store.data["active_resonance_symbols"] = ["INITUSDT"]
+        daemon_store.save()
+
+        # 2. Simulate hourly sync cron process (--check-once) running at 10:02
+        cron_store = tad.ResonanceStateStore(self.state_path)
+        alerts_cron = tad.check_feature_1_resonance(
+            notifier, cron_store, self.pool_path, cold_start=False
+        )
+        self.assertEqual(len(alerts_cron), 1, "Cron process must detect and alert BLESSUSDT")
+        self.assertEqual(alerts_cron[0]["symbol"], "BLESSUSDT")
+
+        # 3. Simulate daemon process at 10:15 waking up to check_feature_1_resonance using existing daemon_store instance
+        alerts_daemon = tad.check_feature_1_resonance(
+            notifier, daemon_store, self.pool_path, cold_start=False
+        )
+        self.assertEqual(
+            len(alerts_daemon), 0,
+            "Daemon must reload state from disk and suppress duplicate notification for BLESSUSDT"
+        )
+        self.assertIn("BLESSUSDT", daemon_store.get_active_symbols())
+
 
 class TestFeature2BreakoutDetection(unittest.TestCase):
     """4. Feature 2: 15m breakout detection (strict crossover, single-line consumption, filtering)"""

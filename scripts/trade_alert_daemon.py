@@ -502,30 +502,48 @@ class PositionStore:
     def __init__(self, filepath: Path = DEFAULT_POSITIONS_PATH):
         self.filepath = Path(filepath)
         self.data: Dict[str, Any] = {"version": 1, "positions": [], "history": []}
-        self.load()
+        self._last_mtime: float = 0.0
+        self.load(force=True)
 
-    def load(self):
+    def load(self, force: bool = False):
         if self.filepath.exists():
             try:
-                with open(self.filepath, "r", encoding="utf-8") as f:
-                    content = json.load(f)
-                    if isinstance(content, dict):
-                        self.data = content
-                        if "positions" not in self.data:
-                            self.data["positions"] = []
-                        if "history" not in self.data:
-                            self.data["history"] = []
+                mtime = self.filepath.stat().st_mtime
+                if force or mtime > self._last_mtime:
+                    with open(self.filepath, "r", encoding="utf-8") as f:
+                        content = json.load(f)
+                        if isinstance(content, dict):
+                            self.data = content
+                            if "positions" not in self.data:
+                                self.data["positions"] = []
+                            if "history" not in self.data:
+                                self.data["history"] = []
+                            self._last_mtime = mtime
             except Exception as e:
                 logger.error(f"加载持仓文件失败: {e}")
 
     def save(self):
         self.data["updated_at"] = get_beijing_time_str()
         atomic_write_json(self.filepath, self.data)
+        try:
+            self._last_mtime = self.filepath.stat().st_mtime
+        except Exception:
+            pass
 
     def get_open_positions(self) -> List[Dict[str, Any]]:
+        self.load()
         return [p for p in self.data.get("positions", []) if p.get("status") == "OPEN"]
 
-    def add_position(self, symbol: str, entry_price: float, amount: float = 0.0, trendline: Optional[dict] = None, notes: str = "") -> dict:
+    def add_position(
+        self,
+        symbol: str,
+        entry_price: float,
+        amount: float = 0.0,
+        trendline: Optional[dict] = None,
+        notes: str = "",
+        **kwargs
+    ) -> dict:
+        self.load()
         sym = symbol.upper()
         if not sym.endswith("USDT"):
             sym = f"{sym}USDT"
@@ -541,6 +559,7 @@ class PositionStore:
                     p["trendline"] = trendline
                 if notes:
                     p["notes"] = notes
+                p.update(kwargs)
                 p["updated_at"] = get_beijing_time_str()
                 self.save()
                 return p
@@ -560,12 +579,14 @@ class PositionStore:
             "status": "OPEN",
             "notes": notes or "Manual / Signal Entry"
         }
+        pos.update(kwargs)
         self.data["positions"].append(pos)
         self.save()
         logger.info(f"✅ 成功录入新持仓: {sym} @ {entry_price} (数量: {amount})")
         return pos
 
     def close_position(self, symbol: str, reason: str = "MANUAL_CLOSE", exit_price: Optional[float] = None) -> Optional[dict]:
+        self.load()
         sym = symbol.upper()
         if not sym.endswith("USDT"):
             sym = f"{sym}USDT"
@@ -607,35 +628,46 @@ class ResonanceStateStore:
             "notified_breakout_keys": [],
             "history": {}
         }
-        self.load()
+        self._last_mtime: float = 0.0
+        self.load(force=True)
 
-    def load(self):
+    def load(self, force: bool = False):
         if self.filepath.exists():
             try:
-                with open(self.filepath, "r", encoding="utf-8") as f:
-                    content = json.load(f)
-                    if isinstance(content, dict):
-                        self.data = content
-                        if "active_resonance_symbols" not in self.data:
-                            self.data["active_resonance_symbols"] = []
-                        if "notified_breakout_keys" not in self.data:
-                            self.data["notified_breakout_keys"] = []
-                        if "history" not in self.data:
-                            self.data["history"] = {}
+                mtime = self.filepath.stat().st_mtime
+                if force or mtime > self._last_mtime:
+                    with open(self.filepath, "r", encoding="utf-8") as f:
+                        content = json.load(f)
+                        if isinstance(content, dict):
+                            self.data = content
+                            if "active_resonance_symbols" not in self.data:
+                                self.data["active_resonance_symbols"] = []
+                            if "notified_breakout_keys" not in self.data:
+                                self.data["notified_breakout_keys"] = []
+                            if "history" not in self.data:
+                                self.data["history"] = {}
+                            self._last_mtime = mtime
             except Exception as e:
                 logger.error(f"加载共振状态文件失败: {e}")
 
     def save(self):
         self.data["last_updated"] = get_beijing_time_str()
         atomic_write_json(self.filepath, self.data)
+        try:
+            self._last_mtime = self.filepath.stat().st_mtime
+        except Exception:
+            pass
 
     def get_active_symbols(self) -> set:
+        self.load()
         return set(self.data.get("active_resonance_symbols", []))
 
     def has_breakout_notified(self, key: str) -> bool:
+        self.load()
         return key in self.data.get("notified_breakout_keys", [])
 
     def mark_breakout_notified(self, key: str):
+        self.load()
         keys = self.data.setdefault("notified_breakout_keys", [])
         if key not in keys:
             keys.append(key)
@@ -665,6 +697,9 @@ def check_feature_1_resonance(
     1. 冷启动基准建立: 当 state_store 中暂无活跃标的或首次启动时，直接记录当前标的为基准，不向 Server酱 泛洪发信。
     2. 24小时防抖: 标的若在 24 小时内已通知过，在共振分数边界上下波动时不重复发信。
     """
+    # 强制在校验前从磁盘拉取最新共振状态，防止多进程 (如 hourly sync) 写入后内存未同步
+    state_store.load()
+
     if not pool_file.exists():
         logger.warning(f"候选池文件不存在: {pool_file}")
         return []
@@ -810,6 +845,7 @@ def check_feature_2_breakout(
     3. 趋势线有效性与过滤: 仅监控 15m 趋势线 (严格忽略 '240', 'D' 等)，第二个锚点 t2 或更新时间须在 72 小时以内。
        阻力价 <= 0 或 当前价 > 阻力价 * 1.25 (失控/陈旧衰减死线) 强制跳过。
     """
+    state_store.load()
     drawings_map = fetch_layout_drawings(layout_id)
     if not drawings_map:
         logger.debug(f"TV 布局 {layout_id} 暂无可用画线数据")
@@ -998,6 +1034,7 @@ def check_feature_3_stop_loss(
     在每个 15m K 线收盘后，校验收盘价是否跌破趋势线支撑位。
     若跌破，立即发出最高级别紧急平多止损通知。
     """
+    pos_store.load()
     open_positions = pos_store.get_open_positions()
     if not open_positions:
         return []
@@ -1103,6 +1140,7 @@ def check_feature_4_trailing_stops(
     2. 若后续价格回踩 <= 移动止损价:
        发出平仓锁利离场通知。
     """
+    pos_store.load()
     open_positions = pos_store.get_open_positions()
     if not open_positions:
         return []
