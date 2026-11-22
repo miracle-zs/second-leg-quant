@@ -1,14 +1,11 @@
 {
   "version": 1,
-  "last_updated": "2026-11-22 01:39:39",
+  "last_updated": "2026-11-22 09:02:27",
   "active_resonance_symbols": [
     "ELSAUSDT",
     "ENSOUSDT",
-    "IDOLUSDT",
-    "JCTUSDT",
-    "RAREUSDT",
-    "SOPHUSDT",
-    "YBUSDT"
+    "INITUSDT",
+    "SKYAIUSDT"
   ],
   "history": {
     "CYBERUSDT": {
@@ -142,7 +139,32 @@
       "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:SOPHUSDT.P&interval=15",
       "last_notified_time": 1795278646,
       "last_notified_at": "2026-11-22 00:03:04"
+    },
+    "INITUSDT": {
+      "symbol": "INITUSDT",
+      "first_detected": "2026-11-22 09:02:25",
+      "last_notified_at": "2026-11-22 09:02:25",
+      "last_notified_time": 1795309345,
+      "res_score": 3,
+      "zones": [
+        "双核共振+逼空"
+      ],
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:INITUSDT.P&interval=15"
+    },
+    "SKYAIUSDT": {
+      "symbol": "SKYAIUSDT",
+      "first_detected": "2026-11-22 09:02:25",
+      "last_notified_at": "2026-11-22 09:02:25",
+      "last_notified_time": 1795309345,
+      "res_score": 2,
+      "zones": [
+        "双核黄金共振"
+      ],
+      "tv_link": "https://cn.tradingview.com/chart/ig0LuDL8/?symbol=BINANCE:SKYAIUSDT.P&interval=15"
     }
   },
-  "notified_breakout_keys": []
+  "notified_breakout_keys": [
+    "ELSAUSDT_KDTNlr",
+    "ELSAUSDT_1795306500"
+  ]
 }
