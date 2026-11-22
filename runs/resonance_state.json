@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "last_updated": "2026-11-22 09:02:27",
+  "last_updated": "2026-11-22 09:17:16",
   "active_resonance_symbols": [
     "ELSAUSDT",
     "ENSOUSDT",
@@ -165,6 +165,8 @@
   },
   "notified_breakout_keys": [
     "ELSAUSDT_KDTNlr",
-    "ELSAUSDT_1795306500"
+    "ELSAUSDT_1795306500",
+    "ENSOUSDT_5ClGio",
+    "ENSOUSDT_1795309200"
   ]
 }
