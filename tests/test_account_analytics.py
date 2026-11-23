@@ -476,7 +476,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             {"incomeType": "REALIZED_PNL", "tranId": 2, "tradeId": "5", "time": start + 2, "income": "10", "asset": "USDT", "symbol": "BTCUSDT"},
             {"incomeType": "COMMISSION", "tranId": 3, "tradeId": "5", "time": start + 2, "income": "-0.2", "asset": "USDT", "symbol": "BTCUSDT"},
         ]
-        fill = {"symbol": "BTCUSDT", "id": 5, "time": start + 2, "positionSide": "LONG", "price": "110", "qty": "1", "quoteQty": "110"}
+        fill = {"symbol": "BTCUSDT", "id": 5, "orderId": 1, "side": "SELL", "time": start + 2, "positionSide": "LONG", "price": "110", "qty": "1", "quoteQty": "110"}
         status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "account.sqlite3"
@@ -505,6 +505,35 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             self.assertEqual(report["summary"]["total_return_pct"], 1)
             self.assertEqual(report["equity_curve"][-1]["cumulative_pnl"], 10)
             self.assertEqual(report["equity_curve"][-1]["drawdown_usd"], 0)
+
+    def test_multiple_fills_form_one_closed_order(self):
+        from account_dashboard_api import publish_report
+        client = bpc.BinanceFuturesClient('test', 'test')
+        engine = aae.AccountAnalyticsEngine(client=client)
+        start = 1795200000000
+        previous = {'recording': {'start_ms': start, 'started_at': '2026-11-21 00:00:00', 'initial_equity': 1000}, 'equity_curve': []}
+        income = [
+            {'incomeType': 'REALIZED_PNL', 'tranId': 1, 'tradeId': '2', 'time': start + 4000, 'income': '10', 'asset': 'USDT', 'symbol': 'BTCUSDT'},
+            {'incomeType': 'REALIZED_PNL', 'tranId': 2, 'tradeId': '3', 'time': start + 5000, 'income': '20', 'asset': 'USDT', 'symbol': 'BTCUSDT'},
+        ]
+        fills = [
+            {'symbol': 'BTCUSDT', 'id': 1, 'orderId': 1, 'side': 'BUY', 'time': start + 1000, 'positionSide': 'LONG', 'price': '100', 'qty': '3', 'quoteQty': '300'},
+            {'symbol': 'BTCUSDT', 'id': 2, 'orderId': 2, 'side': 'SELL', 'time': start + 4000, 'positionSide': 'LONG', 'price': '110', 'qty': '1', 'quoteQty': '110'},
+            {'symbol': 'BTCUSDT', 'id': 3, 'orderId': 2, 'side': 'SELL', 'time': start + 5000, 'positionSide': 'LONG', 'price': '110', 'qty': '2', 'quoteQty': '220'},
+        ]
+        status = {'connected': True, 'mode': 'BINANCE_REALTIME', 'positions_available': True, 'income_available': True}
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / 'account.sqlite3'
+            publish_report(database, previous)
+            with patch.object(engine, 'fetch_binance_data', return_value=({'totalWalletBalance': '1030', 'totalMarginBalance': '1030'}, income, [], status)), patch.object(engine, 'load_local_positions_store', return_value=([], [])), patch.object(client, '_send_signed_request', side_effect=lambda endpoint, params: (income if endpoint == '/fapi/v1/income' else fills, None)):
+                report = engine.run(database=database)
+        self.assertEqual(report['summary']['closed_trades'], 1)
+        trade = report['trade_history'][0]
+        self.assertEqual(trade['amount'], 3)
+        self.assertEqual(trade['entry_price'], 100)
+        self.assertEqual(trade['exit_price'], 110)
+        self.assertEqual(trade['net_pnl'], 30)
+        self.assertEqual(trade['duration_seconds'], 4)
 
     def test_client_http_451_graceful_fallback(self):
         """测试遇到 HTTP 451 区域受限时平滑降级至本地离线模式"""

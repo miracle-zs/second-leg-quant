@@ -94,21 +94,33 @@ def parse_to_timestamp(dt_val: Any) -> float:
     except ValueError:
         pass
 
-    # 处理常见日期时间格式
+    # 优先处理带明确时区标注的 ISO 8601 时间（如 Z 或 +00:00 / +08:00），避免误按北京时间解析造成 8 小时偏移
+    if s.endswith("Z") or s.endswith("z"):
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+            try:
+                dt = datetime.strptime(s[:-1] + "Z", fmt).replace(tzinfo=timezone.utc)
+                return dt.timestamp()
+            except ValueError:
+                continue
+    try:
+        dt_iso = datetime.fromisoformat(s)
+        if dt_iso.tzinfo is not None:
+            return dt_iso.timestamp()
+    except ValueError:
+        pass
+
+    # 处理无时区标注的常见本地日期时间格式（默认按北京时间 UTC+8）
     formats = [
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %H:%M:%S.%f",
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%dT%H:%M:%S.%f",
-        "%Y-%m-%dT%H:%M:%SZ",
         "%Y-%m-%d %H:%M",
         "%Y-%m-%d"
     ]
     for fmt in formats:
         try:
-            dt = datetime.strptime(s, fmt)
-            # 假定无时区标注的时间默认为北京时间 (UTC+8)
-            dt = dt.replace(tzinfo=BEIJING_TZ)
+            dt = datetime.strptime(s, fmt).replace(tzinfo=BEIJING_TZ)
             return dt.timestamp()
         except ValueError:
             continue
@@ -224,14 +236,14 @@ class AccountAnalyticsEngine:
             if not api_status["income_available"]:
                 income_list = []
 
-            # 3. 请求 /fapi/v2/positionRisk
+            # 3. 请求 /fapi/v2/positionRisk（兼容多头与空头所有非零持仓）
             pos_data, positions_error = self.client._send_signed_request("/fapi/v2/positionRisk")
             api_status["positions_available"] = positions_error is None and isinstance(pos_data, list)
             active_positions_binance = []
             if api_status["positions_available"]:
                 for p in pos_data:
                     amt = float(p["positionAmt"])
-                    if amt > 0:
+                    if amt != 0.0:
                         active_positions_binance.append(p)
 
             api_status["connected"] = True
@@ -425,7 +437,14 @@ class AccountAnalyticsEngine:
         """
         sym = clean_symbol(raw.get("symbol", "UNKNOWN"))
         entry_price = float(raw.get("entry_price") or raw.get("entryPrice") or 0.0)
-        amount = float(raw.get("amount") or raw.get("positionAmt") or 0.0)
+        raw_amt = float(raw.get("amount") if raw.get("amount") is not None else (raw.get("positionAmt") or 0.0))
+        raw_side = str(raw.get("side") or raw.get("positionSide") or "").upper()
+        if raw_side in ("LONG", "SHORT"):
+            side = raw_side
+        else:
+            side = "SHORT" if raw_amt < 0 else "LONG"
+        amount = abs(raw_amt)
+        direction = -1.0 if side == "SHORT" else 1.0
         leverage = int(raw.get("leverage") or self.default_leverage)
 
         # 获取标记价/现价
@@ -436,14 +455,21 @@ class AccountAnalyticsEngine:
         notional = round(mark_price * amount, 4)
         initial_margin = round(notional / leverage, 4) if leverage > 0 else notional
 
-        unrealized_pnl = float(raw.get("unrealized_pnl") or raw.get("unRealizedProfit") or ((mark_price - entry_price) * amount))
+        raw_upnl = raw.get("unrealized_pnl") if raw.get("unrealized_pnl") is not None else raw.get("unRealizedProfit")
+        unrealized_pnl = float(raw_upnl) if raw_upnl is not None else ((mark_price - entry_price) * amount * direction)
         unrealized_pnl = round(unrealized_pnl, 4)
 
-        pnl_pct = round(((mark_price - entry_price) / entry_price * 100.0), 2) if entry_price > 0 else 0.0
+        pnl_pct = round(((mark_price - entry_price) * direction / entry_price * 100.0), 2) if entry_price > 0 else 0.0
         roe_pct = round(pnl_pct * leverage, 2)
 
-        # 估算多头强平价格: Entry * (1 - 0.9 / Leverage)
-        est_liq_price = round(entry_price * (1.0 - 0.9 / leverage), 6) if leverage > 1 else 0.0
+        # 估算强平价格（优先取交易所返回的 liquidationPrice，否则按方向估算）
+        raw_liq = raw.get("liquidation_price") or raw.get("liquidationPrice")
+        if raw_liq is not None and float(raw_liq) > 0:
+            est_liq_price = round(float(raw_liq), 6)
+        elif leverage > 1:
+            est_liq_price = round(entry_price * (1.0 - 0.9 / leverage * direction), 6)
+        else:
+            est_liq_price = 0.0
 
         entry_time_str = raw.get("entry_time", "")
         entry_ts = parse_to_timestamp(entry_time_str)
@@ -458,7 +484,7 @@ class AccountAnalyticsEngine:
         return {
             "position_id": f"POS-{index+1:02d}-{sym}",
             "symbol": sym,
-            "side": "LONG",
+            "side": side,
             "entry_price": entry_price,
             "mark_price": mark_price,
             "amount": amount,
@@ -988,7 +1014,7 @@ class AccountAnalyticsEngine:
                         existing_fills = [json.loads(row[0]) for row in connection.execute(
                             "SELECT payload FROM trade_fills WHERE timestamp >= ?", (start_ms,)
                         )]
-                    if "equity_observations" in tables:
+                    if previous_report is not None and "equity_observations" in tables:
                         previous_report["equity_curve"] = [
                             json.loads(row[0]) for row in connection.execute(
                                 "SELECT payload FROM equity_observations WHERE timestamp >= ? ORDER BY timestamp",
@@ -1097,6 +1123,42 @@ class AccountAnalyticsEngine:
                     "source": "BINANCE_REALTIME",
                     "notes": "币安成交" if fill else "币安已实现盈亏流水",
                 })
+            # 一张平仓订单可能由多笔成交组成，应按订单汇总后计算交易指标。
+            grouped_trades = {}
+            for trade, item in zip(trade_history, (i for i in sorted(income_list, key=lambda value: value["time"]) if i["incomeType"] == "REALIZED_PNL" and i["asset"] == "USDT")):
+                fill = fills_by_id.get((item["symbol"], str(item.get("tradeId", ""))))
+                key = (item["symbol"], str(fill["orderId"])) if fill else (item["symbol"], f"income-{item['tranId']}")
+                if key not in grouped_trades:
+                    grouped_trades[key] = trade
+                else:
+                    group = grouped_trades[key]
+                    for field in ("amount", "exit_notional", "realized_pnl", "fee"):
+                        group[field] += trade[field]
+                    if trade["closed_ts"] > group["closed_ts"]:
+                        group["closed_ts"] = trade["closed_ts"]
+                        group["closed_at"] = trade["closed_at"]
+            trade_history = list(grouped_trades.values())
+            for trade in trade_history:
+                trade["net_pnl"] = round(trade["realized_pnl"] - trade["fee"], 4)
+                trade["outcome"] = "WIN" if trade["net_pnl"] > 0 else "LOSS" if trade["net_pnl"] < 0 else "BREAKEVEN"
+                if trade["amount"] and trade["side"] in ("LONG", "SHORT"):
+                    trade["exit_price"] = trade["exit_notional"] / trade["amount"]
+                    direction = 1 if trade["side"] == "LONG" else -1
+                    trade["entry_notional"] = trade["exit_notional"] - direction * trade["realized_pnl"]
+                    trade["entry_price"] = trade["entry_notional"] / trade["amount"]
+                    if trade["entry_notional"] > 0:
+                        trade["pnl_pct"] = trade["net_pnl"] / trade["entry_notional"] * 100
+                # 仅在记录起点后的开仓成交数量与首笔平仓完全匹配时确定开仓时间。
+                opening_side = "BUY" if trade["side"] == "LONG" else "SELL"
+                relevant = sorted((f for f in fills_by_id.values() if f["symbol"] == trade["symbol"] and f["positionSide"] == trade["side"] and int(f["time"]) <= trade["closed_ts"]), key=lambda f: int(f["time"]))
+                opening = [f for f in relevant if f["side"] == opening_side]
+                closing = [f for f in relevant if f["side"] != opening_side]
+                if opening and closing and max(int(f["time"]) for f in opening) < min(int(f["time"]) for f in closing) and abs(sum(float(f["qty"]) for f in opening) - trade["amount"]) < 1e-8:
+                    entry_ts = min(int(f["time"]) for f in opening)
+                    trade["entry_ts"] = entry_ts
+                    trade["entry_time"] = get_beijing_time_str(entry_ts / 1000)
+                    trade["duration_seconds"] = max(0, (trade["closed_ts"] - entry_ts) // 1000)
+                    trade["duration_str"] = format_duration(trade["duration_seconds"])
         elif api_status["income_available"]:
             trade_history = self.reconstruct_binance_trades(income_list, local_history)
         else:
@@ -1105,18 +1167,31 @@ class AccountAnalyticsEngine:
         # 4. 活跃持仓清洗
         active_positions = [self.enrich_active_position(p, idx) for idx, p in enumerate(raw_active_positions)]
 
-        # 提取币安历史转账净充值作为默认本金基准
+        # 提取币安历史转账净充值作为默认本金基准；若非数据库模式下流水满页，继承上次已确立的本金基准，防止跳变回 10000
         income_times = [int(item["time"]) for item in income_list]
         net_transfers = None
+        cached_baseline_capital = None
         if income_list and not income_page_full:
             net_transfers = sum(float(x["income"]) for x in income_list if x["incomeType"] == "TRANSFER")
+        elif database is None and self.custom_initial_capital is None and out_file.exists():
+            try:
+                with open(out_file, "r", encoding="utf-8") as f:
+                    prev_json = json.load(f)
+                prev_src = (prev_json.get("income_breakdown") or {}).get("principal_source")
+                prev_cap = float((prev_json.get("summary") or {}).get("initial_capital") or 0.0)
+                if prev_src in ("income_window", "recording_start", "configured", "cached_baseline") and prev_cap > 0:
+                    cached_baseline_capital = prev_cap
+            except Exception:
+                cached_baseline_capital = None
+
+        effective_transfers = net_transfers if (net_transfers is not None and net_transfers > 0) else cached_baseline_capital
 
         # 5. 计算全套量化风控指标、资金走势与每日统计
         summary, equity_curve, daily_pnl = self.calculate_quant_risk_metrics(
             trades=trade_history,
             active_positions=active_positions,
             account_info=account_info,
-            net_transfers=net_transfers
+            net_transfers=effective_transfers
         )
 
         if recording is not None:
@@ -1235,6 +1310,7 @@ class AccountAnalyticsEngine:
                 "recording_start" if recording is not None
                 else "configured" if self.custom_initial_capital is not None
                 else "income_window" if net_transfers is not None and net_transfers > 0
+                else "cached_baseline" if cached_baseline_capital is not None
                 else "default"
             ),
         }

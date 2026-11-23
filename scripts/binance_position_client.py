@@ -4,30 +4,24 @@
 币安合约实时持仓同步客户端 (Binance USDⓈ-M Futures Position Client)
 ==============================================================================
 功能:
-1. 通过 HMAC-SHA256 签名鉴权请求币安永续合约持仓风险接口 (/fapi/v2/positionRisk)。
-2. 过滤提取用户当前真实活跃多头持仓 (positionAmt > 0)。
-3. 与本地风控持仓文件 (runs/trade_positions.json) 执行双向自动同步:
-   - 币安出现新持仓 -> 自动录入实际开仓均价 entryPrice 与持仓数量 amount，
-     并自动匹配 TradingView 专属布局 (ig0LuDL8) 中的下行趋势线。
+1. 复用 scripts/binance_client.py 的统一 BinanceFuturesClient（10 分钟时间偏移校准、
+   HMAC-SHA256 签名鉴权、-1021 自动重校准重试、多空双向持仓查询）。
+2. 与本地风控持仓文件 (runs/trade_positions.json) 执行双向自动同步:
+   - 币安出现新持仓 -> 自动录入实际开仓均价 entryPrice、持仓数量 amount 与 mark_price，
+     并按严格币种匹配 + 15m 趋势线有效性过滤关联 TradingView 专属布局 (ig0LuDL8) 中的趋势线。
    - 币安已平仓 (positionAmt == 0) -> 自动归档至 history 历史记录。
-4. API Key 缺省时优雅降级为模拟/离线模式，保障系统高可用。
+3. API Key 缺省时优雅降级为模拟/离线模式，保障系统高可用。
 ==============================================================================
 """
 
+import logging
 import os
 import sys
 import time
-import json
-import hmac
-import hashlib
-import logging
-import urllib.request
 import urllib.error
-import urllib.parse
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Any, Callable, Optional
 
-# 路径基准
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 RUNS_DIR = PROJECT_ROOT / "runs"
@@ -37,7 +31,14 @@ if str(SCRIPTS_DIR) not in sys.path:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 尝试导入 TV 画线引擎以自动关联趋势线
+from binance_client import (  # noqa: E402
+    BINANCE_FUTURES_BASE_URL,
+    POSITION_RISK_ENDPOINT,
+    SERVER_TIME_ENDPOINT,
+    BinanceFuturesClient,
+)
+from config import clean_symbol  # noqa: E402
+
 try:
     import tv_trendline_engine as tve
 except ImportError:
@@ -48,219 +49,98 @@ except ImportError:
 
 logger = logging.getLogger("binance_client")
 
-BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
-POSITION_RISK_ENDPOINT = "/fapi/v2/positionRisk"
-SERVER_TIME_ENDPOINT = "/fapi/v1/time"
+
+def _extract_line_interval(line: dict) -> str:
+    iv = line.get("interval")
+    if not iv and isinstance(line.get("state"), dict):
+        iv = line["state"].get("interval")
+    if not iv and isinstance(line.get("points"), list):
+        for pt in line["points"]:
+            if isinstance(pt, dict) and pt.get("interval"):
+                iv = pt["interval"]
+                break
+    return str(iv).strip().upper() if iv is not None else ""
 
 
-def clean_symbol(raw: str) -> str:
-    """标准化币种符号，去除 BINANCE: 前缀与 .P 后缀"""
-    s = raw.strip().upper()
-    if ":" in s:
-        s = s.split(":")[-1]
-    if s.endswith(".P"):
-        s = s[:-2]
-    return s
-
-
-class BinanceFuturesClient:
-    """币安 USDⓈ-M 合约 API 客户端"""
-
-    def __init__(
-        self,
-        api_key: str = "",
-        api_secret: str = "",
-        base_url: str = BINANCE_FUTURES_BASE_URL,
-        timeout: int = 8
-    ):
-        self.api_key = (api_key or "").strip()
-        self.api_secret = (api_secret or "").strip()
-        self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
-
-    @classmethod
-    def from_env(cls, env_path: Path = PROJECT_ROOT / ".env") -> "BinanceFuturesClient":
-        """优先从项目根目录 .env 文件及环境变量中自动初始化客户端"""
-        k = os.environ.get("BINANCE_API_KEY", "")
-        s = os.environ.get("BINANCE_API_SECRET", "")
-        if (not k or not s) and env_path.exists():
-            try:
-                with open(env_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#") and "=" in line:
-                            pk, pv = line.split("=", 1)
-                            pk = pk.strip()
-                            pv = pv.strip().strip("\"'")
-                            if pk == "BINANCE_API_KEY" and not k:
-                                k = pv
-                            elif pk == "BINANCE_API_SECRET" and not s:
-                                s = pv
-            except Exception:
-                pass
-        return cls(api_key=k, api_secret=s)
-
-    def is_configured(self) -> bool:
-        """检查 API 凭证是否已完整配置"""
-        return bool(self.api_key and self.api_secret)
-
-    def _generate_signature(self, query_string: str) -> str:
-        """根据 Query String 计算 HMAC-SHA256 签名"""
-        return hmac.new(
-            self.api_secret.encode("utf-8"),
-            query_string.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-
-    def get_server_time(self) -> int:
-        """获取币安服务器毫秒级绝对时间戳，避免本地时钟偏差触发 -1021 错误"""
-        url = f"{self.base_url}{SERVER_TIME_ENDPOINT}"
-        req = urllib.request.Request(url, headers={"User-Agent": "TradeAlertDaemon/1.0"})
+def _extract_line_recency(line: dict) -> float:
+    s_time = line.get("server_update_time")
+    if s_time is not None:
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                return int(data.get("serverTime", int(time.time() * 1000)))
-        except Exception as e:
-            logger.debug(f"拉取币安服务器时间异常，使用本地时间: {e}")
-            return int(time.time() * 1000)
+            val = float(s_time)
+            return val / 1000.0 if val > 1e11 else val
+        except (TypeError, ValueError):
+            pass
+    t2 = line.get("t2")
+    if t2 is None and isinstance(line.get("points"), list) and len(line["points"]) >= 2:
+        t2 = line["points"][1].get("time_t") or line["points"][1].get("time")
+    try:
+        return float(t2) if t2 is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
-    def _send_signed_request(self, endpoint: str, params: Optional[dict] = None) -> Tuple[Optional[Any], Optional[dict]]:
-        """
-        发送已签名的 GET 请求至币安合约 API。
-        返回 (data, error_info)。如果成功 error_info 为 None；若失败 data 为 None，error_info 包含 code 和 msg。
-        """
-        if not self.is_configured():
-            logger.warning("币安 API 凭据未配置，跳过网络请求。")
-            return None, {"code": "NOT_CONFIGURED", "msg": "API keys not configured"}
 
-        server_ts = self.get_server_time()
-        p = dict(params or {})
-        p["timestamp"] = server_ts
-        p["recvWindow"] = 5000
+def _is_descending_line(line: dict) -> bool:
+    p1, p2 = line.get("p1"), line.get("p2")
+    if (p1 is None or p2 is None) and isinstance(line.get("points"), list) and len(line["points"]) >= 2:
+        p1 = line["points"][0].get("price")
+        p2 = line["points"][1].get("price")
+    try:
+        return p1 is not None and p2 is not None and float(p1) >= float(p2)
+    except (TypeError, ValueError):
+        return False
 
-        query_str = urllib.parse.urlencode(p)
-        signature = self._generate_signature(query_str)
-        full_query = f"{query_str}&signature={signature}"
-        url = f"{self.base_url}{endpoint}?{full_query}"
 
-        req = urllib.request.Request(
-            url,
-            headers={
-                "X-MBX-APIKEY": self.api_key,
-                "User-Agent": "TradeAlertDaemon/1.0",
-                "Content-Type": "application/x-www-form-urlencoded"
-            },
-            method="GET"
-        )
+def select_best_position_trendline(
+    lines: Any,
+    current_time: Optional[float] = None,
+) -> Optional[dict]:
+    """
+    从同一币种的多条 TradingView 画线中筛选最适合作为持仓止损线的 15m 趋势线:
+    1. 严格排除非 15m 周期画线（如 60/240/D/1W 等）。
+    2. 优先选择 72 小时内的新鲜 15m 下行趋势线，按最近更新时间降序选取。
+    3. 若均无新鲜时间戳（如离线/历史 mock 夹具），退化为从 15m（或未标周期）画线中选最新一条。
+    """
+    if not lines:
+        return None
+    candidates = lines if isinstance(lines, list) else [lines]
+    candidates = [l for l in candidates if isinstance(l, dict)]
+    if not candidates:
+        return None
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if isinstance(data, dict) and data.get("code") and int(data.get("code")) < 0:
-                    logger.error(f"币安接口返回错误 [{endpoint}]: [{data.get('code')}] {data.get('msg')}")
-                    return None, {"code": data.get("code"), "msg": data.get("msg")}
-                return data, None
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8") if e.fp else ""
-            logger.warning(f"币安 HTTP 请求失败 [{endpoint}] ({e.code}): {err_body}")
-            return None, {"code": e.code, "msg": err_body}
-        except Exception as e:
-            logger.warning(f"请求币安接口网络异常 [{endpoint}]: {e}")
-            return None, {"code": "NETWORK_ERROR", "msg": str(e)}
+    # 1. 排除明确标注为非 15m 的画线
+    iv_ok = []
+    for line in candidates:
+        iv = _extract_line_interval(line)
+        if not iv or iv in ("15", "15M"):
+            iv_ok.append(line)
+    if not iv_ok:
+        return None
 
-    def get_account_positions(self) -> Optional[List[dict]]:
-        """
-        请求 /fapi/v2/positionRisk 获取账户所有合约头寸信息。
-        需要有效的 API-Key 与 HMAC-SHA256 签名。请求失败返回 None。
-        """
-        data, _ = self._send_signed_request(POSITION_RISK_ENDPOINT)
-        return data if isinstance(data, list) else None
+    # 2. 优先筛选 72 小时内的近期有效线
+    now_ts = current_time if current_time is not None else time.time()
+    max_age = 72 * 3600
+    recent = [
+        line for line in iv_ok
+        if _extract_line_recency(line) > 0 and (now_ts - _extract_line_recency(line)) <= max_age
+    ]
+    pool = recent if recent else iv_ok
 
-    def get_account_info(self) -> Optional[dict]:
-        """
-        请求 /fapi/v2/account 获取合约账户全量资产、钱包余额与保证金信息。
-        """
-        data, _ = self._send_signed_request("/fapi/v2/account")
-        return data if isinstance(data, dict) else None
+    # 3. 优先下行趋势线（买点②阻力/支撑转化线），其次按更新时间倒序
+    pool.sort(key=lambda l: (1 if _is_descending_line(l) else 0, _extract_line_recency(l)), reverse=True)
+    return pool[0]
 
-    def get_income(
-        self,
-        income_type: Optional[str] = None,
-        symbol: Optional[str] = None,
-        start_time: Optional[int] = None,
-        end_time: Optional[int] = None,
-        limit: int = 1000
-    ) -> List[dict]:
-        """
-        请求 /fapi/v1/income 获取合约账户资金流水（已实现盈亏、手续费、资金费率、转账等）。
-        """
-        params: Dict[str, Any] = {"limit": min(limit, 1000)}
-        if income_type:
-            params["incomeType"] = income_type
-        if symbol:
-            params["symbol"] = clean_symbol(symbol)
-        if start_time:
-            params["startTime"] = int(start_time)
-        if end_time:
-            params["endTime"] = int(end_time)
-        data, _ = self._send_signed_request("/fapi/v1/income", params)
-        return data if isinstance(data, list) else []
 
-    def get_user_trades(
-        self,
-        symbol: str,
-        start_time: Optional[int] = None,
-        end_time: Optional[int] = None,
-        from_id: Optional[int] = None,
-        limit: int = 1000
-    ) -> List[dict]:
-        """
-        请求 /fapi/v1/userTrades 获取指定交易对的历史成交记录。
-        """
-        params: Dict[str, Any] = {
-            "symbol": clean_symbol(symbol),
-            "limit": min(limit, 1000)
-        }
-        if start_time:
-            params["startTime"] = int(start_time)
-        if end_time:
-            params["endTime"] = int(end_time)
-        if from_id:
-            params["fromId"] = int(from_id)
-        data, _ = self._send_signed_request("/fapi/v1/userTrades", params)
-        return data if isinstance(data, list) else []
-
-    def get_active_long_positions(self) -> Optional[List[dict]]:
-        """
-        筛选并标准化当前有效开仓的多头持仓 (positionAmt > 0)。
-        """
-        raw_list = self.get_account_positions()
-        if raw_list is None:
-            return None
-
-        active_longs = []
-
-        for p in raw_list:
-            amt = float(p["positionAmt"])
-            if amt > 0:  # 仅追踪多头多单
-                sym = clean_symbol(p["symbol"])
-                entry_p = float(p.get("entryPrice", 0.0))
-                mark_p = float(p.get("markPrice", entry_p))
-                pnl = float(p.get("unRealizedProfit", 0.0))
-                leverage = int(p.get("leverage", 1))
-                active_longs.append({
-                    "symbol": sym,
-                    "amount": amt,
-                    "entry_price": entry_p,
-                    "mark_price": mark_p,
-                    "unrealized_pnl": pnl,
-                    "leverage": leverage,
-                    "position_side": p.get("positionSide", "BOTH"),
-                    "update_time": int(p.get("updateTime", 0)),
-                    "notional": float(p.get("notional", amt * mark_p))
-                })
-
-        return active_longs
+def match_symbol_drawings(symbol: str, drawings_map: dict[str, Any]) -> Any:
+    """严格按标准化币种名称精确匹配画线，杜绝短币名子串串线（如 HUSDT 误匹配 ETHUSDT）。"""
+    target = clean_symbol(symbol)
+    if not target or not drawings_map:
+        return None
+    if target in drawings_map:
+        return drawings_map[target]
+    for k, lines in drawings_map.items():
+        if clean_symbol(k) == target:
+            return lines
+    return None
 
 
 def sync_binance_positions(
@@ -272,9 +152,9 @@ def sync_binance_positions(
 ) -> dict:
     """
     自动双向同步币安实盘持仓到本地 PositionStore:
-    1. 发现新开多单 -> 自动录入实际开仓价/持仓量，并自动匹配 TradingView 对数趋势线。
+    1. 发现新开多单 -> 自动录入实际开仓价/持仓量/标记价，并自动匹配 15m TradingView 对数趋势线。
     2. 发现持仓已平仓 (positionAmt == 0) -> 自动归档至 history 历史记录。
-    3. 已存在的持仓 -> 自动更新持仓均价与持仓数量 (防加仓/减仓数据滞后)。
+    3. 已存在的持仓 -> 自动更新持仓均价、数量与最新标记价 (mark_price)，供下游风控直接复用。
     """
     if not client.is_configured():
         logger.info("ℹ️ 币安 API 未配置，维持手动/本地持仓管理模式。")
@@ -296,10 +176,8 @@ def sync_binance_positions(
             "auto_closed": [],
         }
     binance_symbols = {p["symbol"]: p for p in active_longs}
-
     current_open_positions = {p["symbol"]: p for p in pos_store.get_open_positions()}
 
-    # 只有新仓需要匹配画线。同一批新仓共用一份布局。
     drawings_map = {}
     if binance_symbols.keys() - current_open_positions.keys():
         if load_drawings is None and tve is not None:
@@ -308,21 +186,16 @@ def sync_binance_positions(
             try:
                 drawings_map = load_drawings(layout_id)
             except (RuntimeError, TimeoutError, urllib.error.URLError) as e:
-                logger.warning(f"同步拉取 TV 画线失败: {e}")
+                logger.warning("同步拉取 TV 画线失败: %s", e)
 
     new_added = []
     auto_closed = []
 
     for sym, b_pos in binance_symbols.items():
         if sym not in current_open_positions:
-            # 自动匹配该币种在 TradingView ig0LuDL8 中的趋势线
-            matched_trendline = None
-            for k, lines in drawings_map.items():
-                if sym == clean_symbol(k):
-                    matched_trendline = lines[0] if isinstance(lines, list) and lines else lines
-                    break
+            matched_lines = match_symbol_drawings(sym, drawings_map)
+            matched_trendline = select_best_position_trendline(matched_lines)
 
-            # 自动录入新持仓
             notes = f"Binance Real-Time Auto-Sync (Leverage: {b_pos['leverage']}x)"
             pos_store.add_position(
                 symbol=sym,
@@ -331,29 +204,40 @@ def sync_binance_positions(
                 trendline=matched_trendline,
                 notes=notes,
                 source="BINANCE_SYNC",
-                leverage=b_pos["leverage"]
+                leverage=b_pos["leverage"],
+                mark_price=b_pos.get("mark_price", b_pos["entry_price"]),
+                current_price=b_pos.get("mark_price", b_pos["entry_price"]),
             )
             new_added.append(sym)
-            logger.info(f"⚡ [币安实盘自动同步] 发现新开多仓: {sym} @ {b_pos['entry_price']} (数量: {b_pos['amount']})")
+            logger.info(
+                "⚡ [币安实盘自动同步] 发现新开多仓: %s @ %s (数量: %s)",
+                sym, b_pos["entry_price"], b_pos["amount"],
+            )
         else:
-            # 更新已有仓位的数据 (如加仓拉低均价)
             local_p = current_open_positions[sym]
-            if abs(local_p["entry_price"] - b_pos["entry_price"]) > 1e-6 or abs(local_p["amount"] - b_pos["amount"]) > 1e-6:
-                logger.info(f"🔄 [币安实盘自动同步] 更新持仓均价/数量: {sym} {local_p['entry_price']} -> {b_pos['entry_price']}")
+            if (
+                abs(local_p["entry_price"] - b_pos["entry_price"]) > 1e-6
+                or abs(local_p["amount"] - b_pos["amount"]) > 1e-6
+            ):
+                logger.info(
+                    "🔄 [币安实盘自动同步] 更新持仓均价/数量: %s %s -> %s",
+                    sym, local_p["entry_price"], b_pos["entry_price"],
+                )
                 local_p["entry_price"] = b_pos["entry_price"]
                 local_p["amount"] = b_pos["amount"]
             local_p["source"] = "BINANCE_SYNC"
             local_p["leverage"] = b_pos["leverage"]
+            if b_pos.get("mark_price"):
+                local_p["mark_price"] = b_pos["mark_price"]
+                local_p["current_price"] = b_pos["mark_price"]
 
-    # 2. 检查本地中由币安同步创建但币安已平仓 (positionAmt == 0) 的仓位 -> 自动归档
     for p in pos_store.get_open_positions():
         sym = p["symbol"]
-        # 仅针对由币安同步管理的仓位 (或者全部开仓)，若币安端已无此仓位则自动平仓
         if p.get("source") == "BINANCE_SYNC" and sym not in binance_symbols:
             closed_p = pos_store.close_position(sym, reason="BINANCE_POSITION_CLOSED")
             if closed_p:
                 auto_closed.append(sym)
-                logger.info(f"🏁 [币安实盘自动同步] 监测到币安已平仓，自动归档: {sym}")
+                logger.info("🏁 [币安实盘自动同步] 监测到币安已平仓，自动归档: %s", sym)
 
     pos_store.save()
 
@@ -363,24 +247,25 @@ def sync_binance_positions(
         "active_count": len(active_longs),
         "new_added": new_added,
         "auto_closed": auto_closed,
-        "active_positions": active_longs
+        "active_positions": active_longs,
     }
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    api_key = os.environ.get("BINANCE_API_KEY", "")
-    api_sec = os.environ.get("BINANCE_API_SECRET", "")
-    client = BinanceFuturesClient(api_key, api_sec)
+    client = BinanceFuturesClient.from_env()
     print(f"Binance Futures Client: Configured={client.is_configured()}")
     if client.is_configured():
         server_ts = client.get_server_time()
         print(f"Server Time: {server_ts}")
-        positions = client.get_active_long_positions()
+        positions = client.get_active_positions(include_short=True)
         if positions is None:
             raise SystemExit("Failed to fetch Binance positions")
-        print(f"Active Long Positions ({len(positions)}):")
+        print(f"Active Positions ({len(positions)}):")
         for p in positions:
-            print(f"  - {p['symbol']}: {p['amount']} @ {p['entry_price']} (mark: {p['mark_price']}, pnl: {p['unrealized_pnl']})")
+            print(
+                f"  - {p['symbol']} [{p['side']}]: {p['amount']} @ {p['entry_price']} "
+                f"(mark: {p['mark_price']}, pnl: {p['unrealized_pnl']})"
+            )
     else:
         print("Tip: Set BINANCE_API_KEY and BINANCE_API_SECRET env variables to test live positions.")

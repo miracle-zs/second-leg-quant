@@ -1,0 +1,65 @@
+:root {
+  color-scheme: dark;
+}
+body {
+  background-color: #070a12;
+  color: #f1f5f9;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.custom-scrollbar {
+  --scrollbar-thumb: #1e293b;
+  --scrollbar-track: transparent;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+@supports not (scrollbar-color: auto) {
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 3px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-ping, .animate-pulse {
+    animation: none !important;
+  }
+}
+.kpi-card {
+  cursor: default;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.kpi-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -4px rgba(0, 0, 0, 0.5);
+}
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+th.sortable:hover {
+  color: #38bdf8;
+  background-color: rgba(30, 41, 59, 0.6);
+}
+.sort-icon {
+  display: inline-block;
+  margin-left: 2px;
+  opacity: 0.5;
+}
+th.sortable:hover .sort-icon {
+  opacity: 1;
+}
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+.sticky-header th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  background-color: rgba(11, 15, 25, 0.95);
+  box-shadow: 0 1px 0 rgba(51, 65, 85, 0.8);
+}

@@ -335,28 +335,30 @@ def scan_pool():
                 closes = [float(k[4]) for k in data]
                 times = [int(k[0]) // 1000 for k in data]
                 
-                def calc_ema(values, period):
+                def calc_ema_series(values, period):
+                    """单趟 O(N) 计算完整 EMA 序列，消除 O(N^2) 重复计算。"""
                     if len(values) < period:
-                        return values[-1] if values else 0.0
+                        return [values[-1] if values else 0.0] * len(values)
                     alpha = 2.0 / (period + 1)
                     ema = sum(values[:period]) / period
+                    series = [None] * (period - 1) + [ema]
                     for v in values[period:]:
                         ema = alpha * v + (1 - alpha) * ema
-                    return ema
-                    
-                ema5 = calc_ema(closes, 5)
-                ema10 = calc_ema(closes, 10)
+                        series.append(ema)
+                    return series
+
+                ema5_series = calc_ema_series(closes, 5)
+                ema10_series = calc_ema_series(closes, 10)
+                ema5 = ema5_series[-1]
+                ema10 = ema10_series[-1]
                 is_bull = ema5 > ema10
                 spread = ((ema5 - ema10) / ema10) * 100 if ema10 > 0 else 0.0
 
-                # 计算连续 1h EMA5 > EMA10 顺势柱数（共振时长基础）
+                # O(N) 倒序统计连续 1h EMA5 > EMA10 顺势柱数
                 bull_streak = 0
                 if len(closes) >= 10:
                     for i in range(len(closes) - 1, 9, -1):
-                        sub_closes = closes[:i + 1]
-                        e5 = calc_ema(sub_closes, 5)
-                        e10 = calc_ema(sub_closes, 10)
-                        if e5 > e10:
+                        if ema5_series[i] > ema10_series[i]:
                             bull_streak += 1
                         else:
                             break
@@ -485,11 +487,17 @@ def scan_pool():
     if not verified_candidates:
         raise RuntimeError("❌ 致命异常：未拉取到任何有效候选标的，拒绝写入 runs/ 以防清空历史数据！")
 
-    database = os.environ.get("COIN_DATABASE")
+    try:
+        from config import atomic_write_json, resolve_database_path
+    except ImportError:
+        from scripts.config import atomic_write_json, resolve_database_path
+
+    database = resolve_database_path()
     if database:
         import sqlite3
         from contextlib import closing
 
+        database.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(verified_candidates, ensure_ascii=False, allow_nan=False)
         with closing(sqlite3.connect(database)) as connection, connection:
             connection.execute("""
@@ -507,12 +515,8 @@ def scan_pool():
             """, (payload,))
 
     out_file = ROOT / "runs" / "second_leg_candidates_pool.json"
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(verified_candidates, f, indent=2, ensure_ascii=False)
-
-    with open(history_file, "w", encoding="utf-8") as f:
-        json.dump(sub_30m_history, f, indent=2, ensure_ascii=False)
+    atomic_write_json(out_file, verified_candidates)
+    atomic_write_json(history_file, sub_30m_history)
         
     n_overflow = len([c for c in verified_candidates if c.get('is_overflow_7d')])
     print(f"\n✅ 官方权威校验完成！纯加密候选标的共 {len(verified_candidates)} 个 (含 {n_overflow} 个 7 天溢出跟踪标的):")

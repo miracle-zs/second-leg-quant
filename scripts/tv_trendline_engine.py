@@ -60,6 +60,8 @@ USER_AGENT = (
 
 # In-memory JWT token cache: {layout_id: {"token": str, "exp": int}}
 _TOKEN_CACHE: dict[str, dict[str, Any]] = {}
+_TV_TIME_OFFSET_MS: int | None = None
+_TV_TIME_SYNCED_AT: float = 0.0
 
 
 def clean_symbol(raw_symbol: str) -> str:
@@ -330,17 +332,17 @@ def calculate_log_resistance(
     if p1 <= 0 or p2 <= 0:
         raise ValueError(f"Prices must be strictly positive for logarithmic projection: p1={p1}, p2={p2}")
 
-    if t1 == t2:
+    if t1 == t2 or p1 == p2 or target_t == t1:
         return float(p1)
-
-    if p1 == p2:
-        return float(p1)
+    if target_t == t2:
+        return float(p2)
 
     exponent = (target_t - t1) / (t2 - t1)
-    # Using math.exp and math.log for optimal numerical stability
-    ratio = p2 / p1
-    res = p1 * math.pow(ratio, exponent)
-    return float(res)
+    # 使用对数空间计算并防止极陡/远期外推导致 OverflowError 或下溢
+    log_val = math.log(p1) + exponent * math.log(p2 / p1)
+    if log_val > 50.0 or log_val < -50.0:
+        return 0.0
+    return float(math.exp(log_val))
 
 
 def fetch_latest_closed_candle(
@@ -364,13 +366,20 @@ def fetch_latest_closed_candle(
     })
     url = f"{BINANCE_FUTURES_KLINES_URL}?{query}"
 
-    # Fetch Binance server time for absolute clock synchronization
-    server_time_ms = int(time.time() * 1000)
-    try:
-        t_raw = _request_with_retry(BINANCE_FUTURES_TIME_URL, timeout=6, max_retries=2)
-        server_time_ms = json.loads(t_raw.decode("utf-8")).get("serverTime", server_time_ms)
-    except Exception as e:
-        logger.debug("Binance server time check fallback to local: %s", e)
+    # 使用 10 分钟时间偏移缓存（首次通过 _request_with_retry 同步，兼容单测 mock）
+    global _TV_TIME_OFFSET_MS, _TV_TIME_SYNCED_AT
+    now_mono = time.monotonic()
+    if _TV_TIME_OFFSET_MS is not None and (now_mono - _TV_TIME_SYNCED_AT) < 600.0:
+        server_time_ms = int(time.time() * 1000) + _TV_TIME_OFFSET_MS
+    else:
+        server_time_ms = int(time.time() * 1000)
+        try:
+            t_raw = _request_with_retry(BINANCE_FUTURES_TIME_URL, timeout=6, max_retries=2)
+            server_time_ms = json.loads(t_raw.decode("utf-8")).get("serverTime", server_time_ms)
+            _TV_TIME_OFFSET_MS = server_time_ms - int(time.time() * 1000)
+            _TV_TIME_SYNCED_AT = now_mono
+        except Exception as e:
+            logger.debug("Binance server time check fallback to local: %s", e)
 
     raw_klines = _request_with_retry(url, timeout=10, max_retries=3)
     klines_data = json.loads(raw_klines.decode("utf-8"))

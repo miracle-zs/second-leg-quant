@@ -523,12 +523,14 @@ class PositionStore:
                 logger.error(f"加载持仓文件失败: {e}")
 
     def save(self):
+        from config import file_lock
         self.data["updated_at"] = get_beijing_time_str()
-        atomic_write_json(self.filepath, self.data)
-        try:
-            self._last_mtime = self.filepath.stat().st_mtime
-        except Exception:
-            pass
+        with file_lock(self.filepath):
+            atomic_write_json(self.filepath, self.data)
+            try:
+                self._last_mtime = self.filepath.stat().st_mtime
+            except Exception:
+                pass
 
     def get_open_positions(self) -> List[Dict[str, Any]]:
         self.load()
@@ -651,12 +653,14 @@ class ResonanceStateStore:
                 logger.error(f"加载共振状态文件失败: {e}")
 
     def save(self):
+        from config import file_lock
         self.data["last_updated"] = get_beijing_time_str()
-        atomic_write_json(self.filepath, self.data)
-        try:
-            self._last_mtime = self.filepath.stat().st_mtime
-        except Exception:
-            pass
+        with file_lock(self.filepath):
+            atomic_write_json(self.filepath, self.data)
+            try:
+                self._last_mtime = self.filepath.stat().st_mtime
+            except Exception:
+                pass
 
     def get_active_symbols(self) -> set:
         self.load()
@@ -887,11 +891,12 @@ def check_feature_2_breakout(
 
     # 遍历当前共振币种
     for sym in active_symbols:
-        # 支持多种 symbol 匹配格式: "YBUSDT", "BINANCE:YBUSDT.P", "BINANCE:YBUSDT"
+        # 严格按标准化币种名称精确匹配，杜绝短币名子串串线 (如 HUSDT 误匹配 ETHUSDT)
         matched_lines = None
+        sym_clean = sym.upper().replace(".P", "").replace("BINANCE:", "")
         for k, lines in drawings_map.items():
             k_clean = k.upper().replace(".P", "").replace("BINANCE:", "")
-            if sym == k_clean or sym in k_clean:
+            if sym_clean == k_clean:
                 matched_lines = lines
                 break
 
@@ -1021,8 +1026,6 @@ def check_feature_2_breakout(
 
     return breakout_alerts
 
-    return breakout_alerts
-
 
 def _send_breakout_notification(
     notifier: ServerChanNotifier,
@@ -1094,14 +1097,19 @@ def check_feature_3_stop_loss(
         close_price = candle["close"]
         entry_price = float(pos["entry_price"])
 
-        # 寻找对应的趋势线：优先持仓中缓存的线，其次从 TV 画线匹配
+        # 寻找对应的趋势线：优先持仓中缓存的线，其次从 TV 画线严格精确匹配并过滤有效 15m 线
         line = pos.get("trendline")
         if not line and drawings_map:
+            sym_clean = sym.upper().replace(".P", "").replace("BINANCE:", "")
             for k, lines in drawings_map.items():
                 k_clean = k.upper().replace(".P", "").replace("BINANCE:", "")
-                if sym == k_clean or sym in k_clean:
-                    line = lines[0] if isinstance(lines, list) and lines else lines
-                    pos["trendline"] = line
+                if sym_clean == k_clean:
+                    if bpc and hasattr(bpc, "select_best_position_trendline"):
+                        line = bpc.select_best_position_trendline(lines, current_time=candle.get("candle_timestamp", close_time))
+                    else:
+                        line = lines[0] if isinstance(lines, list) and lines else lines
+                    if line:
+                        pos["trendline"] = line
                     break
 
         if not line:
@@ -1179,11 +1187,12 @@ def check_feature_4_trailing_stops(
     notifier: ServerChanNotifier,
     pos_store: PositionStore,
     activation_pct: float = 6.0,
-    lock_pct: float = 1.0
+    lock_pct: float = 1.0,
+    price_cache: Optional[Dict[str, float]] = None,
 ) -> List[dict]:
     """
     Feature 4 (持仓动态移动止盈保护):
-    实时跟踪持仓市价。
+    实时跟踪持仓市价（优先复用刚同步的 mark_price 缓存，避免每 10 秒重复逐币请求）。
     1. 当现价涨幅 >= entry_price * (1 + activation_pct/100) (默认 +6%) 时:
        自动将止损线上移至 entry_price * (1 + lock_pct/100) (默认 +1%)，锁定保本收益。
     2. 若后续价格回踩 <= 移动止损价:
@@ -1198,7 +1207,8 @@ def check_feature_4_trailing_stops(
 
     for pos in open_positions:
         sym = pos["symbol"]
-        curr_price = get_binance_ticker_price(sym)
+        cached_p = price_cache.get(sym, 0.0) if price_cache else 0.0
+        curr_price = float(cached_p) if cached_p and cached_p > 0 else get_binance_ticker_price(sym)
         if curr_price <= 0 and not (
             "pending_trailing_activation_price" in pos or "pending_profit_lock_price" in pos
         ):
@@ -1399,15 +1409,20 @@ class TradeAlertDaemon:
             try:
                 now = time.time()
 
-                # 自动双向同步币安实盘活跃持仓
+                # 自动双向同步币安实盘活跃持仓，并缓存本次 mark_price 供 Feature 4 复用
+                price_cache: Dict[str, float] = {}
                 if self.binance_client and self.binance_client.is_configured():
                     try:
-                        bpc.sync_binance_positions(
+                        sync_res = bpc.sync_binance_positions(
                             self.binance_client,
                             self.pos_store,
                             self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID),
                             load_drawings=fetch_layout_drawings,
                         )
+                        if sync_res and sync_res.get("synced"):
+                            for p in sync_res.get("active_positions", []):
+                                if p.get("mark_price"):
+                                    price_cache[p["symbol"]] = float(p["mark_price"])
                     except Exception as e:
                         logger.debug(f"后台自动同步币安持仓异常: {e}")
 
@@ -1450,12 +1465,13 @@ class TradeAlertDaemon:
                         self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
                     )
 
-                # 每 10 秒高频巡检 Feature 4: 持仓动态移动止盈
+                # 每 10 秒高频巡检 Feature 4: 持仓动态移动止盈（优先复用 mark_price 减少 HTTP 轮询）
                 check_feature_4_trailing_stops(
                     self.notifier,
                     self.pos_store,
                     float(self.cfg.get("trailing_activation_pct", 6.0)),
-                    float(self.cfg.get("trailing_lock_pct", 1.0))
+                    float(self.cfg.get("trailing_lock_pct", 1.0)),
+                    price_cache=price_cache or None,
                 )
 
                 time.sleep(10)

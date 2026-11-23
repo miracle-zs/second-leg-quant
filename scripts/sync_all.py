@@ -5,29 +5,49 @@
 1. 扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与机会区排序)
 2. 重构并编译总控制台首页 (index.html)
 3. 编译突破追多与移动保本战法手册 (strategy_second_leg_playbook.html)
-4. 更新账户数据分析引擎与量化风控指标 (runs/account_analytics.json)
+4. 更新账户数据分析引擎与量化风控指标 (runs/account_analytics.json 或 SQLite)
 5. 编译生成账户数据分析看板 (account.html)
 6. 执行交易风控与四重预警评测 (新共振/突破/止损/移动锁利)
 """
 
 import argparse
-import sys
+import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = ROOT / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
-def run_step(desc: str, cmd: list) -> bool:
+from config import resolve_database_path  # noqa: E402
+
+
+def run_step(desc: str, cmd: list, env: dict | None = None) -> bool:
     print(f"[*] {desc}...")
     t0 = time.time()
-    res = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    res = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
     dt = time.time() - t0
     if res.returncode == 0:
         print(f"    [✓ 成功] ({dt:.2f}s)")
         if res.stdout:
             for line in res.stdout.strip().splitlines():
-                if any(k in line for k in ["✅", "🎉", "🔥 三重共振", "★ 通道④", "★ 7天溢出", "HTML", "总资金净值", "账户量化分析", "Compiled"]):
+                if any(
+                    k in line
+                    for k in [
+                        "✅",
+                        "🎉",
+                        "🔥 三重共振",
+                        "★ 通道④",
+                        "★ 7天溢出",
+                        "HTML",
+                        "总资金净值",
+                        "账户量化分析",
+                        "Compiled",
+                    ]
+                ):
                     print(f"      {line.strip()}")
         return True
     else:
@@ -37,39 +57,60 @@ def run_step(desc: str, cmd: list) -> bool:
             print(f"      {line}")
         return False
 
+
 def main():
     parser = argparse.ArgumentParser(description="刷新候选池、账户报表与看板")
     parser.add_argument("--refresh-only", action="store_true", help="跳过风控评测和预警推送")
-    parser.add_argument("--account-database", type=Path, help="将账户报表写入 SQLite 并跳过账户页构建")
+    parser.add_argument(
+        "--account-database",
+        "--database",
+        dest="account_database",
+        type=Path,
+        help="将候选池与账户报表统一写入 SQLite 并跳过静态页编译",
+    )
     args = parser.parse_args()
+
+    db_path = resolve_database_path(args.account_database)
+    child_env = os.environ.copy()
+    if db_path is not None:
+        child_env["COIN_DATABASE"] = str(db_path.resolve())
 
     print("=======================================================")
     print("🚀 启动“突破追多与移动保本系统”同步流水线")
+    if db_path is not None:
+        print(f"🗄️  统一 SQLite 存储: {db_path}")
     print("=======================================================\n")
 
     steps = [
-        ("扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与三大机会区)", [sys.executable, "scripts/scan_second_leg_pool.py"]),
+        (
+            "扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与三大机会区)",
+            [sys.executable, "scripts/scan_second_leg_pool.py"],
+        ),
     ]
     if args.account_database is None:
-        steps.extend([
-            ("重构并编译总控制台首页 (index.html)", [sys.executable, "scripts/build_index.py"]),
-            ("编译突破追多与移动保本战法手册", [sys.executable, "scripts/build_second_leg_playbook.py"]),
-        ])
+        steps.extend(
+            [
+                ("重构并编译总控制台首页 (index.html)", [sys.executable, "scripts/build_index.py"]),
+                ("编译突破追多与移动保本战法手册", [sys.executable, "scripts/build_second_leg_playbook.py"]),
+            ]
+        )
     account_command = [sys.executable, "scripts/account_analytics_engine.py"]
-    if args.account_database is not None:
-        account_command.extend(["--database", str(args.account_database)])
+    if db_path is not None:
+        account_command.extend(["--database", str(db_path)])
     steps.append(("更新账户数据分析与量化风控指标", account_command))
     if args.account_database is None:
         steps.append(("编译生成账户数据分析看板", [sys.executable, "scripts/build_account_analytics.py"]))
     if not args.refresh_only:
-        steps.append((
-            "执行交易风控与四重预警评测",
-            [sys.executable, "scripts/trade_alert_daemon.py", "--check-once"],
-        ))
+        steps.append(
+            (
+                "执行交易风控与四重预警评测",
+                [sys.executable, "scripts/trade_alert_daemon.py", "--check-once"],
+            )
+        )
 
     all_ok = True
     for index, (desc, cmd) in enumerate(steps, start=1):
-        ok = run_step(f"{index}/{len(steps)} {desc}", cmd)
+        ok = run_step(f"{index}/{len(steps)} {desc}", cmd, env=child_env)
         if not ok:
             all_ok = False
 
@@ -81,5 +122,6 @@ def main():
     print("=======================================================")
     sys.exit(0 if all_ok else 1)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
