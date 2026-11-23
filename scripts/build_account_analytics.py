@@ -738,7 +738,7 @@ def render_kpi_matrix(summary: Dict[str, Any]) -> str:
         </div>
         <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
           <span>占用保证金</span>
-          <span class="text-slate-300">${summary.get('margin_used', 0.0):,.2f}</span>
+          <span id="kpi-position-margin" class="text-slate-300">${summary.get('position_margin', 0.0):,.2f}</span>
         </div>
       </div>
 
@@ -772,7 +772,7 @@ def render_kpi_matrix(summary: Dict[str, Any]) -> str:
         </div>
         <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
           <span>多头持仓</span>
-          <span class="text-slate-300 font-bold">0 笔在途</span>
+          <span id="kpi-open-positions" class="text-slate-300 font-bold">{summary.get('open_trades', 0)} 笔在途</span>
         </div>
       </div>
 
@@ -1367,6 +1367,9 @@ CLIENT_JS = """
         const elAvail = document.getElementById('kpi-available-margin');
         if (elAvail) elAvail.textContent = formatMoney(summary.available_margin);
 
+        document.getElementById('kpi-position-margin').textContent = formatMoney(summary.position_margin);
+        document.getElementById('kpi-open-positions').textContent = positions.length + ' 笔在途';
+
         const elRealized = document.getElementById('kpi-realized-pnl');
         if (elRealized) {
           const pnl = summary.net_realized_pnl !== undefined ? summary.net_realized_pnl : (summary.cumulative_realized_pnl || 0);
@@ -1417,6 +1420,9 @@ CLIENT_JS = """
 
         // 3. Render Active Positions Table
         const posTbody = document.getElementById('active-positions-tbody');
+        document.getElementById('active-positions-count').textContent = positions.length + ' 活跃仓位';
+        document.getElementById('active-positions-empty').classList.toggle('hidden', positions.length > 0);
+        document.getElementById('active-positions-table-wrap').classList.toggle('hidden', positions.length === 0);
         if (posTbody) {
           if (positions.length === 0) {
             posTbody.innerHTML = '<tr><td colspan="10" class="py-6 text-center text-slate-500 font-sans">当前在岸安全，无活跃多头持仓</td></tr>';
@@ -1435,15 +1441,14 @@ CLIENT_JS = """
                       <span>${sym}</span><span class="text-[9px] text-slate-500">↗</span>
                     </a>
                   </td>
-                  <td class="px-3 py-2.5"><span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">${p.side || 'LONG'}</span></td>
-                  <td class="px-3 py-2.5 tabular-nums text-slate-300"><span class="px-1.5 py-0.5 rounded text-[10px] font-mono bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 font-bold">${p.leverage || 5}x</span></td>
-                  <td class="px-3 py-2.5 tabular-nums text-slate-300"><div>$${Number(notional).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div><div class="text-[10px] text-slate-500">${Number(p.amount || 0).toLocaleString()} 币</div></td>
+                  <td class="px-3 py-2.5 tabular-nums text-slate-300">${p.leverage || 5}x · $${Number(notional).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}<div class="text-[10px] text-slate-500">${Number(p.amount || 0).toLocaleString()} 币</div></td>
                   <td class="px-3 py-2.5 tabular-nums text-slate-300">$${formatCryptoPrice(p.entry_price)}</td>
                   <td class="px-3 py-2.5 tabular-nums text-white font-bold">$${formatCryptoPrice(p.mark_price || p.entry_price)}</td>
                   <td class="px-3 py-2.5 tabular-nums font-bold ${pnlCls}"><div>${pnl > 0 ? '+' : ''}$${pnl.toFixed(2)}</div><div class="text-[10px]">${roe > 0 ? '+' : ''}${roe.toFixed(2)}% ROE</div></td>
                   <td class="px-3 py-2.5 tabular-nums text-rose-400">$${formatCryptoPrice(p.liquidation_price)}</td>
-                  <td class="px-3 py-2.5 text-slate-400">${p.holding_str || '--'}</td>
-                  <td class="px-3 py-2.5"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">监控中</span></td>
+                  <td class="px-3 py-2.5 text-slate-400">${p.trailing_stop_triggered ? '已触发' : '未触发'}</td>
+                  <td class="px-3 py-2.5 text-slate-400">${p.stop_loss_notified ? '已提醒' : '--'}</td>
+                  <td class="px-3 py-2.5 text-slate-400">${p.trendline_id || '--'}</td>
                 </tr>
               `;
             }).join('');
