@@ -1,0 +1,12 @@
+[Unit]
+Description=AI Coin Selector account synchronization
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/opt/ai-coin-selector/.env
+
+[Service]
+Type=oneshot
+User=ai-coin-selector
+WorkingDirectory=/opt/ai-coin-selector
+ExecStart=/usr/bin/python3 scripts/account_analytics_engine.py --database runs/account.sqlite3
+UMask=0027

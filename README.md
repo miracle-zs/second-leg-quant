@@ -95,4 +95,4 @@ python3 -m unittest discover -s tests -p "test_*.py"
 
 `deploy/systemd/` 包含守护进程、小时刷新定时器和只监听本机的看板接口配置。`deploy/nginx/ai-coin-selector.locations.conf` 需要包含在已有 HTTPS server 配置内。账户和策略页面由发布目录提供，选币首页从 SQLite 候选快照生成。部署时在独立服务用户下执行 `python3 scripts/build_account_analytics.py` 和 `python3 scripts/build_second_leg_playbook.py`，将生成文件发布到 Nginx 指向的位置。
 
-小时刷新从 `COIN_DATABASE` 指定的数据库发布候选快照，并使用 `--account-database` 更新账户账本。服务运行前须配置项目目录下的 `.env`，并确保数据库目录对服务用户可写。启用定时器前先完成一次刷新，确认候选池和账户记录正常。Nginx 和 systemd 配置修改后分别执行 `nginx -t` 与 `systemd-analyze verify`。
+小时刷新从 `COIN_DATABASE` 指定的数据库发布候选快照。账户同步定时器每 5 分钟使用 `--database` 更新账户账本。服务运行前须配置项目目录下的 `.env`，并确保数据库目录对服务用户可写。启用定时器前先完成一次刷新，确认候选池和账户记录正常。Nginx 和 systemd 配置修改后分别执行 `nginx -t` 与 `systemd-analyze verify`。
