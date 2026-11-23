@@ -6,7 +6,7 @@
 - 自适应小数格式化
 - 暗黑终端公共样式、战法纪律横幅、表头与候选行渲染
 - 双引擎站内 K 线弹窗（币安直连极速 Canvas K 线 + TradingView 内嵌切换）
-- Toast 与前端交互 / 币安 5s 实时轮询脚本
+- Toast 与前端交互 / 币安 60 秒行情轮询脚本
 """
 
 import html
@@ -1331,7 +1331,7 @@ def render_hud_script(
 
     function startPolling() {{
       stopPolling();
-      pollTimer = setInterval(syncBinancePool, 5000);
+      pollTimer = setInterval(syncBinancePool, 60000);
     }}
 
     function stopPolling() {{
@@ -1449,7 +1449,7 @@ def render_global_header(
     badges_html: str = "",
     extra_actions_html: str = "",
     settle_countdown_id: str = "settle-countdown",
-    sync_badge_text: str = "币安 5s 轮询",
+    sync_badge_text: str = "币安 60 秒轮询",
     sync_badge_id: str = "sync-status-badge",
     active_tab: str = None,
     **kwargs,
@@ -1589,7 +1589,7 @@ def render_index_body(candidates: list, stats: dict) -> str:
             <span>📐 <span class="hidden sm:inline">TV </span>画线速查</span>
           </button>""",
         settle_countdown_id="settle-countdown",
-        sync_badge_text="币安 5s 轮询",
+        sync_badge_text="币安 60 秒轮询",
         sync_badge_id="sync-status-badge",
     )
 

@@ -10,7 +10,7 @@
 
 1. **中央实战工作台（[`index.html`](file:///Users/zhangshuai/PycharmProjects/ai选币/index.html)）**
    - 5 块联动 KPI 机会区过滤卡（👑 顺势高换手共振区、🔥 负费率逼空区、⚡ 巨量高换手区、📈 1h EMA 顺势区、🌐 全量底池）。
-   - 前端每 5 秒直连币安公开 API 轮询刷新价格、24h 区间分位、动态市值、换手倍数与 4h 等效资费，支持后台标签页自动休眠。
+   - 前端每 60 秒直连币安公开 API 轮询刷新价格、24h 区间分位、动态市值、换手倍数与 4h 等效资费，支持后台标签页自动休眠。
    - 内置 TradingView 15m 专属布局直达、一键复制 / 导出 `.txt` 批量导入 TV 自选、实战四步法速查折叠抽屉、整点资费结算倒计时及快捷键（`/` 搜币、`1-5` 切分区、`Esc` 清空/退出）。
 2. **突破追多与移动保本战法手册（[`reports/strategy_second_leg_playbook.html`](file:///Users/zhangshuai/PycharmProjects/ai选币/reports/strategy_second_leg_playbook.html)）**
    - 系统化呈现实战四步法（标的初选、TV画对数线、15m实体突破开多、破线止损与移动保本）以及币安 API 联动自动化风控体系。
