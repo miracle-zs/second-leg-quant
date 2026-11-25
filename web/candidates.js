@@ -67,30 +67,46 @@
           modalVisibleBars,
         })
       );
-    } catch (_) {}
+    } catch (err) {
+      console.warn('Failed to save UI state to sessionStorage:', err);
+    }
   }
 
   function restoreUiState() {
+    let raw = null;
     try {
-      const raw = sessionStorage.getItem(UI_STATE_KEY);
-      if (!raw) return;
+      raw = sessionStorage.getItem(UI_STATE_KEY);
+    } catch (err) {
+      console.warn('Failed to read UI state from sessionStorage:', err);
+      return;
+    }
+    if (!raw) return;
+    try {
       const saved = JSON.parse(raw);
-      if (saved && typeof saved === 'object') {
-        if (typeof saved.currentZone === 'string' && Object.hasOwn(ZONE_NAMES, saved.currentZone)) {
-          currentZone = saved.currentZone;
-        }
-        if (typeof saved.searchQuery === 'string') {
-          searchQuery = saved.searchQuery;
-        }
-        if (typeof saved.sortColumn === 'string' && VALID_SORT_COLS.has(saved.sortColumn)) {
-          sortColumn = saved.sortColumn;
-          sortAsc = Boolean(saved.sortAsc);
-        }
-        if (VALID_BAR_COUNTS.has(Number(saved.modalVisibleBars))) {
-          modalVisibleBars = Number(saved.modalVisibleBars);
-        }
+      if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+        throw new Error('Unexpected UI state structure');
       }
-    } catch (_) {}
+      if (typeof saved.currentZone === 'string' && Object.hasOwn(ZONE_NAMES, saved.currentZone)) {
+        currentZone = saved.currentZone;
+      }
+      if (typeof saved.searchQuery === 'string') {
+        searchQuery = saved.searchQuery;
+      }
+      if (typeof saved.sortColumn === 'string' && VALID_SORT_COLS.has(saved.sortColumn)) {
+        sortColumn = saved.sortColumn;
+        sortAsc = Boolean(saved.sortAsc);
+      }
+      if (VALID_BAR_COUNTS.has(Number(saved.modalVisibleBars))) {
+        modalVisibleBars = Number(saved.modalVisibleBars);
+      }
+    } catch (err) {
+      console.warn('Corrupt UI state in sessionStorage; clearing:', err);
+      try {
+        sessionStorage.removeItem(UI_STATE_KEY);
+      } catch (removeErr) {
+        console.warn('Failed to clear corrupt UI state from sessionStorage:', removeErr);
+      }
+    }
   }
 
   const syncBtn = document.getElementById('btn-manual-sync');
@@ -391,18 +407,21 @@
     const overflow = list.filter((c) => Boolean(c.is_overflow_7d));
 
     const sampleRes = resonance.slice(0, 4).map((c) => c.symbol.replace(/USDT$/, '')).join('、') || '--';
-    const sampleNeg = [...negFr]
-      .sort((a, b) => (a.funding_rate_4h_pct ?? 0) - (b.funding_rate_4h_pct ?? 0))
+    const sampleNeg = negFr
+      .filter((c) => isFiniteNum(c.funding_rate_4h_pct))
+      .sort((a, b) => Number(a.funding_rate_4h_pct) - Number(b.funding_rate_4h_pct))
       .slice(0, 3)
       .map((c) => `${c.symbol.replace(/USDT$/, '')}(${formatSignedPct(c.funding_rate_4h_pct, 2)})`)
       .join('、') || '--';
-    const sampleTr = [...highTr]
-      .sort((a, b) => (b.turnover_ratio ?? 0) - (a.turnover_ratio ?? 0))
+    const sampleTr = highTr
+      .filter((c) => isFiniteNum(c.turnover_ratio))
+      .sort((a, b) => Number(b.turnover_ratio) - Number(a.turnover_ratio))
       .slice(0, 3)
-      .map((c) => `${c.symbol.replace(/USDT$/, '')}(${isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) + 'x' : '--'})`)
+      .map((c) => `${c.symbol.replace(/USDT$/, '')}(${Number(c.turnover_ratio).toFixed(1)}x)`)
       .join('、') || '--';
-    const sampleEma = [...emaBull]
-      .sort((a, b) => (b.ema_spread_pct ?? -Infinity) - (a.ema_spread_pct ?? -Infinity))
+    const sampleEma = emaBull
+      .filter((c) => isFiniteNum(c.ema_spread_pct))
+      .sort((a, b) => Number(b.ema_spread_pct) - Number(a.ema_spread_pct))
       .slice(0, 3)
       .map((c) => `${c.symbol.replace(/USDT$/, '')}(${formatSignedPct(c.ema_spread_pct, 1)})`)
       .join('、') || '--';
@@ -449,7 +468,7 @@
       </tr>`;
 
     const rowsHtml = list.map((c, idx) => {
-      const sym = String(c.symbol || '');
+      const sym = c.symbol;
       const safeSym = escapeHtml(sym);
       const tvSym = getTvSymbol(sym);
       const safeTvSym = escapeHtml(tvSym);
@@ -564,14 +583,14 @@
         const valB = getSortMetric(b, sortColumn);
         const okA = Number.isFinite(valA);
         const okB = Number.isFinite(valB);
-        if (!okA && !okB) return (a.originalOrder ?? 0) - (b.originalOrder ?? 0);
+        if (!okA && !okB) return a.originalOrder - b.originalOrder;
         if (!okA) return 1;
         if (!okB) return -1;
         const diff = sortAsc ? valA - valB : valB - valA;
-        return diff !== 0 ? diff : (a.originalOrder ?? 0) - (b.originalOrder ?? 0);
+        return diff !== 0 ? diff : a.originalOrder - b.originalOrder;
       });
     } else {
-      candidatesState.sort((a, b) => (a.originalOrder ?? 0) - (b.originalOrder ?? 0));
+      candidatesState.sort((a, b) => a.originalOrder - b.originalOrder);
     }
 
     const domRows = tableBody.querySelectorAll('tr.candidate-row');
@@ -608,7 +627,7 @@
 
   function matchesCurrentFilter(c) {
     const q = searchQuery.trim().toUpperCase();
-    if (q && !String(c.symbol || '').toUpperCase().includes(q)) return false;
+    if (q && !c.symbol.toUpperCase().includes(q)) return false;
     if (currentZone === 'resonance') return c.is_resonance;
     if (currentZone === 'neg_fr') return c.is_neg_funding;
     if (currentZone === 'high_tr') return c.is_high_turnover;
@@ -662,7 +681,9 @@
         await navigator.clipboard.writeText(text);
         ok = true;
       }
-    } catch (_) {}
+    } catch (err) {
+      console.warn('Clipboard write failed:', err);
+    }
     showToast(ok ? successMsg : '复制失败，请手动选择复制');
   }
 
@@ -928,14 +949,30 @@
       if (signal.aborted) return;
       if (!Array.isArray(raw) || raw.length === 0) throw new Error('No kline data');
 
-      modalCandles = raw.map((d) => ({
-        time: d[0],
-        open: parseFloat(d[1]),
-        high: parseFloat(d[2]),
-        low: parseFloat(d[3]),
-        close: parseFloat(d[4]),
-        volume: parseFloat(d[5]),
-      }));
+      modalCandles = raw.map((d, idx) => {
+        if (!Array.isArray(d) || d.length < 6) {
+          throw new Error(`Invalid kline bar at index ${idx}`);
+        }
+        const bar = {
+          time: Number(d[0]),
+          open: parseFloat(d[1]),
+          high: parseFloat(d[2]),
+          low: parseFloat(d[3]),
+          close: parseFloat(d[4]),
+          volume: parseFloat(d[5]),
+        };
+        if (
+          !Number.isFinite(bar.time) ||
+          !Number.isFinite(bar.open) ||
+          !Number.isFinite(bar.high) ||
+          !Number.isFinite(bar.low) ||
+          !Number.isFinite(bar.close) ||
+          !Number.isFinite(bar.volume)
+        ) {
+          throw new Error(`Non-finite kline values at index ${idx}`);
+        }
+        return bar;
+      });
 
       const ema5Vals = calcEMAArray(modalCandles, 5);
       const ema10Vals = calcEMAArray(modalCandles, 10);
@@ -982,7 +1019,10 @@
       if (modalNativeView) modalNativeView.classList.add('hidden');
       if (modalTvView) modalTvView.classList.remove('hidden');
       if (modalTvIframe) {
-        const tvInterval = TV_INTERVAL_MAP[modalCurrentInterval] || '15';
+        const tvInterval = TV_INTERVAL_MAP[modalCurrentInterval];
+        if (!tvInterval) {
+          throw new Error(`Unsupported modal interval: ${modalCurrentInterval}`);
+        }
         modalTvIframe.src = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(tvSym)}&interval=${tvInterval}&theme=dark&style=1&timezone=Asia%2FShanghai&locale=zh_CN`;
       }
     }
@@ -1032,11 +1072,24 @@
 
       const tickers = tickerRes.data;
       const premiums = premiumRes.data;
+      if (!Array.isArray(tickers) || !Array.isArray(premiums)) {
+        throw new Error('Invalid Binance ticker24hr/premiumIndex payload');
+      }
 
       const tickMap = new Map();
-      tickers.forEach((t) => tickMap.set(t.symbol, t));
+      tickers.forEach((t) => {
+        if (!t || typeof t.symbol !== 'string' || !t.symbol) {
+          throw new Error('Malformed ticker24hr item missing symbol');
+        }
+        tickMap.set(t.symbol, t);
+      });
       const premMap = new Map();
-      premiums.forEach((p) => premMap.set(p.symbol, p));
+      premiums.forEach((p) => {
+        if (!p || typeof p.symbol !== 'string' || !p.symbol) {
+          throw new Error('Malformed premiumIndex item missing symbol');
+        }
+        premMap.set(p.symbol, p);
+      });
 
       const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -1056,6 +1109,9 @@
           const highVal = parseFloat(t.highPrice);
           const lowVal = parseFloat(t.lowPrice);
           const volVal = parseFloat(t.quoteVolume);
+          if (!isFiniteNum(pVal) || pVal <= 0 || !isFiniteNum(chgVal) || !isFiniteNum(highVal) || !isFiniteNum(lowVal) || !isFiniteNum(volVal)) {
+            console.warn(`Malformed Binance ticker24hr fields for ${sym}:`, t);
+          }
 
           if (isFiniteNum(pVal)) {
             const oldP = prevPriceBySym.get(sym);
@@ -1121,7 +1177,9 @@
         if (pr) {
           const settleVal = parseFloat(pr.lastFundingRate) * 100;
           const interval = c.funding_interval_hours;
-          if (isFiniteNum(settleVal)) {
+          if (!isFiniteNum(settleVal)) {
+            console.warn(`Malformed Binance premiumIndex lastFundingRate for ${sym}:`, pr);
+          } else {
             c.funding_rate_pct = settleVal;
             if (refs && refs.frSettleEl) {
               refs.frSettleEl.textContent = `单期: ${formatSignedPct(settleVal, 4)}`;
@@ -1195,18 +1253,46 @@
       if (fetchId !== activeSnapshotFetchId) return;
       if (notModified) return;
       if (etag) lastEtag = etag;
-      if (!payload || !Array.isArray(payload.candidates)) {
+      if (!payload || !Array.isArray(payload.candidates) || typeof payload.updated_at !== 'string' || !payload.updated_at.trim()) {
         throw new Error('Invalid /api/candidates payload');
       }
 
-      currentVersion = payload.updated_at || null;
+      currentVersion = payload.updated_at;
       if (poolUpdatedEl) {
         poolUpdatedEl.textContent = `更新: ${formatUpdatedAtBeijing(currentVersion)}`;
         poolUpdatedEl.className = 'px-2 py-0.5 text-[11px] font-mono text-slate-400 bg-slate-800/80 rounded-md border border-slate-700/60';
       }
 
+      const optionalNumericFields = [
+        'price',
+        'high_24h',
+        'low_24h',
+        'price_chg_24h',
+        'market_cap_usd',
+        'volume_24h_usd',
+        'turnover_ratio',
+        'circulating_supply',
+        'multiplier',
+        'funding_interval_hours',
+        'funding_rate_pct',
+        'funding_rate_4h_pct',
+        'ema5',
+        'ema10',
+        'ema_spread_pct',
+        'resonance_duration_hours',
+        'overflow_days_left',
+      ];
       candidatesState = payload.candidates.map((raw, idx) => {
-        const copy = { ...raw, originalOrder: idx };
+        if (!raw || typeof raw !== 'object' || typeof raw.symbol !== 'string' || !raw.symbol.trim()) {
+          throw new Error(`Invalid candidate entry at index ${idx}: missing symbol`);
+        }
+        for (const field of optionalNumericFields) {
+          const val = raw[field];
+          if (val !== undefined && val !== null && !isFiniteNum(val)) {
+            throw new Error(`Invalid numeric field ${field} for ${raw.symbol}`);
+          }
+        }
+        const copy = { ...raw, symbol: raw.symbol.trim(), originalOrder: idx };
         classifyCandidate(copy);
         if (isFiniteNum(copy.price)) prevPriceBySym.set(copy.symbol, copy.price);
         return copy;
@@ -1235,7 +1321,10 @@
     if (document.hidden) return false;
     try {
       const { data } = await fetchJsonWithTimeout('api/candidate-version', { cache: 'no-store' }, 8000);
-      if (data && data.updated_at && data.updated_at !== currentVersion) {
+      if (!data || typeof data.updated_at !== 'string' || !data.updated_at.trim()) {
+        throw new Error('Invalid /api/candidate-version payload');
+      }
+      if (data.updated_at !== currentVersion) {
         await loadCandidateSnapshot({ force: true });
         return true;
       }
@@ -1372,7 +1461,12 @@
       const previewBtn = e.target.closest('.btn-preview-chart');
       if (previewBtn) {
         e.stopPropagation();
-        openTvModal(previewBtn.getAttribute('data-sym') || '', previewBtn.getAttribute('data-tv') || '');
+        const sym = previewBtn.getAttribute('data-sym');
+        const tvSym = previewBtn.getAttribute('data-tv');
+        if (!sym || !tvSym) {
+          throw new Error('Preview button missing data-sym or data-tv');
+        }
+        openTvModal(sym, tvSym);
       }
     });
   }
@@ -1443,14 +1537,18 @@
       btn.classList.add('bg-sky-500/20', 'text-sky-300', 'font-bold');
       btn.classList.remove('hover:bg-slate-800', 'text-slate-400');
 
-      modalCurrentInterval = btn.getAttribute('data-interval') || '15m';
+      const nextInterval = btn.getAttribute('data-interval');
+      if (!nextInterval || !Object.hasOwn(TV_INTERVAL_MAP, nextInterval)) {
+        throw new Error(`Unsupported modal interval: ${nextInterval}`);
+      }
+      modalCurrentInterval = nextInterval;
       if (modalExternalLink && modalCurrentTvSymbol) {
         modalExternalLink.href = getTvUrl(modalCurrentTvSymbol, TV_LAYOUT_ID, modalCurrentInterval);
       }
       if (modalActiveEngine === 'native') {
         fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
       } else if (modalTvIframe && modalCurrentTvSymbol) {
-        const tvInterval = TV_INTERVAL_MAP[modalCurrentInterval] || '15';
+        const tvInterval = TV_INTERVAL_MAP[modalCurrentInterval];
         modalTvIframe.src = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(modalCurrentTvSymbol)}&interval=${tvInterval}&theme=dark&style=1&timezone=Asia%2FShanghai&locale=zh_CN`;
       }
     });
@@ -1474,7 +1572,8 @@
       if (modalNativeView) modalNativeView.classList.add('hidden');
       if (modalTvView) modalTvView.classList.remove('hidden');
       if (modalTvIframe && modalCurrentTvSymbol) {
-        const tvInterval = TV_INTERVAL_MAP[modalCurrentInterval] || '15';
+        const tvInterval = TV_INTERVAL_MAP[modalCurrentInterval];
+        if (!tvInterval) throw new Error(`Unsupported modal interval: ${modalCurrentInterval}`);
         modalTvIframe.src = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(modalCurrentTvSymbol)}&interval=${tvInterval}&theme=dark&style=1&timezone=Asia%2FShanghai&locale=zh_CN`;
       }
     });

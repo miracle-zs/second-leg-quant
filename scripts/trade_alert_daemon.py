@@ -308,7 +308,7 @@ class PositionStore:
     def get_open_positions(self) -> List[Dict[str, Any]]:
         if self._tx_conn is None:
             self.load()
-        return [p for p in self._open_positions if p.get("status", "OPEN") == "OPEN"]
+        return [p for p in self._open_positions if p["status"] == "OPEN"]
 
     def get_history(
         self,
@@ -384,7 +384,7 @@ class PositionStore:
             sym = _normalize_futures_symbol(symbol)
             target_pos = None
             for p in self._open_positions:
-                if p["symbol"] == sym and p.get("status", "OPEN") == "OPEN":
+                if p["symbol"] == sym and p["status"] == "OPEN":
                     target_pos = p
                     break
 
@@ -555,6 +555,14 @@ def check_feature_1_resonance(
                 if isinstance(raw_score, bool):
                     raise ValueError(f"invalid resonance_score={raw_score!r}")
                 int(raw_score)
+            raw_zones = c.get("zones")
+            if raw_zones is not None and (
+                not isinstance(raw_zones, list) or not all(isinstance(z, str) for z in raw_zones)
+            ):
+                raise ValueError(f"invalid zones={raw_zones!r}")
+            raw_status = c.get("status")
+            if raw_status is not None and not isinstance(raw_status, str):
+                raise ValueError(f"invalid status={raw_status!r}")
         except (TypeError, ValueError) as e:
             logger.warning(f"跳过 {sym} 畸形共振候选记录: {e}")
             continue
@@ -722,8 +730,14 @@ def _send_breakout_notification(
     tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
     candle_time_str = candle_or_res.get("candle_time")
     if not candle_time_str:
-        ts_val = candle_or_res.get("open_time") or candle_or_res.get("close_time")
-        candle_time_str = get_beijing_time_str(float(ts_val)) if ts_val else "--"
+        ts_val = candle_or_res.get("open_time")
+        if ts_val is None:
+            ts_val = candle_or_res.get("close_time")
+        if ts_val is None:
+            raise KeyError(
+                f"Breakout candle payload for {sym} missing candle_time and open_time/close_time"
+            )
+        candle_time_str = get_beijing_time_str(float(ts_val))
 
     title = f"🚀 突破开多信号: {sym} 突破 15m 对数趋势线 (+{pct:.2f}%)"
     desp = f"""### 🚀 【买点②确认】15m 阳线实体收盘放量突破！
@@ -936,6 +950,7 @@ def check_feature_2_breakout(
                 continue
             line_id = line.get("id")
             if not line_id:
+                logger.warning(f"跳过 {sym} 缺失 id 的趋势线: {line!r}")
                 continue
             trendline_key = f"{sym}_{line_id}"
 
@@ -957,7 +972,7 @@ def check_feature_2_breakout(
             except ValueError as e:
                 logger.warning(f"跳过 {sym} 无效几何趋势线 ({line_id}): {e}")
                 continue
-            if not res.get("is_breakout"):
+            if not res["is_breakout"]:
                 continue
 
             res_price = float(res["res_price"])
@@ -1091,7 +1106,8 @@ def check_feature_3_stop_loss(
     for pos in eligible:
         sym = pos["symbol"]
         sym_clean = clean_symbol(sym)
-        candle = pos.get("pending_stop_loss_candle") or candles_by_symbol.get(sym_clean)
+        pending_candle = pos.get("pending_stop_loss_candle")
+        candle = pending_candle if pending_candle is not None else candles_by_symbol.get(sym_clean)
         if candle is None:
             continue
 
@@ -1106,6 +1122,9 @@ def check_feature_3_stop_loss(
             continue
 
         entry_price = float(pos["entry_price"])
+        amount_val = _parse_optional_finite_float(pos["amount"])
+        if amount_val is None or amount_val < 0:
+            raise ValueError(f"持仓 {sym} amount={pos['amount']!r} 非法")
         line = pos.get("trendline")
         if not line and drawings_map:
             matched = drawings_map.get(sym_clean)
@@ -1124,7 +1143,7 @@ def check_feature_3_stop_loss(
             p2_time = int(line["t2"])
             support_price = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, candle_open_time)
         except (KeyError, TypeError, ValueError) as e:
-            logger.warning(f"跳过 {sym} 无效止损趋势线: {e}")
+            logger.error(f"跳过 {sym} 无效止损趋势线: {e}")
             continue
 
         if support_price <= 0 or close_price >= support_price:
@@ -1147,7 +1166,7 @@ def check_feature_3_stop_loss(
 - **趋势线基准**: `${format_alert_price(support_price)}`
 - **跌破幅度**: `-{drop_pct:.2f}%`
 - **持仓盈亏**: `{pnl_pct:+.2f}%`
-- **持仓数量**: `{pos.get('amount', 0)}`
+- **持仓数量**: `{amount_val}`
 - **收盘时间**: {get_beijing_time_str(close_time)}
 
 ---
@@ -1204,7 +1223,9 @@ def check_feature_3_stop_loss(
                     reason="STOP_LOSS_TRIGGERED",
                     exit_price=close_price,
                 )
-                stop_loss_alerts.append(closed_pos or pos)
+                if closed_pos is None:
+                    raise RuntimeError(f"Position {sym} disappeared before close_position")
+                stop_loss_alerts.append(closed_pos)
             else:
                 dirty = True
                 stop_loss_alerts.append(pos)
@@ -1256,8 +1277,13 @@ def check_feature_4_trailing_stops(
         for pos in open_positions:
             sym = pos["symbol"]
             sym_clean = clean_symbol(sym)
-            curr_price = float(resolved_prices.get(sym) or resolved_prices.get(sym_clean) or 0.0)
-            if curr_price <= 0 and not (
+            raw_curr = resolved_prices.get(sym)
+            if raw_curr is None:
+                raw_curr = resolved_prices.get(sym_clean)
+            curr_price = _parse_optional_finite_float(raw_curr)
+            if curr_price is not None and curr_price <= 0:
+                raise ValueError(f"Invalid ticker price for {sym}: {curr_price}")
+            if curr_price is None and not (
                 "pending_trailing_activation_price" in pos or "pending_profit_lock_price" in pos
             ):
                 continue
@@ -1268,8 +1294,13 @@ def check_feature_4_trailing_stops(
                 continue
 
             raw_highest = pos.get("highest_price")
-            prev_highest = float(raw_highest) if raw_highest is not None else entry_price
-            if curr_price > 0:
+            if raw_highest is None:
+                prev_highest = entry_price
+            else:
+                prev_highest = float(raw_highest)
+                if not math.isfinite(prev_highest) or prev_highest <= 0:
+                    raise ValueError(f"Invalid highest_price for {sym}: {raw_highest!r}")
+            if curr_price is not None:
                 highest_price = max(prev_highest, curr_price)
                 new_pnl_pct = round((curr_price - entry_price) / entry_price * 100.0, 2)
                 if (
@@ -1285,7 +1316,11 @@ def check_feature_4_trailing_stops(
                 highest_price = prev_highest
 
             target_activation_price = entry_price * (1.0 + activation_pct / 100.0)
-            if not pos.get("trailing_stop_triggered", False) and curr_price >= target_activation_price:
+            if (
+                not pos.get("trailing_stop_triggered", False)
+                and curr_price is not None
+                and curr_price >= target_activation_price
+            ):
                 pos["trailing_stop_triggered"] = True
                 pos["trailing_stop_price"] = round(entry_price * (1.0 + lock_pct / 100.0), 8)
                 pos["trailing_stop_activated_at"] = get_beijing_time_str()
@@ -1293,13 +1328,14 @@ def check_feature_4_trailing_stops(
                 dirty = True
 
             if "pending_trailing_activation_price" in pos:
-                raw_lock = pos.get("trailing_stop_price")
-                if raw_lock is None:
-                    logger.error(f"持仓 {sym} 已触发移动止盈但缺失 trailing_stop_price，跳过通知")
-                    continue
+                raw_lock = pos["trailing_stop_price"] if "trailing_stop_price" in pos else None
+                lock_price = _parse_optional_finite_float(raw_lock)
+                if lock_price is None or lock_price <= 0:
+                    raise ValueError(
+                        f"持仓 {sym} 已触发移动止盈但缺失有效的 trailing_stop_price: {raw_lock!r}"
+                    )
                 activation_price = float(pos["pending_trailing_activation_price"])
                 activation_gain = (activation_price - entry_price) / entry_price * 100.0
-                lock_price = float(raw_lock)
                 title = f"🎯 【移动止盈锁定】{sym} 浮盈达 +{activation_gain:.1f}%，已启动 +{lock_pct:.0f}% 保本锁利！"
                 desp = f"""### 🎯 【动态移动止盈启动】移动锁利提醒
 
@@ -1316,13 +1352,15 @@ def check_feature_4_trailing_stops(
                 activation_alerts.append((sym, lock_price, title, desp))
 
             if pos.get("trailing_stop_triggered", False) and not pos.get("profit_lock_notified", False):
-                raw_lock = pos.get("trailing_stop_price")
-                if raw_lock is None:
-                    logger.error(f"持仓 {sym} 已触发移动止盈但缺失 trailing_stop_price，跳过锁利离场检查")
-                    continue
-                lock_price = float(raw_lock)
-                if "pending_profit_lock_price" in pos or 0 < curr_price <= lock_price:
+                raw_lock = pos["trailing_stop_price"] if "trailing_stop_price" in pos else None
+                lock_price = _parse_optional_finite_float(raw_lock)
+                if lock_price is None or lock_price <= 0:
+                    raise ValueError(
+                        f"持仓 {sym} 已触发移动止盈但缺失有效的 trailing_stop_price: {raw_lock!r}"
+                    )
+                if "pending_profit_lock_price" in pos or (curr_price is not None and curr_price <= lock_price):
                     if "pending_profit_lock_price" not in pos:
+                        assert curr_price is not None
                         pos["pending_profit_lock_price"] = curr_price
                         dirty = True
                     trigger_price = float(pos["pending_profit_lock_price"])
@@ -1385,7 +1423,9 @@ def check_feature_4_trailing_stops(
                     reason="PROFIT_LOCKED",
                     exit_price=trigger_price,
                 )
-                events.append({"type": "PROFIT_LOCK_EXIT", "pos": closed_pos or pos})
+                if closed_pos is None:
+                    raise RuntimeError(f"Position {sym} disappeared before close_position")
+                events.append({"type": "PROFIT_LOCK_EXIT", "pos": closed_pos})
             else:
                 dirty = True
                 events.append({"type": "PROFIT_LOCK_EXIT", "pos": pos})
@@ -1550,10 +1590,10 @@ class TradeAlertDaemon:
                     layout_id,
                     load_drawings=fetch_layout_drawings,
                 )
-                if sync_res.get("synced"):
+                if sync_res["synced"]:
                     positions_synced = True
-                    for p in sync_res.get("active_positions", []):
-                        if p.get("mark_price"):
+                    for p in sync_res["active_positions"]:
+                        if p["mark_price"] is not None:
                             price_cache[p["symbol"]] = float(p["mark_price"])
             except (BinanceAPIError, HttpError, urllib.error.URLError, TimeoutError, OSError) as e:
                 logger.warning(f"后台自动同步币安持仓异常: {e}")
@@ -1561,7 +1601,7 @@ class TradeAlertDaemon:
         if not positions_synced:
             self.pos_store.load()
         has_pending_stop_loss = any(
-            p.get("status", "OPEN") == "OPEN" and "pending_stop_loss_candle" in p
+            p["status"] == "OPEN" and "pending_stop_loss_candle" in p
             for p in self.pos_store._open_positions
         )
 
@@ -1717,8 +1757,8 @@ def format_positions_table(positions: List[dict]) -> str:
     divider = "-" * 95
     lines = [header, divider]
     for p in positions:
-        sym = p.get("symbol", "")
-        entry_val = float(p.get("entry_price") or 0.0)
+        sym = p["symbol"]
+        entry_val = float(p["entry_price"])
         curr_raw = p.get("current_price")
         curr_val = float(curr_raw) if curr_raw is not None else entry_val
         high_raw = p.get("highest_price")
@@ -1727,11 +1767,12 @@ def format_positions_table(positions: List[dict]) -> str:
         curr = format_alert_price(curr_val)
         highest = format_alert_price(high_val)
         curr_high = f"{curr} / {highest}"
-        pnl = f"{float(p.get('pnl_pct') or 0.0):+.2f}%"
+        raw_pnl = p.get("pnl_pct")
+        pnl = f"{float(raw_pnl):+.2f}%" if raw_pnl is not None else "--"
         ts_raw = p.get("trailing_stop_price")
-        ts_price = format_alert_price(float(ts_raw)) if ts_raw else "--"
-        status = p.get("status", "OPEN")
-        entry_t = p.get("entry_time", "")
+        ts_price = format_alert_price(float(ts_raw)) if ts_raw is not None else "--"
+        status = p["status"]
+        entry_t = p.get("entry_time") or "--"
         lines.append(f"{sym:<12} | {entry:<10} | {curr_high:<18} | {pnl:<8} | {ts_price:<12} | {status:<14} | {entry_t}")
     return "\n".join(lines)
 
@@ -1823,9 +1864,9 @@ def main() -> None:
                     price_fetch_warning = f"⚠️ 实时行情拉取失败 ({e})，以下价格与盈亏为本地缓存快照，仅供参考。"
                     prices = {}
                 for p in open_pos:
-                    curr_p = prices.get(clean_symbol(p["symbol"]), 0.0)
-                    entry_val = float(p.get("entry_price", 0.0))
-                    if curr_p > 0 and entry_val > 0:
+                    curr_p = prices.get(clean_symbol(p["symbol"]))
+                    entry_val = float(p["entry_price"])
+                    if curr_p is not None and curr_p > 0 and entry_val > 0:
                         p["current_price"] = curr_p
                         p["pnl_pct"] = round((curr_p - entry_val) / entry_val * 100.0, 2)
             print("\n========================= 当前有效开仓清单 =========================")

@@ -74,7 +74,10 @@
   }
 
   function getTvSymbol(symbol) {
-    const sym = String(symbol || '');
+    if (typeof symbol !== 'string' || !symbol.trim()) {
+      throw new Error('getTvSymbol requires a non-empty symbol string');
+    }
+    const sym = symbol.trim();
     if (sym.includes(':')) return sym;
     return CHINESE_TV_MAP[sym] || `BINANCE:${sym}.P`;
   }

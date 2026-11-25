@@ -137,8 +137,8 @@
 
     const unrealizedEl = setText('kpi-unrealized-pnl', formatMoney(summary.total_unrealized_pnl, { signed: true }));
     setSignedColorClass(unrealizedEl, summary.total_unrealized_pnl);
-    const openCount = isFiniteNumber(summary.open_trades) ? Number(summary.open_trades) : positions.length;
-    setText('kpi-open-trades', openCount + ' 笔在途');
+    const openCountText = isFiniteNumber(summary.open_trades) ? (Number(summary.open_trades) + ' 笔在途') : '--';
+    setText('kpi-open-trades', openCountText);
 
     setText('kpi-win-rate', formatPct(summary.win_rate_pct, { signed: false, decimals: 1 }));
     const winCount = isFiniteNumber(summary.win_count) ? Number(summary.win_count) : null;
@@ -251,7 +251,10 @@
     const shortWarn = document.getElementById('short-position-warning');
     if (shortWarn) {
       const hasUnmonitored = positions.some(p => {
-        const side = String(p.side || '').toUpperCase();
+        if (!p || typeof p !== 'object' || typeof p.side !== 'string' || !p.side.trim()) {
+          throw new Error('Invalid active position: missing side');
+        }
+        const side = p.side.trim().toUpperCase();
         return side === 'SHORT' || p.risk_monitored !== true;
       });
       shortWarn.classList.toggle('hidden', !hasUnmonitored);
@@ -264,9 +267,12 @@
     }
 
     posTbody.innerHTML = positions.map(p => {
-      const sym = String(p.symbol || '--');
+      if (!p || typeof p !== 'object' || typeof p.symbol !== 'string' || !p.symbol.trim() || typeof p.side !== 'string' || !p.side.trim()) {
+        throw new Error('Invalid active position: missing symbol or side');
+      }
+      const sym = p.symbol.trim();
       const safeSym = escapeHtml(sym);
-      const side = String(p.side || 'UNKNOWN').toUpperCase();
+      const side = p.side.trim().toUpperCase();
       const safeSide = escapeHtml(side);
       const riskMonitored = p.risk_monitored === true && side !== 'SHORT';
       const sideBadge = side === 'SHORT'
@@ -406,7 +412,7 @@
     const histTbody = document.getElementById('history-tbody');
     if (!histTbody || !currentAccountData) return;
 
-    const fullHistory = currentAccountData.trade_history || [];
+    const fullHistory = currentAccountData.trade_history;
     const rows = getFilteredAndSortedHistory(fullHistory);
     setText('history-count-badge', '显示 ' + rows.length + ' / 共 ' + fullHistory.length + ' 笔');
     updateSortIndicators();
@@ -418,9 +424,12 @@
     }
 
     histTbody.innerHTML = rows.map(h => {
-      const sym = String(h.symbol || '--');
+      if (!h || typeof h !== 'object' || typeof h.symbol !== 'string' || !h.symbol.trim() || typeof h.side !== 'string' || !h.side.trim()) {
+        throw new Error('Invalid trade_history entry: missing symbol or side');
+      }
+      const sym = h.symbol.trim();
       const safeSym = escapeHtml(sym);
-      const side = String(h.side || 'UNKNOWN').toUpperCase();
+      const side = h.side.trim().toUpperCase();
       const sideCls = side === 'SHORT'
         ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
         : (side === 'LONG'
@@ -481,21 +490,25 @@
   }
 
   function updateCharts(accountData) {
-    const summary = accountData.summary || {};
-    const equityCurve = accountData.equity_curve || [];
-    const dailyPnl = accountData.daily_pnl || [];
-    const pnlDist = accountData.pnl_distribution || {};
-    const bins = pnlDist.bins || [];
+    const summary = accountData.summary;
+    const equityCurve = accountData.equity_curve;
+    const dailyPnl = accountData.daily_pnl;
+    const pnlDist = accountData.pnl_distribution;
+    const bins = pnlDist.bins;
 
     if (equityCurve.length > 0) {
       const firstPt = equityCurve[0];
       const lastPt = equityCurve[equityCurve.length - 1];
-      setText('equity-range-label', (firstPt.datetime || '--').slice(5, 16) + ' ~ ' + (lastPt.datetime || '--').slice(5, 16));
+      if (!firstPt || typeof firstPt.datetime !== 'string' || !firstPt.datetime || !lastPt || typeof lastPt.datetime !== 'string' || !lastPt.datetime) {
+        throw new Error('Invalid equity_curve endpoint: missing datetime');
+      }
+      setText('equity-range-label', firstPt.datetime.slice(5, 16) + ' ~ ' + lastPt.datetime.slice(5, 16));
       let peakEq = null;
-      equityCurve.forEach(pt => {
-        if (isFiniteNumber(pt.equity)) {
-          peakEq = peakEq === null ? Number(pt.equity) : Math.max(peakEq, Number(pt.equity));
+      equityCurve.forEach((pt, idx) => {
+        if (!pt || typeof pt !== 'object' || typeof pt.datetime !== 'string' || !pt.datetime || !isFiniteNumber(pt.equity)) {
+          throw new Error('Invalid equity_curve entry at index ' + idx);
         }
+        peakEq = peakEq === null ? Number(pt.equity) : Math.max(peakEq, Number(pt.equity));
       });
       setText('equity-peak-label', '峰值: ' + formatMoney(peakEq));
       setText('equity-current-label', '当前: ' + formatMoney(lastPt.equity));
@@ -507,24 +520,20 @@
 
     setText('daily-days-badge', dailyPnl.length + ' 天');
 
-    const hasWin = isFiniteNumber(summary.win_count);
-    const hasLoss = isFiniteNumber(summary.loss_count);
-    const hasBe = isFiniteNumber(summary.breakeven_count);
-    if (!hasWin && !hasLoss && !hasBe) {
-      setText('win-loss-summary-badge', '--');
-    } else {
-      setText(
-        'win-loss-summary-badge',
-        (hasWin ? Number(summary.win_count) + '胜' : '--') + ' / ' +
-        (hasLoss ? Number(summary.loss_count) + '负' : '--') + ' / ' +
-        (hasBe ? Number(summary.breakeven_count) + '平' : '--')
-      );
+    if (!isFiniteNumber(summary.win_count) || !isFiniteNumber(summary.loss_count) || !isFiniteNumber(summary.breakeven_count)) {
+      throw new Error('Invalid summary: missing win/loss/breakeven counts');
     }
-    const winCount = hasWin ? Number(summary.win_count) : 0;
-    const lossCount = hasLoss ? Number(summary.loss_count) : 0;
-    const beCount = hasBe ? Number(summary.breakeven_count) : 0;
+    const winCount = Number(summary.win_count);
+    const lossCount = Number(summary.loss_count);
+    const beCount = Number(summary.breakeven_count);
+    setText('win-loss-summary-badge', winCount + '胜 / ' + lossCount + '负 / ' + beCount + '平');
 
-    const totalBinned = bins.reduce((sum, b) => sum + (isFiniteNumber(b.count) ? Number(b.count) : 0), 0);
+    const totalBinned = bins.reduce((sum, b, idx) => {
+      if (!b || typeof b !== 'object' || typeof b.label !== 'string' || !isFiniteNumber(b.count)) {
+        throw new Error('Invalid pnl_distribution bin at index ' + idx);
+      }
+      return sum + Number(b.count);
+    }, 0);
     setText('dist-summary-badge', totalBinned + ' 笔样本');
 
     if (typeof Chart === 'undefined') return;
@@ -546,8 +555,8 @@
 
     const eqCanvas = document.getElementById('chart-equity-curve');
     if (eqCanvas) {
-      const eqLabels = equityCurve.map(p => (p.datetime || '--').slice(5, 16));
-      const eqValues = equityCurve.map(p => (isFiniteNumber(p.equity) ? Number(p.equity) : null));
+      const eqLabels = equityCurve.map(p => p.datetime.slice(5, 16));
+      const eqValues = equityCurve.map(p => Number(p.equity));
       const hasInitialCapital = isFiniteNumber(summary.initial_capital);
       const datasets = [{
         label: '账户总资产 ($)',
@@ -618,8 +627,18 @@
 
     const dailyCanvas = document.getElementById('chart-daily-pnl');
     if (dailyCanvas) {
-      const dLabels = dailyPnl.map(d => d.date);
-      const dValues = dailyPnl.map(d => (isFiniteNumber(d.net_pnl) ? Number(d.net_pnl) : 0));
+      const dLabels = dailyPnl.map((d, idx) => {
+        if (!d || typeof d !== 'object' || typeof d.date !== 'string' || !d.date) {
+          throw new Error('Invalid daily_pnl entry missing date at index ' + idx);
+        }
+        return d.date;
+      });
+      const dValues = dailyPnl.map((d, idx) => {
+        if (!isFiniteNumber(d.net_pnl)) {
+          throw new Error('Invalid daily_pnl entry non-finite net_pnl at index ' + idx);
+        }
+        return Number(d.net_pnl);
+      });
       upsertChart('daily', dailyCanvas, {
         type: 'bar',
         data: {
@@ -640,7 +659,7 @@
               ...tooltipConfig,
               callbacks: {
                 label: c => {
-                  const list = (currentAccountData && currentAccountData.daily_pnl) || [];
+                  const list = currentAccountData.daily_pnl;
                   const item = list[c.dataIndex];
                   const cnt = item && isFiniteNumber(item.trades_count) ? item.trades_count : '--';
                   return ['当日净盈亏: ' + formatMoney(c.raw, { signed: true }), '成交笔数: ' + cnt + ' 笔'];
@@ -685,7 +704,7 @@
     const distCanvas = document.getElementById('chart-pnl-dist');
     if (distCanvas) {
       const binLabels = bins.map(b => b.label);
-      const binCounts = bins.map(b => (isFiniteNumber(b.count) ? Number(b.count) : 0));
+      const binCounts = bins.map(b => Number(b.count));
       const binColors = bins.map(b => {
         if (isFiniteNumber(b.max) && Number(b.max) <= -0.0001) return '#f43f5e';
         if (isFiniteNumber(b.min) && Number(b.min) >= 0.0001) return '#10b981';
@@ -711,7 +730,7 @@
               ...tooltipConfig,
               callbacks: {
                 label: c => {
-                  const curBins = (currentAccountData && currentAccountData.pnl_distribution && currentAccountData.pnl_distribution.bins) || [];
+                  const curBins = currentAccountData.pnl_distribution.bins;
                   const bin = curBins[c.dataIndex];
                   const syms = bin && Array.isArray(bin.trades) && bin.trades.length > 0
                     ? ' (' + bin.trades.slice(0, 5).join(', ') + (bin.trades.length > 5 ? '…' : '') + ')'
@@ -762,7 +781,25 @@
   }
 
   function renderDashboard(accountData) {
-    if (!accountData || typeof accountData !== 'object' || !accountData.summary || typeof accountData.summary !== 'object' || !Array.isArray(accountData.active_positions)) {
+    if (
+      !accountData ||
+      typeof accountData !== 'object' ||
+      !accountData.api_status ||
+      typeof accountData.api_status !== 'object' ||
+      typeof accountData.api_status.mode !== 'string' ||
+      !accountData.api_status.mode.trim() ||
+      !accountData.summary ||
+      typeof accountData.summary !== 'object' ||
+      !Array.isArray(accountData.active_positions) ||
+      !Array.isArray(accountData.trade_history) ||
+      !Array.isArray(accountData.equity_curve) ||
+      !Array.isArray(accountData.daily_pnl) ||
+      !accountData.pnl_distribution ||
+      typeof accountData.pnl_distribution !== 'object' ||
+      !Array.isArray(accountData.pnl_distribution.bins) ||
+      !accountData.income_breakdown ||
+      typeof accountData.income_breakdown !== 'object'
+    ) {
       throw new Error('Invalid /api/account payload');
     }
     currentAccountData = accountData;
