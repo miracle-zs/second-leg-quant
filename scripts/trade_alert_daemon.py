@@ -990,7 +990,6 @@ def check_feature_2_breakout(
                 "trendline": line,
                 "trendline_id": line_id,
             }
-            keys = [trendline_key]
             pending_record = {
                 "symbol": sym,
                 "res_price": res_price,
@@ -998,11 +997,10 @@ def check_feature_2_breakout(
                 "pct": pct,
                 "candle": res,
                 "layout_id": layout_id,
-                "keys": keys,
+                "keys": [trendline_key],
             }
             sym_candidates.append({
                 "trendline_key": trendline_key,
-                "keys": keys,
                 "info": info,
                 "pending_record": pending_record,
                 "res_price": res_price,
@@ -1036,12 +1034,11 @@ def check_feature_2_breakout(
                 layout_id,
             ):
                 with state_store.transaction():
-                    for k in cand["keys"]:
-                        state_store.mark_breakout_notified(
-                            k,
-                            active_line_keys=active_line_keys,
-                            save=False,
-                        )
+                    state_store.mark_breakout_notified(
+                        trendline_key,
+                        active_line_keys=active_line_keys,
+                        save=False,
+                    )
                     state_store.data.setdefault("pending_breakouts", {}).pop(trendline_key, None)
                     state_store.save()
                 breakout_alerts.append(cand["info"])

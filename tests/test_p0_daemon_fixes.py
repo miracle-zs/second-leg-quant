@@ -253,6 +253,8 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         self.assertIn("接口状态异常", acct_js)
         self.assertIn("p.risk_monitored === true", acct_js)
         self.assertIn("Invalid /api/account payload", acct_js)
+        self.assertNotIn("renderIncomeBanner", acct_js)
+        self.assertNotIn("income-page-full-banner", acct_js)
 
 
 class TestDaemonAndWebFailFastContracts(unittest.TestCase):
@@ -474,7 +476,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               vm.runInNewContext(commonCode, win);
               // Expose loadCandidateSnapshot via trigger or run directly by checking initial error path
               payloadToServe = {
-                updated_at: '2026-11-25 12:00:00+08:00',
+                updated_at: '2026-11-25T12:00:00+08:00',
                 candidates: [
                   { symbol: 'NULLFRUSDT', is_neg_funding: true, funding_rate_4h_pct: null, is_high_turnover: true, turnover_ratio: null, is_ema_bull: false, is_resonance: false },
                   { symbol: 'REALFRUSDT', is_neg_funding: true, funding_rate_4h_pct: -0.01, is_high_turnover: true, turnover_ratio: 2.5, is_ema_bull: false, is_resonance: false },
@@ -508,15 +510,18 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               vm.runInNewContext(commonCode, win2);
               const candTestCode = candCode.replace(
                 /\\}\\)\\(\\);\\s*$/,
-                'window.__candTest = { updateKpiCards, loadCandidateSnapshot };})();'
+                'window.__candTest = { updateKpiCards, loadCandidateSnapshot, getEffectiveSupply, formatUpdatedAtBeijing };})();'
               );
               vm.runInNewContext(candTestCode, win2);
               win2.__candTest.updateKpiCards(payloadToServe.candidates);
               assert.strictEqual(kpiEls['kpi-neg-fr-sample'].textContent, '贴水深: REALFR(-0.01%)');
               assert.strictEqual(kpiEls['kpi-high-tr-sample'].textContent, '最高: REALFR(2.5x)');
+              assert.strictEqual(win2.__candTest.formatUpdatedAtBeijing('2026-11-25T12:00:00+08:00'), '2026-11-25 12:00:00 (北京时间)');
+              assert.strictEqual(win2.__candTest.getEffectiveSupply({ circulating_supply: 5000000, multiplier: 1000 }), 5000);
+              assert.strictEqual(win2.__candTest.getEffectiveSupply({ market_cap_usd: 1000000, price: 2 }), 0);
 
               // Malformed candidate item (missing symbol) must fail fast
-              payloadToServe = { updated_at: '2026-11-25 12:00:00+08:00', candidates: [{ price: 1.0 }] };
+              payloadToServe = { updated_at: '2026-11-25T12:00:00+08:00', candidates: [{ price: 1.0 }] };
               await win2.__candTest.loadCandidateSnapshot({ force: true });
               assert.strictEqual(kpiEls['pool-updated-time'].textContent, '候选池加载失败');
             })().then(() => {
@@ -576,7 +581,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               };
               assert.throws(() => win3.__acctTest.renderDashboard(validBase), /non-finite net_pnl/);
 
-              win3.__acctTest.updateKpis({}, [{ symbol: 'BTCUSDT', side: 'LONG' }]);
+              win3.__acctTest.updateKpis({});
               assert.strictEqual(acctEls['kpi-open-trades'].textContent, '--');
 
               const missingHistory = { ...validBase, daily_pnl: [], trade_history: null };

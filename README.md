@@ -34,6 +34,7 @@ second-leg-quant/
 │   ├── tailwind.css                           # 预编译压缩版 Tailwind v3 样式表
 │   ├── styles.css                             # 三端共享暗色 HUD 与粘性/对话框样式
 │   ├── vendor/chart.js                        # 本地固化 Chart.js v4.4.7 UMD 构建
+│   ├── common.js                              # 前端公共常量、格式化、TV 链接与超时请求工具
 │   ├── candidates.js                          # 候选池看板渲染、轮询与 K 线弹窗逻辑
 │   └── account.js                             # 账户看板渲染、Chart.js 图表与流水筛选排序
 │
@@ -46,8 +47,7 @@ second-leg-quant/
 │   ├── account_analytics_engine.py            # 币安账户/流水/FIFO 成交重建与量化风控指标引擎
 │   ├── account_dashboard_api.py               # SQLite WAL 读写与多线程 HTTP 看板/API 服务
 │   ├── trade_alert_daemon.py                  # 交易风控与四重预警守护进程 (Server酱 + 持仓同步)
-│   ├── sync_all.py                            # 一键串联“扫描 → 账户分析 → 风控评测”
-│   └── hourly_sync.sh                         # 每小时自动同步脚本 (原子锁 + 120s 冷却防重)
+│   └── sync_all.py                            # 一键串联“扫描 → 账户分析 → 风控评测”
 │
 ├── deploy/                                    # 生产环境部署模板
 │   ├── nginx/
@@ -76,7 +76,7 @@ cp .env.example .env
 ## 常用命令
 
 ```bash
-# 一键全量同步（扫描候选池 + 编译静态壳 + 更新账户分析 + 执行单次风控评测）
+# 一键全量同步（扫描候选池 + 更新账户分析 + 执行单次风控评测）
 python3 scripts/sync_all.py
 
 # 启动看板 Web 与 JSON API 服务（默认监听 127.0.0.1:18083）

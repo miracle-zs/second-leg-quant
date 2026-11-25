@@ -105,7 +105,7 @@
     }
   }
 
-  function updateKpis(summary, positions) {
+  function updateKpis(summary) {
     setText('kpi-total-equity', formatMoney(summary.total_equity));
     setText(
       'kpi-initial-capital',
@@ -754,32 +754,6 @@
     }
   }
 
-  function renderIncomeBanner(accountData) {
-    const existing = document.getElementById('income-page-full-banner');
-    const bd = accountData.income_breakdown;
-    if (bd && bd.page_full) {
-      const cStart = escapeHtml(bd.coverage_start || '--');
-      const cEnd = escapeHtml(bd.coverage_end || '--');
-      const textHtml = '<span>已达单页上限，更早流水未纳入 (流水覆盖区间: ' + cStart + ' 至 ' + cEnd + ')</span>';
-      if (!existing) {
-        const banner = document.createElement('div');
-        banner.id = 'income-page-full-banner';
-        banner.className = 'px-3.5 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-center justify-between';
-        banner.innerHTML = textHtml;
-        const mainContent = document.getElementById('account-report');
-        const kpiSection = document.getElementById('kpi-matrix-section');
-        if (mainContent && kpiSection) {
-          mainContent.insertBefore(banner, kpiSection);
-        }
-      } else {
-        existing.classList.remove('hidden');
-        existing.innerHTML = textHtml;
-      }
-    } else if (existing) {
-      existing.classList.add('hidden');
-    }
-  }
-
   function renderDashboard(accountData) {
     if (
       !accountData ||
@@ -809,8 +783,7 @@
 
     setText('sync-time-text', accountData.generated_at || '--');
     updateApiStatusBadge(accountData, false);
-    renderIncomeBanner(accountData);
-    updateKpis(summary, positions);
+    updateKpis(summary);
     renderActivePositions(positions);
     renderHistoryTable();
     updateCharts(accountData);

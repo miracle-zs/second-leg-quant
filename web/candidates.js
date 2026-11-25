@@ -161,10 +161,6 @@
   const modalHudEma5 = document.getElementById('modal-hud-ema5');
   const modalHudEma10 = document.getElementById('modal-hud-ema10');
 
-  function formatCryptoVal(val, refDiff = null) {
-    return formatCryptoPrice(val, { refDiff });
-  }
-
   function formatPrice(p) {
     return formatCryptoPrice(p);
   }
@@ -182,11 +178,7 @@
     if (!updatedAt || typeof updatedAt !== 'string') return '--';
     const trimmed = updatedAt.trim();
     if (!trimmed) return '--';
-    let iso = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T');
-    if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(iso)) {
-      iso += '+08:00';
-    }
-    const parsed = new Date(iso);
+    const parsed = new Date(trimmed);
     if (Number.isNaN(parsed.getTime())) return trimmed;
     const bj = toBeijingDate(parsed.getTime());
     const pad = (n) => String(n).padStart(2, '0');
@@ -199,9 +191,6 @@
   function getEffectiveSupply(c) {
     if (isFiniteNum(c.circulating_supply) && c.circulating_supply > 0 && isFiniteNum(c.multiplier) && c.multiplier > 0) {
       return c.circulating_supply / c.multiplier;
-    }
-    if (isFiniteNum(c.market_cap_usd) && c.market_cap_usd > 0 && isFiniteNum(c.price) && c.price > 0) {
-      return c.market_cap_usd / c.price;
     }
     return 0;
   }
@@ -293,8 +282,8 @@
       return '<span class="text-slate-500 text-[10px]">--</span>';
     }
     const diffEma = c.ema5 - c.ema10;
-    const ema5Str = escapeHtml(formatCryptoVal(c.ema5, diffEma));
-    const ema10Str = escapeHtml(formatCryptoVal(c.ema10, diffEma));
+    const ema5Str = escapeHtml(formatCryptoPrice(c.ema5, { refDiff: diffEma }));
+    const ema10Str = escapeHtml(formatCryptoPrice(c.ema10, { refDiff: diffEma }));
     const spread = isFiniteNum(c.ema_spread_pct) ? c.ema_spread_pct : null;
     const spreadText = spread !== null ? escapeHtml(formatSignedPct(spread, 2)) : '--';
 
