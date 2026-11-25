@@ -12,7 +12,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional, TypeVar
 from urllib.parse import parse_qs, quote, urlsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -34,7 +34,10 @@ _BINANCE_ALLOWED_INTERVALS = frozenset({"15m", "1h", "4h", "1d"})
 _BINANCE_PROXY_TTL_SEC = 15.0
 _BINANCE_KLINES_TTL_SEC = 12.0
 _BINANCE_PROXY_CACHE_MAX_ENTRIES = 128
+_STATIC_CACHE_MAX_ENTRIES = 64
 _BINANCE_PROXY_TIMEOUT_SEC = 10.0
+
+_T = TypeVar("_T")
 
 
 def _is_valid_symbol(symbol: str) -> bool:
@@ -70,12 +73,10 @@ def create_handler(database: Path):
     web_root = WEB_DIR.resolve()
     proxy_cache: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
     proxy_lock = threading.Lock()
-    static_cache: dict[Path, tuple[bytes, str, str, int]] = {}
+    static_cache: OrderedDict[Path, tuple[bytes, str, str, int]] = OrderedDict()
     static_lock = threading.Lock()
-    candidates_cache: Optional[tuple[str, str, bytes, str]] = None
-    candidates_lock = threading.Lock()
-    account_cache: Optional[tuple[str, bytes, str]] = None
-    account_lock = threading.Lock()
+    snapshot_cache: dict[str, tuple[Any, bytes, str]] = {}
+    snapshot_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -112,31 +113,56 @@ def create_handler(database: Path):
                 send_body=send_body,
             )
 
-        def _send_not_modified(self, etag: str) -> None:
-            self.send_response(304)
-            self.send_header("ETag", etag)
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-
-        def _send_json_with_etag(
+        def _send_cached_response(
             self,
             body: bytes,
+            content_type: str,
+            etag: str,
             *,
-            etag: Optional[str] = None,
             send_body: bool = True,
         ) -> None:
-            resolved_etag = etag or _etag_for(body)
-            if _matches_etag(self.headers.get("If-None-Match"), resolved_etag):
-                self._send_not_modified(resolved_etag)
+            if _matches_etag(self.headers.get("If-None-Match"), etag):
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
                 return
             self._send_bytes(
                 200,
                 body,
-                "application/json; charset=utf-8",
+                content_type,
                 cache_control="no-cache",
-                extra_headers={"ETag": resolved_etag},
+                extra_headers={"ETag": etag},
                 send_body=send_body,
             )
+
+        def _serve_snapshot_json(
+            self,
+            cache_key: str,
+            loader: Callable[[], Optional[_T]],
+            build_body: Callable[[_T], bytes],
+            err_context: str,
+            *,
+            send_body: bool = True,
+        ) -> None:
+            try:
+                raw = loader()
+            except sqlite3.Error as exc:
+                self.log_error("SQLite error reading %s: %s", err_context, exc)
+                self._send_json_error(500, "Database error", send_body=send_body)
+                return
+            if raw is None:
+                self._send_json_error(503, "Snapshot unavailable", send_body=send_body)
+                return
+            with snapshot_lock:
+                cached = snapshot_cache.get(cache_key)
+                if cached is not None and cached[0] == raw:
+                    _, body, etag = cached
+                else:
+                    body = build_body(raw)
+                    etag = _etag_for(body)
+                    snapshot_cache[cache_key] = (raw, body, etag)
+            self._send_cached_response(body, "application/json; charset=utf-8", etag, send_body=send_body)
 
         def _send_static_file(self, asset: Path, *, send_body: bool = True) -> None:
             try:
@@ -155,6 +181,7 @@ def create_handler(database: Path):
             with static_lock:
                 cached = static_cache.get(asset)
                 if cached is not None and cached[3] == mtime_ns:
+                    static_cache.move_to_end(asset)
                     body, content_type, etag, _ = cached
 
             if body is None:
@@ -168,18 +195,11 @@ def create_handler(database: Path):
                 etag = _etag_for(body)
                 with static_lock:
                     static_cache[asset] = (body, content_type, etag, fresh_mtime_ns)
+                    static_cache.move_to_end(asset)
+                    while len(static_cache) > _STATIC_CACHE_MAX_ENTRIES:
+                        static_cache.popitem(last=False)
 
-            if _matches_etag(self.headers.get("If-None-Match"), etag):
-                self._send_not_modified(etag)
-                return
-            self._send_bytes(
-                200,
-                body,
-                content_type,
-                cache_control="no-cache",
-                extra_headers={"ETag": etag},
-                send_body=send_body,
-            )
+            self._send_cached_response(body, content_type, etag, send_body=send_body)
 
         def _send_binance_proxy(
             self,
@@ -259,7 +279,6 @@ def create_handler(database: Path):
             )
 
         def _handle_get(self, *, send_body: bool) -> None:
-            nonlocal candidates_cache, account_cache
             parsed = urlsplit(self.path)
             path = parsed.path
 
@@ -280,32 +299,18 @@ def create_handler(database: Path):
                 self._send_static_file(web_root / "index.html", send_body=send_body)
                 return
 
-            if path == "/account.html":
-                self._send_static_file(web_root / "account.html", send_body=send_body)
-                return
-
-            if path == "/playbook.html":
-                self._send_static_file(web_root / "playbook.html", send_body=send_body)
+            if path in ("/account.html", "/playbook.html"):
+                self._send_static_file(web_root / path.lstrip("/"), send_body=send_body)
                 return
 
             if path == "/api/account":
-                try:
-                    payload_json = db_store.load_raw_report(database)
-                except sqlite3.Error as exc:
-                    self.log_error("SQLite error reading account_snapshot: %s", exc)
-                    self._send_json_error(500, "Database error", send_body=send_body)
-                    return
-                if payload_json is None:
-                    self._send_json_error(503, "Snapshot unavailable", send_body=send_body)
-                    return
-                with account_lock:
-                    if account_cache is not None and account_cache[0] == payload_json:
-                        body, etag = account_cache[1], account_cache[2]
-                    else:
-                        body = payload_json.encode("utf-8")
-                        etag = _etag_for(body)
-                        account_cache = (payload_json, body, etag)
-                self._send_json_with_etag(body, etag=etag, send_body=send_body)
+                self._serve_snapshot_json(
+                    "account",
+                    lambda: db_store.load_raw_report(database),
+                    lambda payload_json: payload_json.encode("utf-8"),
+                    "account_snapshot",
+                    send_body=send_body,
+                )
                 return
 
             if path == "/api/candidate-version":
@@ -329,37 +334,19 @@ def create_handler(database: Path):
                 return
 
             if path == "/api/candidates":
-                try:
-                    row = db_store.load_candidates(database)
-                except sqlite3.Error as exc:
-                    self.log_error("SQLite error reading candidate_snapshot: %s", exc)
-                    self._send_json_error(500, "Database error", send_body=send_body)
-                    return
-                if row is None:
-                    self._send_json_error(503, "Snapshot unavailable", send_body=send_body)
-                    return
-                updated_at, payload_json = row
-                with candidates_lock:
-                    if (
-                        candidates_cache is not None
-                        and candidates_cache[0] == updated_at
-                        and candidates_cache[1] == payload_json
-                    ):
-                        body = candidates_cache[2]
-                        etag = candidates_cache[3]
-                    else:
-                        updated_json = json.dumps(updated_at, ensure_ascii=False).encode("utf-8")
-                        body = (
-                            b'{"updated_at":'
-                            + updated_json
-                            + b',"candidates":'
-                            + payload_json.encode("utf-8")
-                            + b"}"
-                        )
-                        etag = _etag_for(body)
-                        candidates_cache = (updated_at, payload_json, body, etag)
-
-                self._send_json_with_etag(body, etag=etag, send_body=send_body)
+                self._serve_snapshot_json(
+                    "candidates",
+                    lambda: db_store.load_candidates(database),
+                    lambda row: (
+                        b'{"updated_at":'
+                        + json.dumps(row[0], ensure_ascii=False).encode("utf-8")
+                        + b',"candidates":'
+                        + row[1].encode("utf-8")
+                        + b"}"
+                    ),
+                    "candidate_snapshot",
+                    send_body=send_body,
+                )
                 return
 
             if path == "/api/binance/ticker24hr":

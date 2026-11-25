@@ -209,6 +209,26 @@ def _read_conn(
         yield ro_conn
 
 
+def _sync_kv_table(
+    conn: sqlite3.Connection,
+    table: str,
+    key_col: str,
+    desired: Mapping[object, str],
+) -> None:
+    """Sync a `(key_col, payload)` table to `desired`, deleting stale rows and upserting changed ones."""
+    existing = dict(conn.execute(f"SELECT {key_col}, payload FROM {table}").fetchall())
+    stale = [(k,) for k in existing if k not in desired]
+    if stale:
+        conn.executemany(f"DELETE FROM {table} WHERE {key_col} = ?", stale)
+    changed = [(k, v) for k, v in desired.items() if existing.get(k) != v]
+    if changed:
+        conn.executemany(
+            f"INSERT INTO {table} ({key_col}, payload) VALUES (?, ?) "
+            f"ON CONFLICT({key_col}) DO UPDATE SET payload = excluded.payload",
+            changed,
+        )
+
+
 @contextmanager
 def _write_conn(
     database: Path,
@@ -256,27 +276,7 @@ def publish_report(
                 if not isinstance(point, Mapping):
                     raise ValueError(f"equity_curve entry must be a mapping, got {type(point).__name__}")
                 desired_points[int(point["timestamp"])] = _dumps_json(point)
-
-            existing_points: dict[int, str] = dict(
-                conn.execute("SELECT timestamp, payload FROM equity_observations").fetchall()
-            )
-            stale_timestamps = [(ts,) for ts in existing_points if ts not in desired_points]
-            if stale_timestamps:
-                conn.executemany(
-                    "DELETE FROM equity_observations WHERE timestamp = ?",
-                    stale_timestamps,
-                )
-            changed_points = [
-                (ts, pt_json)
-                for ts, pt_json in desired_points.items()
-                if existing_points.get(ts) != pt_json
-            ]
-            if changed_points:
-                conn.executemany(
-                    "INSERT INTO equity_observations (timestamp, payload) VALUES (?, ?) "
-                    "ON CONFLICT(timestamp) DO UPDATE SET payload = excluded.payload",
-                    changed_points,
-                )
+            _sync_kv_table(conn, "equity_observations", "timestamp", desired_points)
 
         if income:
             conn.executemany(
@@ -370,35 +370,21 @@ def load_ledger_bundle(
             if rec_row is not None:
                 bundle["recording"] = _loads_dict(rec_row[0], context="account_recording")
 
-        if _table_exists(conn, "income_ledger"):
+        for bundle_key, table_name in (
+            ("income", "income_ledger"),
+            ("fills", "trade_fills"),
+            ("observations", "equity_observations"),
+        ):
+            if not _table_exists(conn, table_name):
+                continue
             if start_ms is None:
-                rows = conn.execute("SELECT payload FROM income_ledger ORDER BY timestamp").fetchall()
+                rows = conn.execute(f"SELECT payload FROM {table_name} ORDER BY timestamp").fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT payload FROM income_ledger WHERE timestamp >= ? ORDER BY timestamp",
+                    f"SELECT payload FROM {table_name} WHERE timestamp >= ? ORDER BY timestamp",
                     (int(start_ms),),
                 ).fetchall()
-            bundle["income"] = [_loads_dict(r[0], context="income_ledger") for r in rows]
-
-        if _table_exists(conn, "trade_fills"):
-            if start_ms is None:
-                rows = conn.execute("SELECT payload FROM trade_fills ORDER BY timestamp").fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT payload FROM trade_fills WHERE timestamp >= ? ORDER BY timestamp",
-                    (int(start_ms),),
-                ).fetchall()
-            bundle["fills"] = [_loads_dict(r[0], context="trade_fills") for r in rows]
-
-        if _table_exists(conn, "equity_observations"):
-            if start_ms is None:
-                rows = conn.execute("SELECT payload FROM equity_observations ORDER BY timestamp").fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT payload FROM equity_observations WHERE timestamp >= ? ORDER BY timestamp",
-                    (int(start_ms),),
-                ).fetchall()
-            bundle["observations"] = [_loads_dict(r[0], context="equity_observations") for r in rows]
+            bundle[bundle_key] = [_loads_dict(r[0], context=table_name) for r in rows]
 
     return bundle
 
@@ -482,21 +468,7 @@ def save_sub30m_history(
         desired[sym] = _dumps_json(dict(entry))
 
     with _write_conn(database, conn) as w_conn:
-        existing = dict(w_conn.execute("SELECT symbol, payload FROM sub30m_history").fetchall())
-        stale = [(sym,) for sym in existing if sym not in desired]
-        if stale:
-            w_conn.executemany("DELETE FROM sub30m_history WHERE symbol = ?", stale)
-        changed = [
-            (sym, payload_json)
-            for sym, payload_json in desired.items()
-            if existing.get(sym) != payload_json
-        ]
-        if changed:
-            w_conn.executemany(
-                "INSERT INTO sub30m_history (symbol, payload) VALUES (?, ?) "
-                "ON CONFLICT(symbol) DO UPDATE SET payload = excluded.payload",
-                changed,
-            )
+        _sync_kv_table(w_conn, "sub30m_history", "symbol", desired)
 
 
 # ------------------------------------------------------------------------------
@@ -542,21 +514,7 @@ def save_open_positions(
         desired[sym] = _dumps_json(record)
 
     with _write_conn(database, conn) as w_conn:
-        existing = dict(w_conn.execute("SELECT symbol, payload FROM open_positions").fetchall())
-        stale = [(sym,) for sym in existing if sym not in desired]
-        if stale:
-            w_conn.executemany("DELETE FROM open_positions WHERE symbol = ?", stale)
-        changed = [
-            (sym, payload_json)
-            for sym, payload_json in desired.items()
-            if existing.get(sym) != payload_json
-        ]
-        if changed:
-            w_conn.executemany(
-                "INSERT INTO open_positions (symbol, payload) VALUES (?, ?) "
-                "ON CONFLICT(symbol) DO UPDATE SET payload = excluded.payload",
-                changed,
-            )
+        _sync_kv_table(w_conn, "open_positions", "symbol", desired)
 
 
 def upsert_open_position(

@@ -31,6 +31,9 @@ import config as cfg
 import db_store
 import http_client
 import ledger_sync
+import quant_metrics as qm
+import trade_enrichment as te
+import trade_reconstructor as tr
 import tv_trendline_engine as tve
 
 
@@ -70,8 +73,8 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
     """验证账户分析引擎时区、本金基准、NoneType 防护与空单支持"""
 
     def test_parse_to_timestamp_utc_z_matches_beijing_plus_8h(self):
-        ts_utc = aae.parse_to_timestamp("2026-11-23T00:00:00Z")
-        ts_bj = aae.parse_to_timestamp("2026-11-23 08:00:00")
+        ts_utc = te.parse_to_timestamp("2026-11-23T00:00:00Z")
+        ts_bj = te.parse_to_timestamp("2026-11-23 08:00:00")
         self.assertAlmostEqual(ts_utc, ts_bj, places=3)
 
     def test_cached_principal_preserved_when_income_page_becomes_full(self):
@@ -140,7 +143,6 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
             self.assertEqual(report["recording"]["initial_equity"], 500.0)
 
     def test_short_position_enrichment_and_pnl_direction(self):
-        engine = aae.AccountAnalyticsEngine(offline_mode=True)
         raw_short = {
             "symbol": "ETHUSDT",
             "side": "SHORT",
@@ -149,7 +151,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
             "mark_price": 2850.0,
             "leverage": 10,
         }
-        enriched = engine.enrich_active_position(raw_short, 0)
+        enriched = te.enrich_active_position(raw_short, 0)
         self.assertEqual(enriched["side"], "SHORT")
         self.assertFalse(enriched["risk_monitored"])
         self.assertEqual(enriched["amount"], 2.0)
@@ -169,13 +171,12 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
         self.assertIn("未纳入风控", account_js)
 
     def test_decimal_fill_quantities_preserve_opening_time(self):
-        engine = aae.AccountAnalyticsEngine(offline_mode=True)
         fills = [
             {"symbol": "ACEUSDT", "id": 1, "orderId": 1, "side": "BUY", "time": 1000, "positionSide": "LONG", "price": "1", "qty": "25922.21"},
             {"symbol": "ACEUSDT", "id": 2, "orderId": 2, "side": "SELL", "time": 2000, "positionSide": "LONG", "price": "1", "qty": "8806.15"},
             {"symbol": "ACEUSDT", "id": 3, "orderId": 2, "side": "SELL", "time": 3000, "positionSide": "LONG", "price": "1", "qty": "17116.06"},
         ]
-        trades, _ = engine.reconstruct_binance_trades([], [], fills)
+        trades, _ = tr.reconstruct_binance_trades([], [], fills)
         self.assertEqual(trades[0]["entry_ts"], 1000)
         self.assertEqual(trades[0]["duration_seconds"], 2)
 
@@ -726,7 +727,7 @@ class TestSecondPassRegressions(unittest.TestCase):
                 report = engine.run(database=db_path)
 
         # Verify daily returns were computed against 100.0 (+20%, -4.17%), not 10000.0
-        expected_sharpe, expected_sortino, _ = engine._compute_risk_ratios(
+        expected_sharpe, expected_sortino, _ = qm.compute_risk_ratios(
             report["daily_pnl"], 100.0
         )
         self.assertEqual(report["summary"]["sharpe_ratio"], expected_sharpe)

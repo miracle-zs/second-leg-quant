@@ -151,17 +151,12 @@ def sync_db_ledger(
         raise RuntimeError(f"币安资金流水读取失败: {e}") from e
 
     bundle = db_store.load_ledger_bundle(database, start_ms=start_ms)
-    raw_existing_income = bundle["income"]
-    raw_existing_fills = bundle["fills"]
+    for key in ("income", "fills", "observations"):
+        if not isinstance(bundle[key], list):
+            raise TypeError(f"Expected list for bundle[{key!r}], got {type(bundle[key]).__name__}")
+    existing_income: List[dict] = list(bundle["income"])
+    existing_fills: List[dict] = list(bundle["fills"])
     raw_existing_obs = bundle["observations"]
-    if not isinstance(raw_existing_income, list):
-        raise TypeError(f"Expected list for bundle['income'], got {type(raw_existing_income).__name__}")
-    if not isinstance(raw_existing_fills, list):
-        raise TypeError(f"Expected list for bundle['fills'], got {type(raw_existing_fills).__name__}")
-    if not isinstance(raw_existing_obs, list):
-        raise TypeError(f"Expected list for bundle['observations'], got {type(raw_existing_obs).__name__}")
-    existing_income: List[dict] = list(raw_existing_income)
-    existing_fills: List[dict] = list(raw_existing_fills)
     if raw_existing_obs:
         if previous_report is None:
             previous_report = {"equity_curve": list(raw_existing_obs)}
@@ -179,18 +174,13 @@ def sync_db_ledger(
     if raw_cursor is not None and not isinstance(raw_cursor, Mapping):
         raise TypeError(f"Expected mapping for recording['fills_cursor_ms'], got {type(raw_cursor).__name__}")
     fills_cursor: Dict[str, int] = dict(raw_cursor) if raw_cursor is not None else {}
+    income_for_symbols = new_income if existing_fills else existing_income + new_income
     symbols_to_sync = {
         clean_symbol(item["symbol"])
-        for item in new_income
+        for item in income_for_symbols
         if item.get("symbol") and item["incomeType"] in ("REALIZED_PNL", "COMMISSION")
     }
     symbols_to_sync.update(clean_symbol(str(p["symbol"])) for p in active_positions_binance)
-    if not existing_fills:
-        symbols_to_sync.update(
-            clean_symbol(item["symbol"])
-            for item in existing_income
-            if item.get("symbol") and item["incomeType"] in ("REALIZED_PNL", "COMMISSION")
-        )
 
     sorted_symbols = sorted(s for s in symbols_to_sync if s)
     symbol_starts = {

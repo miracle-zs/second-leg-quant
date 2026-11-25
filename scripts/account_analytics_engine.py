@@ -3,9 +3,9 @@
 """
 账户量化风控数据分析引擎 (Account Quant Analytics Engine)
 ==============================================================================
-Thin orchestrator & CLI wrapping:
+Orchestrator & CLI tying together:
 1. `ledger_sync`: Binance `/fapi/v1/income` & `/fapi/v1/userTrades` incremental SQLite sync.
-2. `trade_reconstructor`: FIFO trade reconstruction & metadata enrichment.
+2. `trade_reconstructor` & `trade_enrichment`: FIFO trade reconstruction & metadata enrichment.
 3. `quant_metrics`: Single-pass income aggregation, Sharpe/Sortino, equity curve & daily PnL.
 4. `db_store`: Unified SQLite persistence (positions, history, ledger, snapshots).
 """
@@ -18,7 +18,7 @@ import logging
 import math
 from pathlib import Path
 import sys
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
@@ -41,18 +41,14 @@ from quant_metrics import (  # noqa: E402
     build_db_equity_curve,
     build_income_breakdown,
     build_pnl_distribution,
-    build_trade_daily_pnl,
     calculate_quant_risk_metrics,
-    compute_risk_ratios,
 )
-from trade_reconstructor import (  # noqa: E402
-    enrich_active_position,
+from trade_enrichment import (  # noqa: E402
     enrich_trade_record,
-    format_duration,
     merge_active_positions,
     parse_to_timestamp,
-    reconstruct_binance_trades,
 )
+from trade_reconstructor import reconstruct_binance_trades  # noqa: E402
 
 logger = logging.getLogger("account_analytics")
 
@@ -72,10 +68,9 @@ class AccountAnalyticsEngine:
             cap_val = float(initial_capital)
             if not math.isfinite(cap_val) or cap_val <= 0:
                 raise ValueError(f"initial_capital must be a positive finite number, got {initial_capital!r}")
-            self.custom_initial_capital: Optional[float] = cap_val
+            self.initial_capital: Optional[float] = cap_val
         else:
-            self.custom_initial_capital = None
-        self.initial_capital: Optional[float] = self.custom_initial_capital
+            self.initial_capital = None
         self.fee_rate = float(fee_rate)
         if default_leverage is not None:
             lev_val = int(default_leverage)
@@ -175,115 +170,6 @@ class AccountAnalyticsEngine:
             db_store.load_position_history(db_path),
         )
 
-    def enrich_trade_record(self, raw: Mapping[str, Any], index: int) -> dict:
-        return enrich_trade_record(
-            raw, index, fee_rate=self.fee_rate, default_leverage=self.default_leverage
-        )
-
-    def enrich_active_position(self, raw: Mapping[str, Any], index: int) -> dict:
-        return enrich_active_position(raw, index, default_leverage=self.default_leverage)
-
-    def _merge_active_positions(
-        self,
-        active_positions_binance: Sequence[Mapping[str, Any]],
-        local_positions: Sequence[Mapping[str, Any]],
-        positions_available: bool,
-    ) -> List[dict]:
-        return merge_active_positions(
-            active_positions_binance,
-            local_positions,
-            positions_available,
-            default_leverage=self.default_leverage,
-        )
-
-    def reconstruct_binance_trades(
-        self,
-        income_list: Sequence[Mapping[str, Any]],
-        local_history: Sequence[Mapping[str, Any]],
-        fills: Sequence[Mapping[str, Any]] = (),
-    ) -> Tuple[List[dict], float]:
-        return reconstruct_binance_trades(
-            income_list,
-            local_history,
-            fills=fills,
-            fee_rate=self.fee_rate,
-            default_leverage=self.default_leverage,
-        )
-
-    def _compute_risk_ratios(
-        self,
-        daily_pnl: Sequence[Mapping[str, Any]],
-        initial_capital: float,
-    ) -> Tuple[Optional[float], Optional[float], str]:
-        return compute_risk_ratios(daily_pnl, initial_capital)
-
-    def calculate_quant_risk_metrics(
-        self,
-        trades: Sequence[Mapping[str, Any]],
-        active_positions: Sequence[Mapping[str, Any]],
-        account_info: Optional[Mapping[str, Any]],
-        net_transfers: Optional[float] = None,
-        *,
-        total_funding_fee: float = 0.0,
-        daily_pnl_override: Optional[List[dict]] = None,
-        equity_curve_override: Optional[List[dict]] = None,
-        initial_capital_override: Optional[float] = None,
-    ) -> Tuple[dict, List[dict], List[dict]]:
-        has_account_transfers = (
-            isinstance(account_info, Mapping)
-            and bool(account_info)
-            and net_transfers is not None
-            and net_transfers > 0
-        )
-        if initial_capital_override is None and self.initial_capital is None and not has_account_transfers:
-            raise ValueError(
-                "Missing initial_capital: configure initial_capital or provide an account recording"
-            )
-        return calculate_quant_risk_metrics(
-            trades,
-            active_positions,
-            account_info,
-            default_initial_capital=self.initial_capital if self.initial_capital is not None else 0.0,
-            custom_initial_capital=self.custom_initial_capital,
-            net_transfers=net_transfers,
-            total_funding_fee=total_funding_fee,
-            daily_pnl_override=daily_pnl_override,
-            equity_curve_override=equity_curve_override,
-            initial_capital_override=initial_capital_override,
-        )
-
-    def _build_trade_daily_pnl(
-        self, sorted_trades: Sequence[Mapping[str, Any]], initial_capital: float
-    ) -> List[dict]:
-        return build_trade_daily_pnl(sorted_trades, initial_capital)
-
-    def _build_db_daily_pnl(
-        self,
-        income_list: Sequence[Mapping[str, Any]],
-        trades: Sequence[Mapping[str, Any]],
-        initial_equity: float,
-    ) -> List[dict]:
-        return build_db_daily_pnl(income_list, trades, initial_equity)
-
-    def _sync_db_ledger(
-        self,
-        database: Path,
-        account_info: Mapping[str, Any],
-        active_positions_binance: Sequence[Mapping[str, Any]],
-        recording_start_ms: Optional[int],
-    ) -> Tuple[
-        Dict[str, Any],
-        List[dict],
-        List[dict],
-        List[dict],
-        List[dict],
-        Optional[Dict[str, Any]],
-        Optional[int],
-    ]:
-        return sync_db_ledger(
-            self.client, database, account_info, active_positions_binance, recording_start_ms
-        )
-
     def run(
         self,
         database: Optional[Path] = None,
@@ -328,7 +214,8 @@ class AccountAnalyticsEngine:
                 new_fills,
                 previous_report,
                 effective_recording_start_ms,
-            ) = self._sync_db_ledger(
+            ) = sync_db_ledger(
+                self.client,
                 db_path,
                 account_info,
                 active_positions_binance,
@@ -354,15 +241,22 @@ class AccountAnalyticsEngine:
                     filtered_local.append(trade)
             local_history = filtered_local
 
-        active_positions = self._merge_active_positions(
-            active_positions_binance, local_positions, api_status["positions_available"]
+        active_positions = merge_active_positions(
+            active_positions_binance,
+            local_positions,
+            api_status["positions_available"],
+            default_leverage=self.default_leverage,
         )
 
         open_position_fee = 0.0
         if recording is not None:
             assert account_info is not None
-            trade_history, open_position_fee = self.reconstruct_binance_trades(
-                income_list, local_history, fills=fills_list
+            trade_history, open_position_fee = reconstruct_binance_trades(
+                income_list,
+                local_history,
+                fills=fills_list,
+                fee_rate=self.fee_rate,
+                default_leverage=self.default_leverage,
             )
             income_agg = aggregate_income_ledger(income_list)
             net_transfers_val = float(income_agg["net_transfer_usdt"])
@@ -381,10 +275,12 @@ class AccountAnalyticsEngine:
             daily_pnl_db = build_db_daily_pnl(
                 income_list, trade_history, initial_equity, income_agg=income_agg
             )
-            summary, equity_curve, daily_pnl = self.calculate_quant_risk_metrics(
+            summary, equity_curve, daily_pnl = calculate_quant_risk_metrics(
                 trades=trade_history,
                 active_positions=active_positions,
                 account_info=account_info,
+                default_initial_capital=self.initial_capital if self.initial_capital is not None else 0.0,
+                custom_initial_capital=self.initial_capital,
                 net_transfers=effective_transfers,
                 total_funding_fee=funding_fee_usdt,
                 daily_pnl_override=daily_pnl_db,
@@ -402,10 +298,15 @@ class AccountAnalyticsEngine:
             summary["net_external_transfers"] = round(net_flow, 4)
             principal_source = "recording_start"
         else:
-            trade_history = [self.enrich_trade_record(t, idx) for idx, t in enumerate(local_history)]
+            trade_history = [
+                enrich_trade_record(
+                    t, idx, fee_rate=self.fee_rate, default_leverage=self.default_leverage
+                )
+                for idx, t in enumerate(local_history)
+            ]
             income_agg = aggregate_income_ledger(())
             offline_initial_override: Optional[float] = None
-            if self.custom_initial_capital is not None:
+            if self.initial_capital is not None:
                 principal_source = "configured"
             else:
                 persisted_recording = db_store.load_recording(db_path)
@@ -420,10 +321,12 @@ class AccountAnalyticsEngine:
                     raise ValueError(
                         "离线模式需要显式传入 --initial-capital（或数据库中已存在有效的 account_recording）"
                     )
-            summary, equity_curve, daily_pnl = self.calculate_quant_risk_metrics(
+            summary, equity_curve, daily_pnl = calculate_quant_risk_metrics(
                 trades=trade_history,
                 active_positions=active_positions,
                 account_info=None,
+                default_initial_capital=self.initial_capital if self.initial_capital is not None else 0.0,
+                custom_initial_capital=self.initial_capital,
                 initial_capital_override=offline_initial_override,
             )
 

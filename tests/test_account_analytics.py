@@ -47,13 +47,13 @@ import account_analytics_engine as aae  # noqa: E402
 import binance_client as bc  # noqa: E402
 import db_store  # noqa: E402
 import ledger_sync  # noqa: E402
+import quant_metrics as qm  # noqa: E402
+import trade_enrichment as te  # noqa: E402
+import trade_reconstructor as tr  # noqa: E402
 
 
 class TestDataEnrichment(unittest.TestCase):
     """1. 测试持仓与历史交易记录清洗及严格防伪造逻辑"""
-
-    def setUp(self):
-        self.engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
 
     def test_enrich_winning_trade_with_trailing_stop(self):
         raw = {
@@ -67,7 +67,7 @@ class TestDataEnrichment(unittest.TestCase):
             "status": "STOP_LOSS_TRIGGERED",
             "leverage": 5,
         }
-        enriched = self.engine.enrich_trade_record(raw, 0)
+        enriched = te.enrich_trade_record(raw, 0)
         self.assertEqual(enriched["symbol"], "YBUSDT")
         self.assertEqual(enriched["side"], "LONG")
         self.assertAlmostEqual(enriched["realized_pnl"], 5.82, places=2)
@@ -97,7 +97,7 @@ class TestDataEnrichment(unittest.TestCase):
                 "dt2_str": "2026-11-21 08:00",
             },
         }
-        enriched = self.engine.enrich_trade_record(raw, 1)
+        enriched = te.enrich_trade_record(raw, 1)
         self.assertEqual(enriched["outcome"], "LOSS")
         self.assertAlmostEqual(enriched["realized_pnl"], -80.0, places=2)
         self.assertAlmostEqual(enriched["pnl_pct"], -8.0, places=2)
@@ -119,7 +119,7 @@ class TestDataEnrichment(unittest.TestCase):
             "closed_at": "2026-11-21 10:10:00",
             "status": "MANUAL_CLOSE",
         }
-        enriched = self.engine.enrich_trade_record(raw, 0)
+        enriched = te.enrich_trade_record(raw, 0)
         self.assertEqual(enriched["symbol"], "ETHUSDT")
         self.assertEqual(enriched["side"], "SHORT")
         self.assertAlmostEqual(enriched["realized_pnl"], 300.0, places=2)
@@ -139,7 +139,7 @@ class TestDataEnrichment(unittest.TestCase):
             "status": "MANUAL_CLOSE",
             "trendline": {"id": "TL1", "p1": "1.23", "p2": "1.11", "state": None},
         }
-        enriched = self.engine.enrich_trade_record(raw, 2)
+        enriched = te.enrich_trade_record(raw, 2)
         self.assertIsNone(enriched["exit_price"])
         self.assertIsNone(enriched["realized_pnl"])
         self.assertIsNone(enriched["net_pnl"])
@@ -161,7 +161,7 @@ class TestDataEnrichment(unittest.TestCase):
             "leverage": 10,
             "entry_time": "2026-11-22 12:00:00",
         }
-        enriched = self.engine.enrich_active_position(raw, 0)
+        enriched = te.enrich_active_position(raw, 0)
         self.assertEqual(enriched["symbol"], "BTCUSDT")
         self.assertAlmostEqual(enriched["notional"], 47250.0, places=2)
         self.assertAlmostEqual(enriched["initial_margin"], 4725.0, places=2)
@@ -198,7 +198,7 @@ class TestDataEnrichment(unittest.TestCase):
                 "trendline": {"id": "TL_SOL", "p1": 160, "p2": 152},
             }
         ]
-        merged = self.engine._merge_active_positions(binance_pos, local_pos, positions_available=True)
+        merged = te.merge_active_positions(binance_pos, local_pos, positions_available=True)
         self.assertEqual(len(merged), 1)
         pos = merged[0]
         self.assertEqual(pos["symbol"], "SOLUSDT")
@@ -210,20 +210,17 @@ class TestDataEnrichment(unittest.TestCase):
         self.assertEqual(pos["highest_price"], 168.0)
 
     def test_format_duration_edge_cases(self):
-        self.assertEqual(aae.format_duration(0), "0s")
-        self.assertEqual(aae.format_duration(-10), "0s")
-        self.assertEqual(aae.format_duration(45), "45s")
-        self.assertEqual(aae.format_duration(300), "5m")
-        self.assertEqual(aae.format_duration(746), "12m 26s")
-        self.assertEqual(aae.format_duration(3665), "1h 1m 5s")
-        self.assertEqual(aae.format_duration(86400 * 2 + 3600 * 3 + 120), "2d 3h 2m")
+        self.assertEqual(te.format_duration(0), "0s")
+        self.assertEqual(te.format_duration(-10), "0s")
+        self.assertEqual(te.format_duration(45), "45s")
+        self.assertEqual(te.format_duration(300), "5m")
+        self.assertEqual(te.format_duration(746), "12m 26s")
+        self.assertEqual(te.format_duration(3665), "1h 1m 5s")
+        self.assertEqual(te.format_duration(86400 * 2 + 3600 * 3 + 120), "2d 3h 2m")
 
 
 class TestQuantRiskCalculations(unittest.TestCase):
     """2. 测试量化风控指标统一净盈亏口径、日历夏普与标准索提诺比率"""
-
-    def setUp(self):
-        self.engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
 
     def test_win_rate_and_profit_factor_standard(self):
         trades = [
@@ -232,7 +229,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": 0.0, "fee": 0.0, "net_pnl": 0.0, "pnl_pct": 0.0, "closed_ts": 3000, "closed_at": "2026-11-21 09:00:00", "duration_seconds": 30, "symbol": "C", "close_reason": "MC"},
             {"realized_pnl": 150.0, "fee": 1.5, "net_pnl": 148.5, "pnl_pct": 15.0, "closed_ts": 4000, "closed_at": "2026-11-21 12:00:00", "duration_seconds": 90, "symbol": "D", "close_reason": "TP"},
         ]
-        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
 
         self.assertEqual(summary["closed_trades"], 4)
         self.assertEqual(summary["win_count"], 2)
@@ -252,7 +249,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": 50.0, "fee": 0.1, "net_pnl": 49.9, "pnl_pct": 5.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
             {"realized_pnl": 80.0, "fee": 0.1, "net_pnl": 79.9, "pnl_pct": 8.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"},
         ]
-        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
         self.assertEqual(summary["win_rate_pct"], 100.0)
         self.assertIsNone(summary["profit_factor"])
         self.assertIsNone(summary["sortino_ratio"])
@@ -264,14 +261,14 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": -30.0, "fee": 0.1, "net_pnl": -30.1, "pnl_pct": -3.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "SL"},
             {"realized_pnl": -70.0, "fee": 0.1, "net_pnl": -70.1, "pnl_pct": -7.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
         ]
-        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
         self.assertEqual(summary["win_rate_pct"], 0.0)
         self.assertEqual(summary["profit_factor"], 0.0)
         self.assertEqual(summary["max_consecutive_losses"], 2)
         self.assertAlmostEqual(summary["max_drawdown_usd"], 100.2, places=1)
 
     def test_zero_trades_empty_state_robustness(self):
-        summary, eq_curve, daily_pnl = self.engine.calculate_quant_risk_metrics([], [], None)
+        summary, eq_curve, daily_pnl = qm.calculate_quant_risk_metrics([], [], None, default_initial_capital=10000.0)
         self.assertEqual(summary["closed_trades"], 0)
         self.assertEqual(summary["win_rate_pct"], 0.0)
         self.assertIsNone(summary["profit_factor"])
@@ -290,7 +287,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             "totalMarginBalance": "0.0",
             "availableBalance": "0.0",
         }
-        summary, _, _ = self.engine.calculate_quant_risk_metrics([], [], account_info)
+        summary, _, _ = qm.calculate_quant_risk_metrics([], [], account_info, default_initial_capital=10000.0)
         self.assertEqual(summary["wallet_balance"], 0.0)
         self.assertEqual(summary["total_equity"], 0.0)
         self.assertEqual(summary["available_margin"], 0.0)
@@ -302,7 +299,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": -200.0, "fee": 0.0, "net_pnl": -200.0, "pnl_pct": -2.0, "closed_ts": 3000, "closed_at": "2026-11-20 12:00:00", "duration_seconds": 60, "symbol": "C", "close_reason": "SL"},
             {"realized_pnl": 1000.0, "fee": 0.0, "net_pnl": 1000.0, "pnl_pct": 10.0, "closed_ts": 4000, "closed_at": "2026-11-20 13:00:00", "duration_seconds": 60, "symbol": "D", "close_reason": "TP"},
         ]
-        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
         self.assertEqual(summary["max_drawdown_usd"], 500.0)
         self.assertAlmostEqual(summary["max_drawdown_pct"], 4.76, places=2)
 
@@ -313,7 +310,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": 30.0, "fee": 0.0, "net_pnl": 30.0, "pnl_pct": 3.0, "closed_ts": 3000, "closed_at": "2026-11-20 12:00:00", "duration_seconds": 300, "symbol": "C", "close_reason": "TP"},
             {"realized_pnl": -5.0, "fee": 0.0, "net_pnl": -5.0, "pnl_pct": -0.5, "closed_ts": 4000, "closed_at": "2026-11-20 13:00:00", "duration_seconds": 400, "symbol": "D", "close_reason": "SL"},
         ]
-        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
         self.assertEqual(summary["max_consecutive_wins"], 3)
         self.assertEqual(summary["max_consecutive_losses"], 1)
         self.assertEqual(summary["avg_hold_duration_seconds"], 250)
@@ -327,7 +324,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": 200.0, "fee": 0.0, "net_pnl": 200.0, "pnl_pct": 2.0, "closed_ts": 1000, "closed_at": "2026-11-01 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
             {"realized_pnl": -102.0, "fee": 0.0, "net_pnl": -102.0, "pnl_pct": -1.0, "closed_ts": 2000, "closed_at": "2026-11-05 10:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
         ]
-        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
         rets = [0.02, 0.0, 0.0, 0.0, -0.01]
         mean_r = sum(rets) / 5
         std_r = math.sqrt(sum((r - mean_r) ** 2 for r in rets) / 4)
@@ -341,16 +338,13 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": 100.0, "fee": 0.0, "net_pnl": 100.0, "pnl_pct": 1.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
             {"realized_pnl": 100.0, "fee": 0.0, "net_pnl": 100.0, "pnl_pct": 1.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"},
         ]
-        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
         self.assertIsNone(summary["sharpe_ratio"])
         self.assertIsNone(summary["sortino_ratio"])
 
 
 class TestDataAggregation(unittest.TestCase):
     """3. 测试资金净值时间序列与每日盈亏聚合"""
-
-    def setUp(self):
-        self.engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
 
     def test_equity_curve_timeseries_monotonicity_and_points(self):
         now_ms = int(time.time() * 1000)
@@ -381,7 +375,9 @@ class TestDataAggregation(unittest.TestCase):
             },
         ]
         active_positions = [{"symbol": "SOLUSDT", "unrealized_pnl": 35.0, "initial_margin": 200.0}]
-        summary, eq_curve, _ = self.engine.calculate_quant_risk_metrics(trades, active_positions, None)
+        summary, eq_curve, _ = qm.calculate_quant_risk_metrics(
+            trades, active_positions, None, default_initial_capital=10000.0
+        )
 
         self.assertEqual(len(eq_curve), 4)
         self.assertEqual(eq_curve[0]["equity"], 10000.0)
@@ -402,7 +398,7 @@ class TestDataAggregation(unittest.TestCase):
             {"realized_pnl": 50.0, "fee": 0.5, "net_pnl": 49.5, "pnl_pct": 0.5, "closed_ts": 2000, "closed_at": "2026-11-20 15:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"},
             {"realized_pnl": -30.0, "fee": 0.3, "net_pnl": -30.3, "pnl_pct": -0.3, "closed_ts": 3000, "closed_at": "2026-11-21 10:00:00", "duration_seconds": 60, "symbol": "C", "close_reason": "SL"},
         ]
-        _, _, daily_pnl = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        _, _, daily_pnl = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
         self.assertEqual(len(daily_pnl), 2)
         self.assertEqual(daily_pnl[0]["date"], "2026-11-20")
         self.assertEqual(daily_pnl[0]["trades_count"], 2)
@@ -709,14 +705,13 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         self.assertIsNotNone(report["summary"]["sharpe_ratio"])
 
     def test_reconstruct_binance_trades_interleaved_symbols_and_bnb_fees(self):
-        engine = aae.AccountAnalyticsEngine(offline_mode=True)
         income = [
             {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "income": "10", "tradeId": "1", "time": 1000, "asset": "USDT"},
             {"symbol": "ETHUSDT", "incomeType": "REALIZED_PNL", "income": "-5", "tradeId": "2", "time": 1200, "asset": "USDT"},
             {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "income": "15", "tradeId": "3", "time": 1500, "asset": "USDT"},
             {"symbol": "BTCUSDT", "incomeType": "COMMISSION", "income": "-0.001", "tradeId": "1", "time": 1000, "asset": "BNB"},
         ]
-        trades, open_fee = engine.reconstruct_binance_trades(income, [])
+        trades, open_fee = tr.reconstruct_binance_trades(income, [])
         self.assertEqual(open_fee, 0.0)
         self.assertEqual(len(trades), 2)
         btc_trade = [t for t in trades if t["symbol"] == "BTCUSDT"][0]
@@ -1021,7 +1016,8 @@ class TestP0AnalyticsFixes(unittest.TestCase):
             db_path = Path(tmp) / "account.sqlite3"
             db_store.publish_report(db_path, previous)
             with patch.object(client, "_send_signed_request", side_effect=fake_signed):
-                engine._sync_db_ledger(
+                ledger_sync.sync_db_ledger(
+                    client,
                     db_path,
                     {"totalMarginBalance": "1013", "totalWalletBalance": "1013"},
                     [],
@@ -1037,10 +1033,9 @@ class TestP0AnalyticsFixes(unittest.TestCase):
         self.assertLessEqual(now_ms - trade_query_starts["ETHUSDT"][0], 2 * day_ms)
 
     def test_transfer_aware_db_daily_pnl_and_risk_ratios(self):
-        engine = aae.AccountAnalyticsEngine(offline_mode=True)
-        day1_ms = int(aae.parse_to_timestamp("2026-11-20 12:00:00") * 1000)
-        day2_ms = int(aae.parse_to_timestamp("2026-11-21 12:00:00") * 1000)
-        day3_ms = int(aae.parse_to_timestamp("2026-11-22 12:00:00") * 1000)
+        day1_ms = int(te.parse_to_timestamp("2026-11-20 12:00:00") * 1000)
+        day2_ms = int(te.parse_to_timestamp("2026-11-21 12:00:00") * 1000)
+        day3_ms = int(te.parse_to_timestamp("2026-11-22 12:00:00") * 1000)
         income_list = [
             {"incomeType": "TRANSFER", "time": day1_ms, "income": "9000", "asset": "USDT"},
             {"incomeType": "REALIZED_PNL", "time": day1_ms + 1000, "income": "500", "asset": "USDT"},
@@ -1049,7 +1044,7 @@ class TestP0AnalyticsFixes(unittest.TestCase):
             # Day 3 在 8500 本金上亏损 170 (-2.00%)
             {"incomeType": "REALIZED_PNL", "time": day3_ms, "income": "-170", "asset": "USDT"},
         ]
-        daily_pnl = engine._build_db_daily_pnl(income_list, [], initial_equity=1000.0)
+        daily_pnl = qm.build_db_daily_pnl(income_list, [], initial_equity=1000.0)
         self.assertEqual([d["date"] for d in daily_pnl], ["2026-11-20", "2026-11-22"])
         # Day 1 资金基数 = 1000 + 9000 = 10000 -> 500/10000 = 5.0%
         self.assertAlmostEqual(daily_pnl[0]["return_pct"], 5.0, places=2)
@@ -1057,7 +1052,7 @@ class TestP0AnalyticsFixes(unittest.TestCase):
         # Day 3 资金基数 = 10500 - 2000 = 8500 -> -170/8500 = -2.0%
         self.assertAlmostEqual(daily_pnl[1]["return_pct"], -2.0, places=2)
 
-        sharpe, sortino, method = engine._compute_risk_ratios(daily_pnl, 1000.0)
+        sharpe, sortino, method = qm.compute_risk_ratios(daily_pnl, 1000.0)
         self.assertEqual(method, "DAILY_RETURNS")
         rets = [0.05, 0.0, -0.02]
         mean_r = sum(rets) / 3
@@ -1067,19 +1062,17 @@ class TestP0AnalyticsFixes(unittest.TestCase):
         self.assertAlmostEqual(sortino, round((mean_r / down_std) * math.sqrt(365), 2), places=2)
 
     def test_single_day_multiple_trades_do_not_annualize_sharpe_by_sqrt365(self):
-        engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
         trades = [
             {"realized_pnl": 100.0, "fee": 0.0, "net_pnl": 100.0, "pnl_pct": 1.0, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
             {"realized_pnl": -50.0, "fee": 0.0, "net_pnl": -50.0, "pnl_pct": -0.5, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
         ]
-        summary, _, daily_pnl = engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, daily_pnl = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
         self.assertEqual(len(daily_pnl), 1)
         self.assertIsNone(summary["sharpe_ratio"])
         self.assertIsNone(summary["sortino_ratio"])
         self.assertEqual(summary["sharpe_method"], "NONE")
 
     def test_build_trade_daily_pnl_handles_none_fields_and_beijing_tz(self):
-        engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
         raw = {
             "symbol": "BTCUSDT",
             "entry_price": 100.0,
@@ -1088,7 +1081,7 @@ class TestP0AnalyticsFixes(unittest.TestCase):
             "entry_time": "2026-11-20T18:00:00Z",
             "closed_at": "2026-11-20T20:00:00Z",  # 北京时间 2026-11-21 04:00:00
         }
-        enriched = engine.enrich_trade_record(raw, 0)
+        enriched = te.enrich_trade_record(raw, 0)
         self.assertEqual(enriched["closed_at"], "2026-11-21 04:00:00")
         self.assertEqual(enriched["entry_time"], "2026-11-21 02:00:00")
 
@@ -1102,25 +1095,24 @@ class TestP0AnalyticsFixes(unittest.TestCase):
                 "closed_at": "2026-11-20T20:00:00Z",  # 应归入 UTC+8 的 2026-11-21
             }
         ]
-        daily = engine._build_trade_daily_pnl(trades, 10000.0)
+        daily = qm.build_trade_daily_pnl(trades, 10000.0)
         self.assertEqual(len(daily), 1)
         self.assertEqual(daily[0]["date"], "2026-11-21")
         self.assertEqual(daily[0]["realized_pnl"], 0.0)
         self.assertEqual(daily[0]["fee"], 0.0)
         self.assertEqual(daily[0]["net_pnl"], 25.0)
 
-        db_daily = engine._build_db_daily_pnl([], trades, 10000.0)
+        db_daily = qm.build_db_daily_pnl([], trades, 10000.0)
         self.assertEqual(len(db_daily), 1)
         self.assertEqual(db_daily[0]["date"], "2026-11-21")
 
     def test_both_mode_empty_queue_zero_pnl_close_detected_via_context_and_reduce_only(self):
-        engine = aae.AccountAnalyticsEngine(offline_mode=True)
         # 场景 A: 已有盘前多单在 100 价位 0 盈亏平仓一半 (无 income 行，realizedPnl="0")，随后同向 SELL 在 105 盈利平掉剩余仓位
         fills_ctx = [
             {"symbol": "BTCUSDT", "id": 1, "orderId": 1, "side": "SELL", "time": 1000, "positionSide": "BOTH", "price": "100", "qty": "1", "realizedPnl": "0"},
             {"symbol": "BTCUSDT", "id": 2, "orderId": 2, "side": "SELL", "time": 2000, "positionSide": "BOTH", "price": "105", "qty": "1", "realizedPnl": "5"},
         ]
-        trades_ctx, _ = engine.reconstruct_binance_trades([], [], fills_ctx)
+        trades_ctx, _ = tr.reconstruct_binance_trades([], [], fills_ctx)
         self.assertEqual(len(trades_ctx), 2)
         self.assertEqual(trades_ctx[0]["side"], "LONG")
         self.assertEqual(trades_ctx[0]["realized_pnl"], 0.0)
@@ -1133,7 +1125,7 @@ class TestP0AnalyticsFixes(unittest.TestCase):
             {"symbol": "ETHUSDT", "id": 11, "orderId": 11, "side": "BUY", "time": 2000, "positionSide": "BOTH", "price": "110", "qty": "1", "realizedPnl": "0"},
             {"symbol": "ETHUSDT", "id": 12, "orderId": 12, "side": "SELL", "time": 3000, "positionSide": "BOTH", "price": "120", "qty": "1", "realizedPnl": "10"},
         ]
-        trades_ro, _ = engine.reconstruct_binance_trades([], [], fills_ro)
+        trades_ro, _ = tr.reconstruct_binance_trades([], [], fills_ro)
         self.assertEqual(len(trades_ro), 2)
         self.assertEqual(trades_ro[0]["realized_pnl"], 0.0)
         self.assertEqual(trades_ro[1]["entry_price"], 110.0)
@@ -1141,7 +1133,6 @@ class TestP0AnalyticsFixes(unittest.TestCase):
         self.assertEqual(trades_ro[1]["realized_pnl"], 10.0)
 
     def test_local_trade_matching_by_side_closest_ts_and_rejects_inconsistent_pnl(self):
-        engine = aae.AccountAnalyticsEngine(offline_mode=True)
         t0 = 1795200000
         local_history = [
             # 同币种但方向不匹配 (SHORT)
@@ -1160,7 +1151,7 @@ class TestP0AnalyticsFixes(unittest.TestCase):
         income = [
             {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "tradeId": "2", "time": t0 * 1000, "income": "20", "asset": "USDT"}
         ]
-        trades_fills, _ = engine.reconstruct_binance_trades(income, local_history, fills=fills)
+        trades_fills, _ = tr.reconstruct_binance_trades(income, local_history, fills=fills)
         self.assertEqual(len(trades_fills), 1)
         self.assertEqual(trades_fills[0]["trendline_id"], "TL_NEAR")
         self.assertEqual(trades_fills[0]["leverage"], 7)
@@ -1184,7 +1175,7 @@ class TestP0AnalyticsFixes(unittest.TestCase):
         inc_only = [
             {"symbol": "ETHUSDT", "incomeType": "REALIZED_PNL", "tranId": 9, "tradeId": "99", "time": t0 * 1000, "income": "5", "asset": "USDT"}
         ]
-        trades_inc, _ = engine.reconstruct_binance_trades(inc_only, inconsistent_local, fills=[])
+        trades_inc, _ = tr.reconstruct_binance_trades(inc_only, inconsistent_local, fills=[])
         self.assertEqual(len(trades_inc), 1)
         t_inc = trades_inc[0]
         self.assertEqual(t_inc["source"], "BINANCE_REALTIME")
