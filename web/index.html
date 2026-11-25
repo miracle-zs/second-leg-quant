@@ -182,60 +182,58 @@
 
   </main>
 
-  <!-- In-Page Interactive 15m/1h Candlestick & TV Chart Modal -->
-  <div id="chart-modal" class="fixed inset-0 z-50 hidden bg-black/80 backdrop-blur-sm flex items-center justify-center p-2 md:p-5 transition-all">
-    <div class="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-5xl h-[85vh] max-h-[720px] shadow-2xl flex flex-col overflow-hidden relative">
-      <div class="px-4 py-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
-        <div class="flex items-center gap-2 flex-wrap">
-          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>
-          <span id="modal-chart-title" class="font-bold text-white text-base font-sans"></span>
-          <span id="modal-chart-price" class="font-mono text-emerald-400 font-bold text-sm">--</span>
-          <div class="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-xs font-mono ml-1">
-            <button type="button" class="modal-interval-btn px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold" data-interval="15m">15m</button>
-            <button type="button" class="modal-interval-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-interval="1h">1h</button>
-            <button type="button" class="modal-interval-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-interval="4h">4h</button>
-            <button type="button" class="modal-interval-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-interval="1d">日线</button>
-          </div>
-          <div id="modal-bars-group" class="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px] font-mono" title="显示K线根数">
-            <button type="button" class="modal-bars-btn px-1.5 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-bars="60">60</button>
-            <button type="button" class="modal-bars-btn px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold" data-bars="120">120</button>
-            <button type="button" class="modal-bars-btn px-1.5 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-bars="168">168</button>
-          </div>
+  <!-- In-Page Interactive 15m/1h Candlestick & TV Chart Dialog -->
+  <dialog id="chart-modal" closedby="any" aria-labelledby="modal-chart-title" class="chart-modal-dialog bg-slate-900 border border-slate-700/80 rounded-2xl w-[calc(100vw-1rem)] max-w-5xl h-[85vh] max-h-[720px] shadow-2xl flex-col overflow-hidden">
+    <div class="px-4 py-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>
+        <h2 id="modal-chart-title" class="font-bold text-white text-base font-sans"></h2>
+        <span id="modal-chart-price" class="font-mono text-emerald-400 font-bold text-sm">--</span>
+        <div class="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-xs font-mono ml-1">
+          <button type="button" class="modal-interval-btn px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold" data-interval="15m">15m</button>
+          <button type="button" class="modal-interval-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-interval="1h">1h</button>
+          <button type="button" class="modal-interval-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-interval="4h">4h</button>
+          <button type="button" class="modal-interval-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-interval="1d">日线</button>
         </div>
-        <div class="flex items-center gap-2">
-          <div id="modal-ema-hud" class="hidden sm:flex items-center gap-2 text-xs font-mono">
-            <span class="flex items-center gap-1 text-amber-400"><span class="w-2 h-0.5 bg-amber-400 inline-block"></span>EMA5: <span id="modal-hud-ema5">--</span></span>
-            <span class="flex items-center gap-1 text-purple-400"><span class="w-2 h-0.5 bg-purple-400 inline-block"></span>EMA10: <span id="modal-hud-ema10">--</span></span>
-          </div>
-          <div class="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px] font-sans">
-            <button type="button" id="btn-chart-engine-native" class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold">极速K线</button>
-            <button type="button" id="btn-chart-engine-tv" class="px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400">TV内嵌</button>
-          </div>
-          <a id="modal-external-link" href="#" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1 rounded-lg bg-[#2962FF] hover:bg-blue-600 text-white text-xs font-semibold flex items-center gap-1 transition-all" title="在 TradingView 打开专属画线布局 (ig0LuDL8)">
-            <span>TV画线</span>
-            <span aria-hidden="true">↗</span>
-          </a>
-          <button id="modal-close-btn" type="button" class="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center text-xs transition-all" title="关闭 (Esc)" aria-label="关闭弹窗">✕</button>
+        <div id="modal-bars-group" class="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px] font-mono" title="显示K线根数">
+          <button type="button" class="modal-bars-btn px-1.5 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-bars="60">60</button>
+          <button type="button" class="modal-bars-btn px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold" data-bars="120">120</button>
+          <button type="button" class="modal-bars-btn px-1.5 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-bars="168">168</button>
         </div>
       </div>
-      <div class="flex-1 w-full h-full bg-[#0b0f19] relative overflow-hidden">
-        <div id="modal-native-chart-view" class="w-full h-full relative select-none">
-          <canvas id="modal-kline-canvas" class="w-full h-full block"></canvas>
-          <div id="modal-chart-tooltip" class="absolute top-2 left-3 bg-slate-900/90 border border-slate-700/80 px-2.5 py-1.5 rounded text-[11px] font-mono text-slate-300 hidden pointer-events-none shadow-xl z-20"></div>
-          <div id="modal-chart-loading" class="absolute inset-0 bg-slate-950/70 flex flex-col items-center justify-center gap-2 text-sky-400 text-sm font-semibold z-30">
-            <span>正在获取实时 K 线...</span>
-          </div>
-          <div id="modal-chart-error" class="absolute inset-0 bg-slate-950/80 hidden flex-col items-center justify-center gap-3 text-rose-400 text-sm font-semibold z-30">
-            <span>K线数据加载失败，请检查网络连接</span>
-            <button type="button" id="modal-chart-retry-btn" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded border border-slate-700 text-xs">重新加载</button>
-          </div>
+      <div class="flex items-center gap-2">
+        <div id="modal-ema-hud" class="hidden sm:flex items-center gap-2 text-xs font-mono">
+          <span class="flex items-center gap-1 text-amber-400"><span class="w-2 h-0.5 bg-amber-400 inline-block"></span>EMA5: <span id="modal-hud-ema5">--</span></span>
+          <span class="flex items-center gap-1 text-purple-400"><span class="w-2 h-0.5 bg-purple-400 inline-block"></span>EMA10: <span id="modal-hud-ema10">--</span></span>
         </div>
-        <div id="modal-tv-view" class="w-full h-full hidden relative bg-black">
-          <iframe id="modal-tv-iframe" class="w-full h-full border-0" allowtransparency="true" scrolling="no" allowfullscreen></iframe>
+        <div class="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px] font-sans">
+          <button type="button" id="btn-chart-engine-native" class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold">极速K线</button>
+          <button type="button" id="btn-chart-engine-tv" class="px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400">TV内嵌</button>
         </div>
+        <a id="modal-external-link" href="#" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1 rounded-lg bg-[#2962FF] hover:bg-blue-600 text-white text-xs font-semibold flex items-center gap-1 transition-all" title="在 TradingView 打开专属画线布局 (ig0LuDL8)">
+          <span>TV画线</span>
+          <span aria-hidden="true">↗</span>
+        </a>
+        <button id="modal-close-btn" type="button" autofocus class="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center text-xs transition-all" title="关闭 (Esc)" aria-label="关闭弹窗">✕</button>
       </div>
     </div>
-  </div>
+    <div class="flex-1 w-full h-full bg-[#0b0f19] relative overflow-hidden">
+      <div id="modal-native-chart-view" class="w-full h-full relative select-none">
+        <canvas id="modal-kline-canvas" class="w-full h-full block"></canvas>
+        <div id="modal-chart-tooltip" class="absolute top-2 left-3 bg-slate-900/90 border border-slate-700/80 px-2.5 py-1.5 rounded text-[11px] font-mono text-slate-300 hidden pointer-events-none shadow-xl z-20"></div>
+        <div id="modal-chart-loading" class="absolute inset-0 bg-slate-950/70 flex flex-col items-center justify-center gap-2 text-sky-400 text-sm font-semibold z-30">
+          <span>正在获取实时 K 线...</span>
+        </div>
+        <div id="modal-chart-error" class="absolute inset-0 bg-slate-950/80 hidden flex-col items-center justify-center gap-3 text-rose-400 text-sm font-semibold z-30">
+          <span>K线数据加载失败，请检查网络连接</span>
+          <button type="button" id="modal-chart-retry-btn" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded border border-slate-700 text-xs">重新加载</button>
+        </div>
+      </div>
+      <div id="modal-tv-view" class="w-full h-full hidden relative bg-black">
+        <iframe id="modal-tv-iframe" class="w-full h-full border-0" allowtransparency="true" scrolling="no" allowfullscreen></iframe>
+      </div>
+    </div>
+  </dialog>
 
   <!-- Floating Toast Notification -->
   <div id="toast-container">

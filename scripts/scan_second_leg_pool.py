@@ -444,18 +444,23 @@ def scan_pool() -> list[dict[str, Any]]:
         if is_resonance:
             if sym in active_res_symbols and sym in res_history:
                 res_hist_item = res_history[sym]
-                f_dt = datetime.datetime.strptime(res_hist_item["first_detected"], "%Y-%m-%d %H:%M:%S")
+                detected_str = res_hist_item["first_detected"]
+                f_dt = datetime.datetime.strptime(detected_str, "%Y-%m-%d %H:%M:%S")
                 f_ts = f_dt.replace(tzinfo=BEIJING_TZ).timestamp()
                 dur_h = max(0, int((now_ts - f_ts) // 3600))
                 ent_str = f_dt.strftime("%m-%d %H:%M")
             else:
                 dur_h = 0
-                ent_str = datetime.datetime.fromtimestamp(now_ts, BEIJING_TZ).strftime("%m-%d %H:%M")
+                now_dt = datetime.datetime.fromtimestamp(now_ts, BEIJING_TZ)
+                detected_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+                ent_str = now_dt.strftime("%m-%d %H:%M")
             c["resonance_duration_hours"] = dur_h
             c["resonance_entry_time"] = ent_str
+            c["resonance_detected_at"] = detected_str
         else:
             c["resonance_duration_hours"] = 0
             c["resonance_entry_time"] = ""
+            c["resonance_detected_at"] = ""
 
         zones: list[str] = []
         if is_resonance:

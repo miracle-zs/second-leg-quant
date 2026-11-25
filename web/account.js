@@ -90,17 +90,17 @@
 
     if (fetchError) {
       badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-rose-400" aria-hidden="true"></span><span>⚠️ 数据拉取失败</span>';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-rose-400" aria-hidden="true"></span><span>数据拉取失败</span>';
       return;
     }
 
     const mode = (accountData && accountData.api_status && accountData.api_status.mode) || (accountData && accountData.data_source) || '';
     if (mode === 'BINANCE_REALTIME' || mode === 'BINANCE_API') {
       badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span><span>🟢 币安实盘在线</span>';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span><span>币安实盘在线</span>';
     } else if (mode === 'BINANCE_PARTIAL') {
       badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>🟡 币安部分数据可用</span>';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>币安部分数据可用</span>';
     } else {
       badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-slate-800 text-amber-300 border border-amber-500/20 flex items-center gap-1.5';
       badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>离线风控同步</span>';
@@ -285,7 +285,7 @@
         : '<span class="text-amber-300/80">未纳入风控（仅多头）</span>';
       const slHtml = riskMonitored
         ? (p.stop_loss_notified ? '<span class="text-rose-300 font-semibold">已提醒</span>' : '监控中')
-        : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">⚠️ 未受风控监控（空单）</span>';
+        : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">未受风控监控（空单）</span>';
 
       return (
         '<tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/60 font-mono text-xs">' +
@@ -373,13 +373,13 @@
   function renderCloseReasonBadge(reason) {
     const safeReason = escapeHtml(reason || '平仓');
     if (reason.includes('保本') || reason.includes('锁利')) {
-      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">🎯 ' + safeReason + '</span>';
+      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">' + safeReason + '</span>';
     }
     if (reason.includes('止损') || reason.includes('跌破')) {
-      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">🛡️ ' + safeReason + '</span>';
+      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">' + safeReason + '</span>';
     }
     if (reason.includes('实盘') || reason.includes('BINANCE')) {
-      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">⚡ ' + safeReason + '</span>';
+      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">' + safeReason + '</span>';
     }
     return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">' + safeReason + '</span>';
   }
@@ -696,7 +696,7 @@
     if (bd && bd.page_full) {
       const cStart = escapeHtml(bd.coverage_start || '--');
       const cEnd = escapeHtml(bd.coverage_end || '--');
-      const textHtml = '<span>⚠️ 已达单页上限，更早流水未纳入 (流水覆盖区间: ' + cStart + ' 至 ' + cEnd + ')</span>';
+      const textHtml = '<span>已达单页上限，更早流水未纳入 (流水覆盖区间: ' + cStart + ' 至 ' + cEnd + ')</span>';
       if (!existing) {
         const banner = document.createElement('div');
         banner.id = 'income-page-full-banner';

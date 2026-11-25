@@ -569,6 +569,32 @@ def _with_store_tx(store_kwarg: str):
     return decorator
 
 
+def _get_candidate_pool_stamp(
+    pool_file: Path,
+    database_path: Optional[Path] = None,
+) -> Optional[str]:
+    """返回候选池快照的轻量版本标记（SQLite updated_at 或文件 mtime_ns）。"""
+    db_path = database_path if database_path is not None else resolve_database_path()
+    if db_path is not None:
+        db_target = Path(db_path)
+        if not db_target.exists():
+            return None
+        try:
+            with closing(open_sqlite_connection(db_target, readonly=True)) as connection:
+                row = connection.execute(
+                    "SELECT updated_at FROM candidate_snapshot WHERE id = 1"
+                ).fetchone()
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e).lower():
+                return None
+            raise
+        return f"db:{row[0]}" if row is not None else None
+
+    if not pool_file.exists():
+        return None
+    return f"file:{pool_file.stat().st_mtime_ns}"
+
+
 def _load_candidate_pool(
     pool_file: Path,
     database_path: Optional[Path] = None,
@@ -658,11 +684,12 @@ def check_feature_1_resonance(
         history = state_store.data.setdefault("history", {})
         for sym in current_symbols:
             coin = current_resonance_coins[sym]
+            detected_at = coin.get("resonance_detected_at") or now_str
             tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
             if sym not in history:
                 history[sym] = {
                     "symbol": sym,
-                    "first_detected": now_str,
+                    "first_detected": detected_at,
                     "last_notified_at": now_str,
                     "last_notified_time": int(now_ts),
                     "res_score": coin.get("resonance_score", 2),
@@ -680,8 +707,10 @@ def check_feature_1_resonance(
         logger.info(f"⚡ 检测到 {len(new_entered)} 个新进入共振区标的: {sorted(new_entered)}")
 
     history = state_store.data.setdefault("history", {})
+    history_updated = False
     for sym in sorted(new_entered):
         coin = current_resonance_coins[sym]
+        detected_at = coin.get("resonance_detected_at") or now_str
         res_score = coin.get("resonance_score", 2)
         fr_pct = float(coin["funding_rate_4h_pct"]) if coin.get("funding_rate_4h_pct") is not None else 0.0
         is_neg_fr = bool(coin.get("is_neg_funding") or fr_pct < 0)
@@ -698,6 +727,14 @@ def check_feature_1_resonance(
                 logger.info(
                     f"24h防抖拦截: {sym} 在前 24 小时内 ({age_sec / 3600:.1f}h 前) 已通知过，跳过重复打扰。"
                 )
+                history[sym] = {
+                    **hist,
+                    "symbol": sym,
+                    "first_detected": detected_at,
+                    "last_notified_at": hist.get("last_notified_at") or hist.get("first_detected") or now_str,
+                    "last_notified_time": int(last_notified_ts),
+                }
+                history_updated = True
                 next_active.add(sym)
                 continue
 
@@ -718,6 +755,7 @@ def check_feature_1_resonance(
         tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
         price_val = float(coin.get("price") or 0.0)
         turnover_val = float(coin.get("turnover_ratio") or 0.0)
+        detected_line = f"\n- **入圈时间**: {detected_at}" if detected_at[:16] != now_str[:16] else ""
 
         title = f"{res_badge} 提醒: {sym} 进入共振区，请画 15m 趋势线"
         desp = f"""### {res_tag} 选币确认！
@@ -727,7 +765,7 @@ def check_feature_1_resonance(
 - **24h换手率**: `{turnover_val:.1f}x`
 - **4h资金费率**: `{fr_pct:+.4f}%`
 - **机会区标签**: {', '.join(coin.get('zones', [])) or '共振区'}
-- **形态状态**: {coin.get('status', '多周期趋势共振')}
+- **形态状态**: {coin.get('status', '多周期趋势共振')}{detected_line}
 - **触发时间**: {now_str}
 
 ---
@@ -740,7 +778,7 @@ def check_feature_1_resonance(
             alerted_list.append(coin)
             history[sym] = {
                 "symbol": sym,
-                "first_detected": now_str,
+                "first_detected": detected_at,
                 "last_notified_at": now_str,
                 "last_notified_time": int(now_ts),
                 "res_score": res_score,
@@ -754,6 +792,7 @@ def check_feature_1_resonance(
     if (
         new_active_sorted != sorted(active_symbols)
         or alerted_list
+        or history_updated
         or not state_store.data.get("initialized")
     ):
         state_store.data["initialized"] = True
@@ -1290,6 +1329,7 @@ class TradeAlertDaemon:
         self._f2_retry_bucket = 0
         self._f2_retry_count = 0
         self._f2_last_retry_ts = 0.0
+        self._last_pool_stamp: Optional[str] = None
         self.binance_client = BinanceFuturesClient(
             cfg.get("binance_api_key", ""),
             cfg.get("binance_api_secret", ""),
@@ -1329,6 +1369,20 @@ class TradeAlertDaemon:
         current_bucket = int(now_ts // 900) * 900
         seconds_into_bucket = now_ts - current_bucket
         candle_cache: dict[str, dict] = {}
+        pool_stamp = _get_candidate_pool_stamp(pool_file, database_path=db_path)
+        pool_updated = pool_stamp is not None and pool_stamp != self._last_pool_stamp
+        f1_checked_in_iteration = False
+
+        if pool_updated:
+            check_feature_1_resonance(
+                self.notifier,
+                self.state_store,
+                pool_file,
+                layout_id,
+                database_path=db_path,
+            )
+            self._last_pool_stamp = pool_stamp
+            f1_checked_in_iteration = True
 
         if seconds_into_bucket >= 10 and self.last_evaluated_15m_bucket != current_bucket:
             is_retry = self._f2_retry_bucket == current_bucket and self._f2_retry_count > 0
@@ -1339,13 +1393,16 @@ class TradeAlertDaemon:
             else:
                 if not is_retry:
                     logger.info(f"⏰ 进入 15m K线收盘确认窗口 ({get_beijing_time_str(now_ts)})，启动 Feature 1/2/3 联合校验...")
-                    check_feature_1_resonance(
-                        self.notifier,
-                        self.state_store,
-                        pool_file,
-                        layout_id,
-                        database_path=db_path,
-                    )
+                    if not f1_checked_in_iteration:
+                        check_feature_1_resonance(
+                            self.notifier,
+                            self.state_store,
+                            pool_file,
+                            layout_id,
+                            database_path=db_path,
+                        )
+                        if pool_stamp is not None:
+                            self._last_pool_stamp = pool_stamp
                     self._f2_retry_bucket = current_bucket
                     self._f2_retry_count = 0
                 else:
@@ -1417,6 +1474,10 @@ class TradeAlertDaemon:
         startup_ts = time.time()
         try:
             cycle_res = run_evaluation_cycle(self.notifier, self.state_store, self.pos_store, self.cfg)
+            self._last_pool_stamp = _get_candidate_pool_stamp(
+                Path(self.cfg.get("resonance_pool_file", DEFAULT_POOL_PATH)),
+                database_path=self.cfg.get("database_path"),
+            )
             startup_bucket = int(startup_ts // 900) * 900
             if (startup_ts - startup_bucket) >= 10 and not cycle_res.get("feature_2_had_error"):
                 self.last_evaluated_15m_bucket = startup_bucket

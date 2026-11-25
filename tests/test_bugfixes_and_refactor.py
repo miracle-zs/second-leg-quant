@@ -539,6 +539,16 @@ class TestDashboardAPIRoutes(unittest.TestCase):
                 self.assertIn('href="static/tailwind.css"', html)
                 self.assertNotIn("gstatic.com/antigravity/web/dev/tailwindcss", html)
 
+            index_html = (ROOT_DIR / "web" / "index.html").read_text(encoding="utf-8")
+            self.assertIn('<dialog id="chart-modal"', index_html)
+            self.assertIn('closedby="any"', index_html)
+            self.assertIn('aria-labelledby="modal-chart-title"', index_html)
+            self.assertNotIn('role="dialog"', index_html)
+
+            tailwind_css = (ROOT_DIR / "web" / "tailwind.css").read_text(encoding="utf-8")
+            for required_class in ("max-w-5xl", "overflow-x-auto", "backdrop-blur-sm", "tabular-nums"):
+                self.assertIn(required_class, tailwind_css)
+
 
 class TestSecondPassRegressions(unittest.TestCase):
     """验证二次审查修复：daemon datetime/退避、DB Sharpe 本金、scanner 工具与连接池"""

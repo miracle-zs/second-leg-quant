@@ -136,3 +136,25 @@ th.sortable:hover .sort-icon {
 #candidates-table tbody tr:hover th.sticky-col {
   background-color: #162033;
 }
+
+dialog.chart-modal-dialog {
+  margin: auto;
+  padding: 0;
+  color: inherit;
+}
+
+dialog.chart-modal-dialog[open] {
+  display: flex;
+}
+
+dialog.chart-modal-dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog.chart-modal-dialog::backdrop {
+  background-color: rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  overflow: hidden;
+  overscroll-behavior: contain;
+}

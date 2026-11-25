@@ -407,6 +407,49 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
         )
         self.assertEqual(len(alerts3), 1)
 
+    def test_feature_1_preserves_detected_entry_time_and_resets_on_debounced_reentry(self):
+        candidates = [
+            {
+                "symbol": "NEWCOINUSDT",
+                "price": 0.12,
+                "turnover_ratio": 3.0,
+                "funding_rate_4h_pct": 0.01,
+                "is_resonance": True,
+                "resonance_detected_at": "2026-11-25 13:02:15",
+                "resonance_entry_time": "11-25 13:02",
+                "zones": ["双核黄金共振"],
+            }
+        ]
+        self.pool_path.write_text(json.dumps(candidates), encoding="utf-8")
+        notifier = tad.ServerChanNotifier(dry_run=True)
+        state_store = tad.ResonanceStateStore(self.state_path)
+
+        with patch.object(notifier, "send_alert", return_value=True) as mock_send:
+            alerts = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=False)
+        self.assertEqual(len(alerts), 1)
+        hist = state_store.data["history"]["NEWCOINUSDT"]
+        self.assertEqual(hist["first_detected"], "2026-11-25 13:02:15")
+        self.assertIn("入圈时间", mock_send.call_args.args[1])
+        self.assertIn("2026-11-25 13:02:15", mock_send.call_args.args[1])
+
+        # Drop out and re-enter within 24h debounce: first_detected updates to new entry while last_notified stays intact
+        prev_notified_at = hist["last_notified_at"]
+        prev_notified_ts = hist["last_notified_time"]
+        state_store.data["active_resonance_symbols"] = []
+        state_store.save()
+
+        candidates[0]["resonance_detected_at"] = "2026-11-25 18:02:10"
+        candidates[0]["resonance_entry_time"] = "11-25 18:02"
+        self.pool_path.write_text(json.dumps(candidates), encoding="utf-8")
+        alerts2 = tad.check_feature_1_resonance(
+            notifier, state_store, self.pool_path, cold_start=False, debounce_hours=24.0
+        )
+        self.assertEqual(alerts2, [])
+        hist2 = state_store.data["history"]["NEWCOINUSDT"]
+        self.assertEqual(hist2["first_detected"], "2026-11-25 18:02:10")
+        self.assertEqual(hist2["last_notified_at"], prev_notified_at)
+        self.assertEqual(hist2["last_notified_time"], prev_notified_ts)
+
     def test_cross_process_state_sync_prevents_duplicate_alert(self):
         candidates = [
             {
@@ -872,15 +915,22 @@ class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
         daemon = tad.TradeAlertDaemon(cfg_map, dry_run=True)
 
         bucket_ts = 1800000000  # divisible by 900
-        with patch.object(tad, "check_feature_1_resonance", return_value=[]), patch.object(
+        with patch.object(tad, "check_feature_1_resonance", return_value=[]) as f1_mock, patch.object(
             tad, "check_feature_2_breakout", side_effect=lambda *a, status=None, **kw: status.update({"had_error": True}) or []
         ) as f2_mock, patch.object(tad, "check_feature_3_stop_loss", return_value=[]), patch.object(
             tad, "check_feature_4_trailing_stops", return_value=[]
         ):
             daemon.run_iteration(now=bucket_ts + 15)
             self.assertEqual(daemon.last_evaluated_15m_bucket, 0)
+            self.assertEqual(f1_mock.call_count, 1)
             daemon.run_iteration(now=bucket_ts + 25)
             self.assertEqual(f2_mock.call_count, 1)  # 60s 退避内不重复刷屏
+            self.assertEqual(f1_mock.call_count, 1)  # 快照未更新不重复扫描 Feature 1
+            # 模拟小时扫描更新了候选池文件：即使不在 15m 收盘点，10s 节拍也会立即触发 Feature 1
+            os.utime(self.pool_file, (bucket_ts + 30, bucket_ts + 30))
+            self.pool_file.write_text('[{"symbol":"NEWUSDT"}]', encoding="utf-8")
+            daemon.run_iteration(now=bucket_ts + 35)
+            self.assertEqual(f1_mock.call_count, 2)
             daemon.run_iteration(now=bucket_ts + 80)
             self.assertEqual(f2_mock.call_count, 2)
 

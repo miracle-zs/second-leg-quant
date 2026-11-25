@@ -9,11 +9,11 @@
 通过本地或反向代理运行 [`scripts/account_dashboard_api.py`](scripts/account_dashboard_api.py) 后访问对应页面（静态 HTML 壳直接存放在 `web/` 目录）：
 
 1. **策略监控看板（[`web/index.html`](web/index.html) / `/`）**
-   - 5 块联动 KPI 机会区过滤卡（👑 顺势高换手共振区、⚠️ 负费率贴水区、⚡ 巨量高换手区、📈 1h EMA 顺势区、🌐 全量候选底池）。
-   - 前端 [`web/candidates.js`](web/candidates.js) 从 `api/candidates` 拉取候选池（支持 `ETag` 与 30 秒 `api/candidate-version` 无刷新增量更新），并每 60 秒直连币安公开 API 刷新实时价格、24h 分位、动态市值、换手倍数与 4h 等效资费（后台标签页自动暂停）。
-   - 内置双引擎 K 线弹窗（币安直连极速 Canvas K 线 + TradingView 内嵌切换）、TV 一键复制 / `.txt` 导出、战法四步法速查抽屉、整点资费结算倒计时及快捷键（`/` 搜币、`1-5` 切分区、`Esc` 清空/退出）。
+   - 5 块联动 KPI 机会区过滤卡（顺势高换手共振区、负费率贴水区、巨量高换手区、1h EMA 顺势区、全量候选底池）。
+   - 前端 [`web/candidates.js`](web/candidates.js) 从 `api/candidates` 拉取候选池（支持 `ETag` 与 30 秒 `api/candidate-version` 无刷新增量更新），每 60 秒经同源 `api/binance/*` 代理刷新实时价格、24h 分位、动态市值、换手倍数与 4h 等效资费（后台标签页自动暂停），并将筛选/排序/K线根数持久化至 `sessionStorage`。
+   - 内置原生 `<dialog>` 双引擎 K 线弹窗（`60 / 120 / 168` 根切换、底部时间刻度轴 + TradingView 内嵌切换）、首列冻结、TV 一键复制 / `.txt` 导出、战法四步法速查抽屉、整点资费结算倒计时及快捷键（`/` 搜币、`1-5` 切分区、`Esc` 清空/退出）。
 2. **账户数据分析与量化风控看板（[`web/account.html`](web/account.html) / `/account.html`）**
-   - 由 [`web/account.js`](web/account.js) 从 `api/account` 拉取账户快照（支持 `ETag` / `304 Not Modified` 及 30 秒轮询），动态渲染 10 项资产与量化风控 KPI、资金净值与回撤/每日盈亏/胜负分布/单笔收益直方图表、在途持仓监控与历史流水筛选排序。
+   - 由 [`web/account.js`](web/account.js) 从 `api/account` 拉取账户快照（支持 `ETag` / `304 Not Modified` 及 30 秒轮询），使用本地固化的 [Chart.js v4](web/vendor/chart.js) 渲染两层 KPI 矩阵（4 项主资产/盈亏 + 6 项风控质量指标）、4 组可视化图表、在途持仓监控与历史流水筛选排序。
 3. **突破追多与移动保本战法手册（[`web/playbook.html`](web/playbook.html) / `/playbook.html`）**
    - 系统化呈现实战四步法（标的初选、TV 对数画线、15m 实体突破开多、破线止损与移动保本）以及币安 API 联动自动化风控体系。
 
@@ -27,11 +27,13 @@ second-leg-quant/
 ├── .env.example                               # 统一密钥与配置模板
 ├── .env                                       # 私密配置 (CMC / Server酱 / 币安合约 API / COIN_DATABASE)
 │
-├── web/                                       # 纯静态 HTML 壳、共享样式与客户端脚本
+├── web/                                       # 纯静态 HTML 壳、预编译 CSS、本地依赖与客户端脚本
 │   ├── index.html                             # 策略监控看板静态壳
 │   ├── account.html                           # 账户数据分析看板静态壳
 │   ├── playbook.html                          # 突破追多与移动保本战法手册
-│   ├── styles.css                             # 三端共享暗色 HUD 样式
+│   ├── tailwind.css                           # 预编译压缩版 Tailwind v3 样式表
+│   ├── styles.css                             # 三端共享暗色 HUD 与粘性/对话框样式
+│   ├── vendor/chart.js                        # 本地固化 Chart.js v4.4.7 UMD 构建
 │   ├── candidates.js                          # 候选池看板渲染、轮询与 K 线弹窗逻辑
 │   └── account.js                             # 账户看板渲染、Chart.js 图表与流水筛选排序
 │
@@ -85,6 +87,9 @@ python3 scripts/account_analytics_engine.py --database runs/account.sqlite3
 
 # 启动交易预警与风控守护后台进程 (10s 移动锁利巡检 + 15m 突破/止损确认)
 python3 scripts/trade_alert_daemon.py --daemon
+
+# 重新编译前端静态 Tailwind CSS（修改 web/*.html 或 web/*.js 中的样式类后执行）
+npx -y tailwindcss@3 --content "./web/*.html,./web/*.js" -o web/tailwind.css --minify
 
 # 运行完整测试套件
 python3 -m unittest discover -s tests -p "test_*.py"

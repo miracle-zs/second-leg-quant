@@ -263,9 +263,9 @@
   function buildZonesHtml(c) {
     let resonanceBadge = '';
     if (c.is_resonance && c.is_neg_funding) {
-      resonanceBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30" title="1h顺势+高换手，但4h负费率，合约端做空情绪浓厚">⚠️ 贴水双核(空头浓厚)</span>';
+      resonanceBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30" title="1h顺势+高换手，但4h负费率，合约端做空情绪浓厚">贴水双核(空头浓厚)</span>';
     } else if (c.is_resonance) {
-      resonanceBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30" title="1h顺势+高换手，资金面健康">👑 双核黄金共振</span>';
+      resonanceBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30" title="1h顺势+高换手，资金面健康">双核黄金共振</span>';
     }
 
     const tags = [];
@@ -277,7 +277,7 @@
       tags.push(`<span class="px-1 py-0.2 rounded text-[9px] bg-purple-950/60 text-purple-300 border border-purple-500/20">换手${escapeHtml(trLabel)}</span>`);
     }
     if (c.is_neg_funding) {
-      tags.push('<span class="px-1 py-0.2 rounded text-[9px] bg-rose-950/60 text-rose-300 border border-rose-500/20" title="合约相对现货深度贴水，空头情绪极强">⚠️负费率贴水</span>');
+      tags.push('<span class="px-1 py-0.2 rounded text-[9px] bg-rose-950/60 text-rose-300 border border-rose-500/20" title="合约相对现货深度贴水，空头情绪极强">负费率贴水</span>');
     }
 
     return `<div class="flex items-center gap-1.5 flex-wrap">${resonanceBadge}${tags.length ? tags.join('') : '<span class="text-slate-500 text-[10px]">基础底池</span>'}</div>`;
@@ -313,7 +313,7 @@
       return `<div class="whitespace-nowrap">
         <div class="flex items-center gap-1.5">
           <span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span>
-          <span class="text-amber-300 font-bold px-1.5 py-0.2 rounded bg-amber-500/15 border border-amber-500/30 text-[10px]">★ 粘合走平</span>
+          <span class="text-amber-300 font-bold px-1.5 py-0.2 rounded bg-amber-500/15 border border-amber-500/30 text-[10px]">粘合走平</span>
           <span class="text-[10px] text-amber-300/80 font-mono">(${spreadText})</span>
         </div>
         <div class="text-[10px] text-slate-500 font-mono mt-0.5">5:${ema5Str} / 10:${ema10Str}</div>
@@ -348,17 +348,17 @@
     let badge;
     if (resHours > 0) {
       if (resHours <= 3) {
-        badge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>⚡ 新进 ${resHours}h</span>`;
+        badge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>新进 ${resHours}h</span>`;
       } else if (resHours <= 12) {
-        badge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>⏳ 活跃 ${resHours}h</span>`;
+        badge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span>活跃 ${resHours}h</span>`;
       } else {
         const days = Math.floor(resHours / 24);
         const remH = resHours % 24;
         const dStr = days > 0 ? `${days}天${remH}h` : `${resHours}h`;
-        badge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30 inline-flex items-center gap-1 w-fit">⏱️ 驻留 ${escapeHtml(dStr)}</span>`;
+        badge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-sky-400" aria-hidden="true"></span>驻留 ${escapeHtml(dStr)}</span>`;
       }
     } else {
-      badge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>⚡ 刚刚进入</span>';
+      badge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>刚刚进入</span>';
     }
     return `<div>${badge}${entryStr}</div>`;
   }
@@ -467,7 +467,6 @@
     const emptyRowHtml = `
       <tr id="empty-search-row" class="hidden">
         <td colspan="11" class="py-12 text-center text-slate-500 font-sans">
-          <div class="text-2xl mb-2">🔍</div>
           <div class="text-sm font-semibold text-slate-300">未找到匹配标的</div>
           <div class="text-xs text-slate-500 mt-1">按 <kbd class="px-1.5 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-slate-400">Esc</kbd> 清空搜索或重置筛选条件</div>
         </td>
@@ -503,7 +502,7 @@
         const daysLeft = isFiniteNum(c.overflow_days_left) ? c.overflow_days_left.toFixed(1) : '--';
         mcHtml = `<div>
           <div class="text-amber-300 font-mono tabular-nums font-semibold sym-mc-val">${mcStr}</div>
-          <span class="px-1.5 py-0.2 rounded text-[9px] bg-amber-500/15 text-amber-300 border border-amber-500/30 inline-flex items-center gap-0.5" title="曾落入3000wu以下，突破后保持7天持续跟踪">★ 剩${escapeHtml(daysLeft)}天</span>
+          <span class="px-1.5 py-0.2 rounded text-[9px] bg-amber-500/15 text-amber-300 border border-amber-500/30 inline-flex items-center gap-0.5" title="曾落入3000wu以下，突破后保持7天持续跟踪">溢出剩${escapeHtml(daysLeft)}天</span>
         </div>`;
       } else {
         mcHtml = `<div class="text-slate-200 font-mono tabular-nums sym-mc-val">${mcStr}</div>`;
@@ -523,10 +522,10 @@
         <th scope="row" class="py-1.5 px-2 font-normal whitespace-nowrap sticky-col">
           <div class="flex items-center gap-1">
             <span class="text-white font-bold font-sans text-sm tracking-tight">${safeSym}</span>
-            <button type="button" class="btn-copy-sym px-1 py-0.2 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 text-[10px] transition-all" data-copy="${safeTvSym}" title="复制 TV 代码 (${safeTvSym})">📋</button>
+            <button type="button" class="btn-copy-sym px-1 py-0.2 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 text-[10px] transition-all" data-copy="${safeTvSym}" title="复制 TV 代码 (${safeTvSym})">复制</button>
           </div>
           <div class="flex items-center gap-1 mt-0.5 text-[10px] font-sans">
-            <button type="button" class="btn-preview-chart px-1.5 py-0.2 rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 transition-all font-semibold" data-sym="${safeSym}" data-tv="${safeTvSym}" title="站内秒级弹窗预览 15m 实时 K 线">👁️15m</button>
+            <button type="button" class="btn-preview-chart px-1.5 py-0.2 rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 transition-all font-semibold" data-sym="${safeSym}" data-tv="${safeTvSym}" title="站内弹窗预览 15m 实时 K 线">15m图</button>
             <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="px-1.5 py-0.2 rounded bg-[#2962FF]/15 hover:bg-[#2962FF]/25 text-[#38bdf8] hover:text-white border border-[#2962FF]/30 transition-all font-semibold" title="在 TradingView 打开 15m 专属画线布局 (ig0LuDL8)"><span>TV↗</span></a>
             <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="px-1.5 py-0.2 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 hover:text-white border border-amber-500/30 transition-all" title="直达币安合约盘口深度"><span>币安↗</span></a>
           </div>
@@ -956,7 +955,9 @@
 
     if (modalChartTitle) modalChartTitle.textContent = sym;
     if (modalExternalLink) modalExternalLink.href = getTvUrl(tvSym, modalCurrentInterval);
-    chartModal.classList.remove('hidden');
+    if (!chartModal.open) {
+      chartModal.showModal();
+    }
 
     if (modalActiveEngine === 'native') {
       if (modalNativeView) modalNativeView.classList.remove('hidden');
@@ -972,13 +973,16 @@
     }
   }
 
-  function closeTvModal() {
-    if (!chartModal) return;
-    chartModal.classList.add('hidden');
+  function resetModalStateOnClose() {
     if (modalFetchController) modalFetchController.abort();
     if (modalTvIframe) modalTvIframe.src = 'about:blank';
     modalHoverIndex = -1;
     if (modalTooltip) modalTooltip.classList.add('hidden');
+  }
+
+  function closeTvModal() {
+    if (!chartModal || !chartModal.open) return;
+    chartModal.close();
   }
 
   function updateSettleCountdown() {
@@ -1211,7 +1215,7 @@
         poolUpdatedEl.className = 'px-2 py-0.5 text-[11px] font-mono text-rose-300 bg-rose-500/10 rounded-md border border-rose-500/30';
       }
       if (!candidatesState.length && tableBody) {
-        tableBody.innerHTML = `<tr><td colspan="11" class="py-12 text-center text-rose-400 font-sans">⚠️ 候选币池加载失败 (${escapeHtml(err.message)})，请检查后台 API 服务。</td></tr>`;
+        tableBody.innerHTML = `<tr><td colspan="11" class="py-12 text-center text-rose-400 font-sans">候选币池加载失败 (${escapeHtml(err.message)})，请检查后台 API 服务。</td></tr>`;
       }
     }
   }
@@ -1454,12 +1458,23 @@
   }
   if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeTvModal);
   if (chartModal) {
-    chartModal.addEventListener('click', (e) => {
-      if (e.target === chartModal) closeTvModal();
-    });
+    chartModal.addEventListener('close', resetModalStateOnClose);
+    if (!('closedBy' in HTMLDialogElement.prototype)) {
+      const outsideDialog = (e) => {
+        const r = chartModal.getBoundingClientRect();
+        return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+      };
+      let pressedOutside = false;
+      chartModal.addEventListener('pointerdown', (e) => {
+        pressedOutside = outsideDialog(e);
+      });
+      chartModal.addEventListener('pointerup', (e) => {
+        if (pressedOutside && outsideDialog(e)) closeTvModal();
+      });
+    }
   }
   window.addEventListener('resize', () => {
-    if (chartModal && !chartModal.classList.contains('hidden') && modalActiveEngine === 'native') {
+    if (chartModal && chartModal.open && modalActiveEngine === 'native') {
       renderModalChart();
     }
   });
@@ -1475,10 +1490,12 @@
     const activeTag = document.activeElement ? document.activeElement.tagName : '';
     const isInputActive = activeTag === 'INPUT' || activeTag === 'TEXTAREA';
 
+    if (chartModal && chartModal.open) {
+      return;
+    }
+
     if (e.key === 'Escape') {
-      if (chartModal && !chartModal.classList.contains('hidden')) {
-        closeTvModal();
-      } else if (tvDrawer && !tvDrawer.classList.contains('hidden')) {
+      if (tvDrawer && !tvDrawer.classList.contains('hidden')) {
         tvDrawer.classList.add('hidden');
       } else if (searchInput && (searchInput.value || document.activeElement === searchInput)) {
         searchInput.value = '';
