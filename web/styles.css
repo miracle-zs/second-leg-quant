@@ -126,6 +126,14 @@ th.sortable:hover .sort-icon {
   background-color: #162033;
 }
 
+#candidates-table tbody tr.resonance-neg-row > td:first-child {
+  box-shadow: inset 3px 0 0 #f43f5e;
+}
+
+#candidates-table tbody tr.resonance-gold-row > td:first-child {
+  box-shadow: inset 3px 0 0 rgba(245, 158, 11, 0.8);
+}
+
 dialog.chart-modal-dialog {
   margin: auto;
   padding: 0;

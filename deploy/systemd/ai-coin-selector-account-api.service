@@ -2,10 +2,12 @@
 Description=AI Coin Selector dashboard API
 Wants=network-online.target
 After=network-online.target
+ConditionPathExists=/opt/ai-coin-selector/.env
 
 [Service]
 User=ai-coin-selector
 WorkingDirectory=/opt/ai-coin-selector
+Environment=COIN_DATABASE=/opt/ai-coin-selector/runs/account.sqlite3
 ExecStart=/usr/bin/python3 scripts/account_dashboard_api.py --database runs/account.sqlite3 --port 18083
 Restart=on-failure
 RestartSec=5s

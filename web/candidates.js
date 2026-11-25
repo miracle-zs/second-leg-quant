@@ -158,14 +158,21 @@
     return '$' + (val / 1e6).toFixed(1) + 'M';
   }
 
+  function toBeijingDate(tsMs) {
+    return new Date(tsMs + 8 * 3600 * 1000);
+  }
+
   function formatUpdatedAtBeijing(updatedAt) {
     if (!updatedAt || typeof updatedAt !== 'string') return '--';
     const trimmed = updatedAt.trim();
     if (!trimmed) return '--';
-    const iso = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T') + 'Z';
+    let iso = trimmed.includes('T') ? trimmed : trimmed.replace(' ', 'T');
+    if (!/(Z|[+-]\d{2}:?\d{2})$/i.test(iso)) {
+      iso += '+08:00';
+    }
     const parsed = new Date(iso);
     if (Number.isNaN(parsed.getTime())) return trimmed;
-    const bj = new Date(parsed.getTime() + 8 * 3600 * 1000);
+    const bj = toBeijingDate(parsed.getTime());
     const pad = (n) => String(n).padStart(2, '0');
     return (
       `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth() + 1)}-${pad(bj.getUTCDate())} ` +
@@ -218,10 +225,10 @@
 
   function getRowClass(c) {
     if (c.is_resonance && c.is_neg_funding) {
-      return 'hover:bg-slate-800/40 bg-rose-950/15 border-l-2 border-rose-500 candidate-row';
+      return 'hover:bg-slate-800/40 bg-rose-950/15 resonance-neg-row candidate-row';
     }
     if (c.is_resonance) {
-      return 'hover:bg-slate-800/40 bg-amber-950/10 border-l-2 border-amber-500/70 candidate-row';
+      return 'hover:bg-slate-800/40 bg-amber-950/10 resonance-gold-row candidate-row';
     }
     return 'hover:bg-slate-800/30 candidate-row';
   }
@@ -679,12 +686,12 @@
   }
 
   function formatAxisTime(tsMs, interval) {
-    const d = new Date(tsMs);
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
+    const bj = toBeijingDate(tsMs);
+    const mm = String(bj.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(bj.getUTCDate()).padStart(2, '0');
     if (interval === '1d') return `${mm}/${dd}`;
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mi = String(d.getMinutes()).padStart(2, '0');
+    const hh = String(bj.getUTCHours()).padStart(2, '0');
+    const mi = String(bj.getUTCMinutes()).padStart(2, '0');
     return `${mm}/${dd} ${hh}:${mi}`;
   }
 
@@ -855,8 +862,8 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      const d = new Date(c.time);
-      const timeStr = `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      const bj = toBeijingDate(c.time);
+      const timeStr = `${bj.getUTCMonth() + 1}/${bj.getUTCDate()} ${String(bj.getUTCHours()).padStart(2, '0')}:${String(bj.getUTCMinutes()).padStart(2, '0')}`;
       const chg = c.open > 0 ? (((c.close - c.open) / c.open) * 100).toFixed(2) : null;
       const isBull = c.close >= c.open;
       const chgLabel = chg !== null ? `${Number(chg) > 0 ? '+' : ''}${chg}%` : '--';
@@ -1038,6 +1045,10 @@
         const refs = rowRefsBySym.get(sym);
         const t = tickMap.get(sym);
         const pr = premMap.get(sym);
+        const prevRes = c.is_resonance;
+        const prevHighTr = c.is_high_turnover;
+        const prevNegFr = c.is_neg_funding;
+        const prevTrText = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) : '';
 
         if (t) {
           const pVal = parseFloat(t.lastPrice);
@@ -1126,10 +1137,6 @@
           }
         }
 
-        const prevRes = c.is_resonance;
-        const prevHighTr = c.is_high_turnover;
-        const prevNegFr = c.is_neg_funding;
-        const prevTrText = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) : '';
         classifyCandidate(c);
         const currTrText = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) : '';
         const classChanged = (
@@ -1225,15 +1232,17 @@
   }
 
   async function checkSnapshotVersion() {
-    if (document.hidden) return;
+    if (document.hidden) return false;
     try {
       const { data } = await fetchJsonWithTimeout('api/candidate-version', { cache: 'no-store' }, 8000);
       if (data && data.updated_at && data.updated_at !== currentVersion) {
         await loadCandidateSnapshot({ force: true });
+        return true;
       }
     } catch (err) {
       console.warn('Candidate version check failed:', err);
     }
+    return false;
   }
 
   function startPolling() {
@@ -1389,6 +1398,9 @@
           modalHoverIndex = nextIdx;
           scheduleModalRender();
         }
+      } else if (modalHoverIndex !== -1) {
+        modalHoverIndex = -1;
+        scheduleModalRender();
       }
     });
     modalNativeView.addEventListener('mouseleave', () => {
@@ -1556,8 +1568,9 @@
       if (pollController) pollController.abort();
     } else {
       startCountdown();
-      checkSnapshotVersion();
-      syncBinancePool();
+      checkSnapshotVersion().then((reloaded) => {
+        if (!reloaded && !document.hidden) syncBinancePool();
+      });
       startPolling();
     }
   });

@@ -25,6 +25,8 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
+from logging.handlers import RotatingFileHandler
+import math
 import signal
 import sqlite3
 import sys
@@ -95,7 +97,12 @@ def configure_logging(log_file: Optional[Path] = LOG_FILE) -> list[logging.Handl
             for h in root.handlers
         )
         if not already:
-            fh = logging.FileHandler(str(target), encoding="utf-8")
+            fh = RotatingFileHandler(
+                str(target),
+                maxBytes=10 * 1024 * 1024,
+                backupCount=5,
+                encoding="utf-8",
+            )
             fh.setFormatter(fmt)
             root.addHandler(fh)
             managed_handlers.append(fh)
@@ -113,6 +120,21 @@ def close_managed_handlers(handlers: list[logging.Handler]) -> None:
         finally:
             if h in root.handlers:
                 root.removeHandler(h)
+
+
+def format_alert_price(val: float) -> str:
+    """Format prices dynamically (2-8 decimals) so sub-$0.001 micro-caps never truncate to $0.0000."""
+    num = float(val)
+    abs_v = abs(num)
+    if abs_v >= 100:
+        dec = 2
+    elif abs_v >= 0.01:
+        dec = 4
+    elif abs_v >= 0.0001:
+        dec = 6
+    else:
+        dec = 8
+    return f"{num:.{dec}f}"
 
 
 def _normalize_futures_symbol(symbol: str) -> str:
@@ -236,7 +258,7 @@ def fetch_layout_drawings(
                 with open(local_cache_file, "r", encoding="utf-8") as f:
                     cdata = json.load(f)
                 drawings = cdata.get("drawings_by_symbol") if isinstance(cdata, dict) else None
-                if isinstance(drawings, dict) and drawings:
+                if isinstance(drawings, dict):
                     _DRAWINGS_CACHE = {"data": drawings, "ts": mtime, "layout_id": layout_id}
                     raw_drawings = drawings
 
@@ -247,7 +269,7 @@ def fetch_layout_drawings(
             _DRAWINGS_CACHE = {"data": drawings, "ts": now, "layout_id": layout_id}
             raw_drawings = drawings
 
-    return raw_drawings or {}
+    return raw_drawings
 
 
 # ==============================================================================
@@ -431,6 +453,7 @@ class ResonanceStateStore:
         *,
         timestamp_sec: Optional[int] = None,
         active_line_keys: Optional[set[str]] = None,
+        save: bool = True,
     ) -> None:
         with self.transaction():
             now_sec = int(timestamp_sec if timestamp_sec is not None else time.time())
@@ -440,7 +463,8 @@ class ResonanceStateStore:
                 keys.append(key)
             times[key] = now_sec
             self._prune_expired_breakout_keys(now_sec=now_sec, active_line_keys=active_line_keys)
-            self.save()
+            if save:
+                self.save()
 
     def _prune_expired_breakout_keys(
         self,
@@ -478,6 +502,17 @@ def _load_candidate_pool(database: Path) -> Optional[list[dict[str, Any]]]:
     return payload
 
 
+def _parse_optional_finite_float(val: Any) -> Optional[float]:
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        raise ValueError(f"Unexpected boolean numeric value: {val!r}")
+    num = float(val)
+    if not math.isfinite(num):
+        raise ValueError(f"Non-finite numeric value: {val!r}")
+    return num
+
+
 def check_feature_1_resonance(
     notifier: ServerChanNotifier,
     state_store: ResonanceStateStore,
@@ -498,17 +533,40 @@ def check_feature_1_resonance(
         return []
 
     current_resonance_coins: dict[str, dict[str, Any]] = {}
-    for c in candidates:
-        sym = _normalize_futures_symbol(c["symbol"])
-        if c.get("is_resonance") and sym:
-            current_resonance_coins[sym] = c
+    for idx, c in enumerate(candidates):
+        if not isinstance(c, dict):
+            logger.warning(f"跳过第 {idx} 条非字典候选记录: {type(c).__name__}")
+            continue
+        raw_sym = c.get("symbol")
+        sym = _normalize_futures_symbol(raw_sym) if isinstance(raw_sym, str) else ""
+        if not sym:
+            logger.warning(f"跳过缺失有效 symbol 的候选记录: {c!r}")
+            continue
+        if not c.get("is_resonance"):
+            continue
+        try:
+            price_val = _parse_optional_finite_float(c.get("price"))
+            if price_val is not None and price_val <= 0:
+                raise ValueError(f"non-positive price={price_val}")
+            _parse_optional_finite_float(c.get("turnover_ratio"))
+            _parse_optional_finite_float(c.get("funding_rate_4h_pct"))
+            raw_score = c.get("resonance_score")
+            if raw_score is not None:
+                if isinstance(raw_score, bool):
+                    raise ValueError(f"invalid resonance_score={raw_score!r}")
+                int(raw_score)
+        except (TypeError, ValueError) as e:
+            logger.warning(f"跳过 {sym} 畸形共振候选记录: {e}")
+            continue
+        current_resonance_coins[sym] = c
+
+    now_ts = time.time()
+    now_str = get_beijing_time_str(now_ts)
+    current_symbols = set(current_resonance_coins.keys())
+    pending_notifications: list[tuple[str, dict[str, Any], str, str, str, Optional[int], str]] = []
 
     with state_store.transaction():
         active_symbols = state_store.get_active_symbols()
-        current_symbols = set(current_resonance_coins.keys())
-        now_ts = time.time()
-        now_str = get_beijing_time_str(now_ts)
-
         is_initialized = bool(state_store.data.get("initialized"))
         if cold_start and not is_initialized:
             logger.info(
@@ -522,12 +580,13 @@ def check_feature_1_resonance(
                 detected_at = coin.get("resonance_detected_at") or now_str
                 tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
                 if sym not in history:
+                    raw_score = coin.get("resonance_score")
                     history[sym] = {
                         "symbol": sym,
                         "first_detected": detected_at,
                         "last_notified_at": now_str,
                         "last_notified_time": int(now_ts),
-                        "res_score": coin.get("resonance_score", 2),
+                        "res_score": int(raw_score) if raw_score is not None else None,
                         "zones": coin.get("zones", []),
                         "tv_link": tv_link,
                     }
@@ -536,7 +595,6 @@ def check_feature_1_resonance(
 
         new_entered = current_symbols - active_symbols
         next_active = set(active_symbols & current_symbols)
-        alerted_list: list[dict[str, Any]] = []
 
         if new_entered:
             logger.info(f"⚡ 检测到 {len(new_entered)} 个新进入共振区标的: {sorted(new_entered)}")
@@ -546,9 +604,10 @@ def check_feature_1_resonance(
         for sym in sorted(new_entered):
             coin = current_resonance_coins[sym]
             detected_at = coin.get("resonance_detected_at") or now_str
-            res_score = coin.get("resonance_score", 2)
-            fr_pct = float(coin["funding_rate_4h_pct"]) if coin.get("funding_rate_4h_pct") is not None else 0.0
-            is_neg_fr = bool(coin.get("is_neg_funding") or fr_pct < 0)
+            raw_score = coin.get("resonance_score")
+            res_score = int(raw_score) if raw_score is not None else None
+            fr_pct = _parse_optional_finite_float(coin.get("funding_rate_4h_pct"))
+            is_neg_fr = bool(coin.get("is_neg_funding")) or (fr_pct is not None and fr_pct < 0)
 
             hist = history.get(sym, {})
             last_notified_ts = hist.get("last_notified_time")
@@ -569,11 +628,12 @@ def check_feature_1_resonance(
                     next_active.add(sym)
                     continue
 
+            fr_str = f"{fr_pct:+.4f}%" if fr_pct is not None else "--"
             if is_neg_fr:
                 res_tag = "⚠️ 贴水双核 (1h顺势+高换手，但合约深度贴水/空头拥挤)"
                 res_badge = "⚠️ 贴水双核"
                 guidance_block = f"""> ⚠️ **风控严正警示 (合约深度折价/空头拥挤)**:
-> 该标的 4h 资金费率为 `{fr_pct:+.4f}%` (合约价格贴水于现货)。
+> 该标的 4h 资金费率为 `{fr_str}` (合约价格贴水于现货)。
 > 负费率反映衍生品市场做空情绪过度堆积，往往顺应趋势继续阴跌，极少为真逼空！
 > 若绘制 15m 趋势线，**必须极度警惕假突破与诱多**，坚决以 15m 阳线实体收盘突破为准，开仓必须以趋势线严设止损！"""
             else:
@@ -584,17 +644,19 @@ def check_feature_1_resonance(
 > 系统将持续监控该线，在 15m K 线收盘放量突破时发出买点②开多提醒。"""
 
             tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
-            price_val = float(coin.get("price") or 0.0)
-            turnover_val = float(coin.get("turnover_ratio") or 0.0)
+            price_val = _parse_optional_finite_float(coin.get("price"))
+            turnover_val = _parse_optional_finite_float(coin.get("turnover_ratio"))
+            price_str = f"${format_alert_price(price_val)}" if price_val is not None else "--"
+            turnover_str = f"{turnover_val:.1f}x" if turnover_val is not None else "--"
             detected_line = f"\n- **入圈时间**: {detected_at}" if detected_at[:16] != now_str[:16] else ""
 
             title = f"{res_badge} 提醒: {sym} 进入共振区，请画 15m 趋势线"
             desp = f"""### {res_tag} 选币确认！
 
 - **标的代码**: `BINANCE:{sym}.P`
-- **当前市价**: `${price_val:.4f}`
-- **24h换手率**: `{turnover_val:.1f}x`
-- **4h资金费率**: `{fr_pct:+.4f}%`
+- **当前市价**: `{price_str}`
+- **24h换手率**: `{turnover_str}`
+- **4h资金费率**: `{fr_str}`
 - **机会区标签**: {', '.join(coin.get('zones', [])) or '共振区'}
 - **形态状态**: {coin.get('status', '多周期趋势共振')}{detected_line}
 - **触发时间**: {now_str}
@@ -604,10 +666,34 @@ def check_feature_1_resonance(
 
 👉 **[点击立即前往 TradingView 专属画线图表]({tv_link})**
 """
-            if notifier.send_alert(title, desp):
-                next_active.add(sym)
-                alerted_list.append(coin)
-                history[sym] = {
+            pending_notifications.append((sym, coin, title, desp, detected_at, res_score, tv_link))
+
+        new_active_sorted = sorted(next_active)
+        if (
+            new_active_sorted != sorted(active_symbols)
+            or history_updated
+            or not is_initialized
+        ):
+            state_store.data["initialized"] = True
+            state_store.data["active_resonance_symbols"] = new_active_sorted
+            state_store.save()
+
+    sent_items: list[tuple[str, dict[str, Any], str, Optional[int], str]] = []
+    alerted_list: list[dict[str, Any]] = []
+    for sym, coin, title, desp, detected_at, res_score, tv_link in pending_notifications:
+        if notifier.send_alert(title, desp):
+            sent_items.append((sym, coin, detected_at, res_score, tv_link))
+            alerted_list.append(coin)
+        else:
+            logger.warning(f"Server酱发送失败，保留 {sym} 待下轮重试。")
+
+    if sent_items:
+        with state_store.transaction():
+            active_now = set(state_store.get_active_symbols())
+            history_now = state_store.data.setdefault("history", {})
+            for sym, coin, detected_at, res_score, tv_link in sent_items:
+                active_now.add(sym)
+                history_now[sym] = {
                     "symbol": sym,
                     "first_detected": detected_at,
                     "last_notified_at": now_str,
@@ -616,21 +702,11 @@ def check_feature_1_resonance(
                     "zones": coin.get("zones", []),
                     "tv_link": tv_link,
                 }
-            else:
-                logger.warning(f"Server酱发送失败，保留 {sym} 待下轮重试。")
-
-        new_active_sorted = sorted(next_active)
-        if (
-            new_active_sorted != sorted(active_symbols)
-            or alerted_list
-            or history_updated
-            or not state_store.data.get("initialized")
-        ):
             state_store.data["initialized"] = True
-            state_store.data["active_resonance_symbols"] = new_active_sorted
+            state_store.data["active_resonance_symbols"] = sorted(active_now)
             state_store.save()
 
-        return alerted_list
+    return alerted_list
 
 
 def _send_breakout_notification(
@@ -655,8 +731,8 @@ def _send_breakout_notification(
 - **交易标的**: `BINANCE:{sym}.P`
 - **K线周期**: 15m (已确定收盘)
 - **收盘时间**: {candle_time_str}
-- **最新收盘价**: `${close_price:.4f}`
-- **对数阻力线**: `${res_price:.4f}`
+- **最新收盘价**: `${format_alert_price(close_price)}`
+- **对数阻力线**: `${format_alert_price(res_price)}`
 - **突破幅度**: `+{pct:.2f}%`
 
 ---
@@ -747,6 +823,27 @@ def _fetch_15m_candles_batch(
     return resolved
 
 
+def _flush_retried_breakouts(
+    state_store: ResonanceStateStore,
+    retried_succeeded: Sequence[tuple[str, list[str]]],
+    *,
+    active_line_keys: Optional[set[str]] = None,
+) -> None:
+    if not retried_succeeded:
+        return
+    with state_store.transaction():
+        pending = state_store.data.setdefault("pending_breakouts", {})
+        for key, keys_to_mark in retried_succeeded:
+            for k in keys_to_mark:
+                state_store.mark_breakout_notified(
+                    k,
+                    active_line_keys=active_line_keys,
+                    save=False,
+                )
+            pending.pop(key, None)
+        state_store.save()
+
+
 def check_feature_2_breakout(
     notifier: ServerChanNotifier,
     state_store: ResonanceStateStore,
@@ -760,140 +857,182 @@ def check_feature_2_breakout(
     """
     Feature 2 (15m 突破开多提醒):
     直接复用 tv_trendline_engine 校验严格 Crossover、15m 周期与 72h 时效。
+    所有网络 I/O（TV 画线、15m K线、Server酱 通知）均在 SQLite 写事务外执行。
     """
     with state_store.transaction():
-        pending = state_store.data.setdefault("pending_breakouts", {})
-        pending_dirty = False
-        for key, event in list(pending.items()):
-            if _send_breakout_notification(
-                notifier,
-                event["symbol"],
-                event["res_price"],
-                event["close_price"],
-                event["pct"],
-                event["candle"],
-                event["layout_id"],
-            ):
-                for k in event["keys"]:
-                    state_store.mark_breakout_notified(k)
-                del pending[key]
-                pending_dirty = True
-        if pending_dirty:
-            state_store.save()
-
-        if retry_only:
-            return []
-
-        try:
-            drawings_map = fetch_layout_drawings(layout_id)
-        except (BinanceAPIError, RuntimeError, TimeoutError, urllib.error.URLError) as e:
-            logger.warning(f"获取 TV 布局画线异常，跳过本轮突破扫描: {e}")
-            if status is not None:
-                status["had_error"] = True
-            return []
-
-        if not drawings_map:
-            logger.debug(f"TV 布局 {layout_id} 暂无可用画线数据")
-            return []
-
-        active_line_keys: set[str] = set()
-        for sym_k, lines in drawings_map.items():
-            for line in lines:
-                if isinstance(line, dict) and line.get("id"):
-                    active_line_keys.add(f"{sym_k}_{line['id']}")
-
-        active_symbols = sorted(state_store.get_active_symbols())
-        target_symbols = [
-            clean_symbol(sym)
-            for sym in active_symbols
-            if drawings_map.get(clean_symbol(sym))
+        pending_snapshot = [
+            (key, dict(event))
+            for key, event in state_store.data.get("pending_breakouts", {}).items()
         ]
-        candles_by_symbol = _fetch_15m_candles_batch(
-            target_symbols,
-            candle_cache=candle_cache,
-            status=status,
-            current_bucket=current_bucket,
-            error_label="15m K线",
-        )
+        active_symbols = sorted(state_store.get_active_symbols())
+        notified_keys = set(state_store.data.get("notified_breakout_keys", []))
 
-        breakout_alerts: list[dict[str, Any]] = []
-        for sym in active_symbols:
-            sym_clean = clean_symbol(sym)
-            matched_lines = drawings_map.get(sym_clean)
-            candle = candles_by_symbol.get(sym_clean)
-            if not matched_lines or candle is None:
+    retried_succeeded: list[tuple[str, list[str]]] = []
+    for key, event in pending_snapshot:
+        if _send_breakout_notification(
+            notifier,
+            event["symbol"],
+            event["res_price"],
+            event["close_price"],
+            event["pct"],
+            event["candle"],
+            event["layout_id"],
+        ):
+            retried_succeeded.append((key, list(event["keys"])))
+
+    if retry_only:
+        _flush_retried_breakouts(state_store, retried_succeeded)
+        return []
+
+    try:
+        drawings_map = fetch_layout_drawings(layout_id)
+    except (BinanceAPIError, RuntimeError, TimeoutError, urllib.error.URLError) as e:
+        logger.warning(f"获取 TV 布局画线异常，跳过本轮突破扫描: {e}")
+        _flush_retried_breakouts(state_store, retried_succeeded)
+        if status is not None:
+            status["had_error"] = True
+        return []
+
+    if not drawings_map:
+        _flush_retried_breakouts(state_store, retried_succeeded)
+        logger.debug(f"TV 布局 {layout_id} 暂无可用画线数据")
+        return []
+
+    active_line_keys: set[str] = set()
+    for sym_k, lines in drawings_map.items():
+        for line in lines:
+            if isinstance(line, dict) and line.get("id"):
+                active_line_keys.add(f"{sym_k}_{line['id']}")
+
+    _flush_retried_breakouts(state_store, retried_succeeded, active_line_keys=active_line_keys)
+    pending_keys_set = {key for key, _ in pending_snapshot} - {key for key, _ in retried_succeeded}
+
+    target_symbols = [
+        clean_symbol(sym)
+        for sym in active_symbols
+        if drawings_map.get(clean_symbol(sym))
+    ]
+    candles_by_symbol = _fetch_15m_candles_batch(
+        target_symbols,
+        candle_cache=candle_cache,
+        status=status,
+        current_bucket=current_bucket,
+        error_label="15m K线",
+    )
+
+    candidates_by_sym: list[list[dict[str, Any]]] = []
+    for sym in active_symbols:
+        sym_clean = clean_symbol(sym)
+        matched_lines = drawings_map.get(sym_clean)
+        candle = candles_by_symbol.get(sym_clean)
+        if not matched_lines or candle is None:
+            continue
+
+        c_ts = int(candle["open_time"])
+        sym_candidates: list[dict[str, Any]] = []
+        for line in matched_lines:
+            if not isinstance(line, dict):
+                logger.warning(f"跳过 {sym} 非字典画线数据: {type(line).__name__}")
+                continue
+            line_id = line.get("id")
+            if not line_id:
+                continue
+            trendline_key = f"{sym}_{line_id}"
+
+            if trendline_key in pending_keys_set or trendline_key in notified_keys:
+                continue
+            if not is_valid_15m_trendline(line, current_time=c_ts):
+                continue
+            try:
+                p1_val = float(line["p1"])
+                p2_val = float(line["p2"])
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning(f"跳过 {sym} 畸形趋势线 ({line_id}): {e}")
+                continue
+            if p1_val < p2_val:
                 continue
 
-            c_ts = int(candle["open_time"])
-            for line in matched_lines:
-                if not isinstance(line, dict):
-                    logger.warning(f"跳过 {sym} 非字典画线数据: {type(line).__name__}")
-                    continue
-                line_id = line.get("id")
-                if not line_id:
-                    continue
-                trendline_key = f"{sym}_{line_id}"
+            try:
+                res = tve.check_symbol_breakout(sym_clean, line, candle=candle)
+            except ValueError as e:
+                logger.warning(f"跳过 {sym} 无效几何趋势线 ({line_id}): {e}")
+                continue
+            if not res.get("is_breakout"):
+                continue
 
+            res_price = float(res["res_price"])
+            close_price = float(res["close_price"])
+            pct = float(res["pct"])
+            if res_price <= 0 or close_price > res_price * 1.25:
+                continue
+
+            info = {
+                "symbol": sym,
+                "close_price": close_price,
+                "res_price": res_price,
+                "pct": pct,
+                "candle_time": res["candle_time"],
+                "trendline": line,
+                "trendline_id": line_id,
+            }
+            keys = [trendline_key]
+            pending_record = {
+                "symbol": sym,
+                "res_price": res_price,
+                "close_price": close_price,
+                "pct": pct,
+                "candle": res,
+                "layout_id": layout_id,
+                "keys": keys,
+            }
+            sym_candidates.append({
+                "trendline_key": trendline_key,
+                "keys": keys,
+                "info": info,
+                "pending_record": pending_record,
+                "res_price": res_price,
+                "close_price": close_price,
+                "pct": pct,
+                "res": res,
+            })
+
+        if sym_candidates:
+            candidates_by_sym.append(sym_candidates)
+
+    breakout_alerts: list[dict[str, Any]] = []
+    for sym_candidates in candidates_by_sym:
+        for cand in sym_candidates:
+            trendline_key = cand["trendline_key"]
+            sym = cand["info"]["symbol"]
+            with state_store.transaction():
+                pending = state_store.data.setdefault("pending_breakouts", {})
                 if trendline_key in pending or state_store.has_breakout_notified(trendline_key):
                     continue
-                if not is_valid_15m_trendline(line, current_time=c_ts):
-                    continue
-                try:
-                    p1_val = float(line["p1"])
-                    p2_val = float(line["p2"])
-                except (KeyError, TypeError, ValueError) as e:
-                    logger.warning(f"跳过 {sym} 畸形趋势线 ({line_id}): {e}")
-                    continue
-                if p1_val < p2_val:
-                    continue
-
-                try:
-                    res = tve.check_symbol_breakout(sym_clean, line, candle=candle)
-                except ValueError as e:
-                    logger.warning(f"跳过 {sym} 无效几何趋势线 ({line_id}): {e}")
-                    continue
-                if not res.get("is_breakout"):
-                    continue
-
-                res_price = float(res["res_price"])
-                close_price = float(res["close_price"])
-                pct = float(res["pct"])
-                if res_price <= 0 or close_price > res_price * 1.25:
-                    continue
-
-                info = {
-                    "symbol": sym,
-                    "close_price": close_price,
-                    "res_price": res_price,
-                    "pct": pct,
-                    "candle_time": res["candle_time"],
-                    "trendline": line,
-                    "trendline_id": line_id,
-                }
-                keys = [trendline_key, f"{sym}_{c_ts}"]
-                pending[trendline_key] = {
-                    "symbol": sym,
-                    "res_price": res_price,
-                    "close_price": close_price,
-                    "pct": pct,
-                    "candle": res,
-                    "layout_id": layout_id,
-                    "keys": keys,
-                }
+                pending[trendline_key] = cand["pending_record"]
                 state_store.save()
 
-                if _send_breakout_notification(notifier, sym, res_price, close_price, pct, res, layout_id):
-                    for k in keys:
+            if _send_breakout_notification(
+                notifier,
+                sym,
+                cand["res_price"],
+                cand["close_price"],
+                cand["pct"],
+                cand["res"],
+                layout_id,
+            ):
+                with state_store.transaction():
+                    for k in cand["keys"]:
                         state_store.mark_breakout_notified(
                             k,
                             active_line_keys=active_line_keys,
+                            save=False,
                         )
-                    del pending[trendline_key]
+                    state_store.data.setdefault("pending_breakouts", {}).pop(trendline_key, None)
                     state_store.save()
-                    breakout_alerts.append(info)
+                breakout_alerts.append(cand["info"])
                 break
 
-        return breakout_alerts
+    return breakout_alerts
 
 
 def check_feature_3_stop_loss(
@@ -901,6 +1040,7 @@ def check_feature_3_stop_loss(
     pos_store: PositionStore,
     layout_id: str = DEFAULT_TV_LAYOUT_ID,
     *,
+    retry_only: bool = False,
     candle_cache: Optional[Dict[str, dict]] = None,
     status: Optional[Dict[str, Any]] = None,
     current_bucket: Optional[int] = None,
@@ -908,14 +1048,22 @@ def check_feature_3_stop_loss(
     """
     Feature 3 (持仓破线无条件止损):
     在每个 15m K 线收盘后校验收盘价是否跌破趋势线支撑位；新匹配到的趋势线自动持久化。
+    所有网络 I/O（TV 画线、15m K线、Server酱 通知）均在 SQLite 写事务外执行。
     """
-    with pos_store.transaction():
-        open_positions = pos_store.get_open_positions()
-        if not open_positions:
-            return []
+    open_positions = [dict(p) for p in pos_store.get_open_positions()]
+    if not open_positions:
+        return []
 
-        drawings_map: dict[str, Any] = {}
-        if any(not p.get("trendline") for p in open_positions):
+    eligible = [p for p in open_positions if not p.get("stop_loss_notified", False)]
+    if retry_only:
+        eligible = [p for p in eligible if p.get("pending_stop_loss_candle") is not None]
+    if not eligible:
+        return []
+
+    drawings_map: dict[str, Any] = {}
+    candles_by_symbol: dict[str, dict[str, Any]] = {}
+    if not retry_only:
+        if any(p.get("pending_stop_loss_candle") is None and not p.get("trendline") for p in eligible):
             try:
                 drawings_map = fetch_layout_drawings(layout_id)
             except (BinanceAPIError, RuntimeError, TimeoutError, urllib.error.URLError) as e:
@@ -925,76 +1073,78 @@ def check_feature_3_stop_loss(
 
         symbols_to_fetch = [
             clean_symbol(pos["symbol"])
-            for pos in open_positions
-            if not pos.get("stop_loss_notified", False)
-            and pos.get("pending_stop_loss_candle") is None
+            for pos in eligible
+            if pos.get("pending_stop_loss_candle") is None
         ]
-        candles_by_symbol = _fetch_15m_candles_batch(
-            symbols_to_fetch,
-            candle_cache=candle_cache,
-            status=status,
-            current_bucket=current_bucket,
-            error_label="止损校验 15m K线",
-        )
+        if symbols_to_fetch:
+            candles_by_symbol = _fetch_15m_candles_batch(
+                symbols_to_fetch,
+                candle_cache=candle_cache,
+                status=status,
+                current_bucket=current_bucket,
+                error_label="止损校验 15m K线",
+            )
 
-        stop_loss_alerts: list[dict[str, Any]] = []
-        dirty = False
+    matched_trendlines: dict[str, dict[str, Any]] = {}
+    triggered_alerts: list[tuple[str, dict[str, Any], float, str, str]] = []
 
-        for pos in open_positions:
-            if pos.get("stop_loss_notified", False):
-                continue
+    for pos in eligible:
+        sym = pos["symbol"]
+        sym_clean = clean_symbol(sym)
+        candle = pos.get("pending_stop_loss_candle") or candles_by_symbol.get(sym_clean)
+        if candle is None:
+            continue
 
-            sym = pos["symbol"]
-            sym_clean = clean_symbol(sym)
-            candle = pos.get("pending_stop_loss_candle") or candles_by_symbol.get(sym_clean)
-            if candle is None:
-                continue
-
+        try:
             close_time = int(candle["close_time"])
-            candle_open_time = int(candle.get("open_time", close_time))
+            candle_open_time = int(candle["open_time"])
             close_price = float(candle["close"])
-            entry_price = float(pos["entry_price"])
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning(f"跳过 {sym} 缺失关键时间/收盘价字段的 15m K线: {e}")
+            if status is not None:
+                status["had_error"] = True
+            continue
 
-            line = pos.get("trendline")
-            if not line and drawings_map:
-                matched = drawings_map.get(sym_clean)
-                if matched:
-                    line = bpc.select_best_position_trendline(matched, current_time=candle_open_time)
-                    if line:
-                        pos["trendline"] = line
-                        dirty = True
+        entry_price = float(pos["entry_price"])
+        line = pos.get("trendline")
+        if not line and drawings_map:
+            matched = drawings_map.get(sym_clean)
+            if matched:
+                line = bpc.select_best_position_trendline(matched, current_time=candle_open_time)
+                if line:
+                    matched_trendlines[sym] = line
 
-            if not line:
-                continue
+        if not line:
+            continue
 
-            try:
-                p1_price = float(line["p1"])
-                p1_time = int(line["t1"])
-                p2_price = float(line["p2"])
-                p2_time = int(line["t2"])
-                support_price = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, candle_open_time)
-            except (KeyError, TypeError, ValueError) as e:
-                logger.warning(f"跳过 {sym} 无效止损趋势线: {e}")
-                continue
+        try:
+            p1_price = float(line["p1"])
+            p1_time = int(line["t1"])
+            p2_price = float(line["p2"])
+            p2_time = int(line["t2"])
+            support_price = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, candle_open_time)
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning(f"跳过 {sym} 无效止损趋势线: {e}")
+            continue
 
-            if support_price <= 0 or close_price >= support_price:
-                continue
+        if support_price <= 0 or close_price >= support_price:
+            continue
 
-            if entry_price <= 0:
-                logger.error(f"持仓 {sym} entry_price={entry_price} 非法，跳过破线止损计算")
-                continue
+        if entry_price <= 0:
+            logger.error(f"持仓 {sym} entry_price={entry_price} 非法，跳过破线止损计算")
+            continue
 
-            drop_pct = (support_price - close_price) / support_price * 100.0
-            pnl_pct = (close_price - entry_price) / entry_price * 100.0
-            tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym_clean}.P&interval=15"
+        drop_pct = (support_price - close_price) / support_price * 100.0
+        pnl_pct = (close_price - entry_price) / entry_price * 100.0
+        tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym_clean}.P&interval=15"
 
-            title = f"🚨 【破线止损预警】{sym} 15m 跌破趋势线，请立即平多止损！"
-            desp = f"""### 🚨 【破线无条件止损】纪律执行警报！
+        title = f"🚨 【破线止损预警】{sym} 15m 跌破趋势线，请立即平多止损！"
+        desp = f"""### 🚨 【破线无条件止损】纪律执行警报！
 
 - **持仓标的**: `{sym}`
-- **开仓价格**: `${entry_price:.4f}`
-- **15m 收盘价**: `${close_price:.4f}`
-- **趋势线基准**: `${support_price:.4f}`
+- **开仓价格**: `${format_alert_price(entry_price)}`
+- **15m 收盘价**: `${format_alert_price(close_price)}`
+- **趋势线基准**: `${format_alert_price(support_price)}`
 - **跌破幅度**: `-{drop_pct:.2f}%`
 - **持仓盈亏**: `{pnl_pct:+.2f}%`
 - **持仓数量**: `{pos.get('amount', 0)}`
@@ -1007,29 +1157,62 @@ def check_feature_3_stop_loss(
 
 👉 **[查看 TradingView 图表]({tv_link})**
 """
-            if not notifier.send_alert(title, desp):
-                if "pending_stop_loss_candle" not in pos:
-                    pos["pending_stop_loss_candle"] = candle
-                    dirty = True
-                continue
+        triggered_alerts.append((sym, candle, close_price, title, desp))
 
+    if matched_trendlines or triggered_alerts:
+        triggered_candles = {sym: candle for sym, candle, _, _, _ in triggered_alerts}
+        with pos_store.transaction():
+            dirty = False
+            for pos in pos_store.get_open_positions():
+                sym = pos["symbol"]
+                if sym in matched_trendlines and not pos.get("trendline"):
+                    pos["trendline"] = matched_trendlines[sym]
+                    dirty = True
+                if sym in triggered_candles and not pos.get("stop_loss_notified", False):
+                    if "pending_stop_loss_candle" not in pos:
+                        pos["pending_stop_loss_candle"] = triggered_candles[sym]
+                        dirty = True
+            if dirty:
+                pos_store.save()
+
+    succeeded: list[tuple[str, float]] = []
+    for sym, _candle, close_price, title, desp in triggered_alerts:
+        if notifier.send_alert(title, desp):
+            succeeded.append((sym, close_price))
+        else:
+            if status is not None:
+                status["had_error"] = True
+
+    if not succeeded:
+        return []
+
+    stop_loss_alerts: list[dict[str, Any]] = []
+    with pos_store.transaction():
+        dirty = False
+        for sym, close_price in succeeded:
+            pos = next(
+                (p for p in pos_store.get_open_positions() if p["symbol"] == sym),
+                None,
+            )
+            if pos is None:
+                continue
             pos.pop("pending_stop_loss_candle", None)
             pos["stop_loss_notified"] = True
             if pos.get("source") != "BINANCE_SYNC":
-                pos_store.close_position(
+                closed_pos = pos_store.close_position(
                     sym,
                     reason="STOP_LOSS_TRIGGERED",
                     exit_price=close_price,
                 )
-            pos_store.save()
-            dirty = False
-            stop_loss_alerts.append(pos)
+                stop_loss_alerts.append(closed_pos or pos)
+            else:
+                dirty = True
+                stop_loss_alerts.append(pos)
             logger.warning(f"🚨 标的 {sym} 跌破趋势线，已发送止损警报！")
-
         if dirty:
             pos_store.save()
 
-        return stop_loss_alerts
+    return stop_loss_alerts
 
 
 def check_feature_4_trailing_stops(
@@ -1042,28 +1225,34 @@ def check_feature_4_trailing_stops(
     """
     Feature 4 (持仓动态移动止盈保护):
     使用批量 ticker 接口获取缺失现价，持久化 highest_price/current_price/pnl_pct 状态变更。
+    所有网络 I/O（批量行情拉取、Server酱 通知）均在 SQLite 写事务外执行。
     """
+    initial_open = pos_store.get_open_positions()
+    if not initial_open:
+        return []
+
+    resolved_prices: dict[str, float] = dict(price_cache) if price_cache else {}
+    missing_syms = [
+        clean_symbol(p["symbol"])
+        for p in initial_open
+        if not resolved_prices.get(p["symbol"]) and not resolved_prices.get(clean_symbol(p["symbol"]))
+    ]
+    if missing_syms:
+        try:
+            fetched = fetch_ticker_prices(missing_syms)
+            resolved_prices.update(fetched)
+        except BinanceAPIError as e:
+            logger.warning(f"批量获取移动止盈实时价格失败: {e}")
+
+    activation_alerts: list[tuple[str, float, str, str]] = []
+    profit_lock_alerts: list[tuple[str, float, float, str, str]] = []
+
     with pos_store.transaction():
         open_positions = pos_store.get_open_positions()
         if not open_positions:
             return []
 
-        resolved_prices: dict[str, float] = dict(price_cache) if price_cache else {}
-        missing_syms = [
-            clean_symbol(p["symbol"])
-            for p in open_positions
-            if not resolved_prices.get(p["symbol"]) and not resolved_prices.get(clean_symbol(p["symbol"]))
-        ]
-        if missing_syms:
-            try:
-                fetched = fetch_ticker_prices(missing_syms)
-                resolved_prices.update(fetched)
-            except BinanceAPIError as e:
-                logger.warning(f"批量获取移动止盈实时价格失败: {e}")
-
-        events: list[dict[str, Any]] = []
         dirty = False
-
         for pos in open_positions:
             sym = pos["symbol"]
             sym_clean = clean_symbol(sym)
@@ -1078,8 +1267,9 @@ def check_feature_4_trailing_stops(
                 logger.error(f"持仓 {sym} entry_price={entry_price} 非法，跳过移动止盈计算")
                 continue
 
+            raw_highest = pos.get("highest_price")
+            prev_highest = float(raw_highest) if raw_highest is not None else entry_price
             if curr_price > 0:
-                prev_highest = float(pos.get("highest_price", entry_price))
                 highest_price = max(prev_highest, curr_price)
                 new_pnl_pct = round((curr_price - entry_price) / entry_price * 100.0, 2)
                 if (
@@ -1092,7 +1282,7 @@ def check_feature_4_trailing_stops(
                     pos["pnl_pct"] = new_pnl_pct
                     dirty = True
             else:
-                highest_price = float(pos.get("highest_price", entry_price))
+                highest_price = prev_highest
 
             target_activation_price = entry_price * (1.0 + activation_pct / 100.0)
             if not pos.get("trailing_stop_triggered", False) and curr_price >= target_activation_price:
@@ -1100,46 +1290,51 @@ def check_feature_4_trailing_stops(
                 pos["trailing_stop_price"] = round(entry_price * (1.0 + lock_pct / 100.0), 8)
                 pos["trailing_stop_activated_at"] = get_beijing_time_str()
                 pos["pending_trailing_activation_price"] = curr_price
-                pos_store.save()
-                dirty = False
+                dirty = True
 
             if "pending_trailing_activation_price" in pos:
+                raw_lock = pos.get("trailing_stop_price")
+                if raw_lock is None:
+                    logger.error(f"持仓 {sym} 已触发移动止盈但缺失 trailing_stop_price，跳过通知")
+                    continue
                 activation_price = float(pos["pending_trailing_activation_price"])
                 activation_gain = (activation_price - entry_price) / entry_price * 100.0
-                lock_price = float(pos["trailing_stop_price"])
+                lock_price = float(raw_lock)
                 title = f"🎯 【移动止盈锁定】{sym} 浮盈达 +{activation_gain:.1f}%，已启动 +{lock_pct:.0f}% 保本锁利！"
                 desp = f"""### 🎯 【动态移动止盈启动】移动锁利提醒
 
 - **持仓标的**: `{sym}`
-- **开仓价格**: `${entry_price:.4f}`
-- **激活时行情价**: `${activation_price:.4f}` (最高: `${highest_price:.4f}`)
+- **开仓价格**: `${format_alert_price(entry_price)}`
+- **激活时行情价**: `${format_alert_price(activation_price)}` (最高: `${format_alert_price(highest_price)}`)
 - **激活时涨幅**: `+{activation_gain:.2f}%` (已突破 +{activation_pct:.0f}% 门槛)
-- **移动止损新价**: `${lock_price:.4f}` (+{lock_pct:.1f}% 利润安全线)
+- **移动止损新价**: `${format_alert_price(lock_price)}` (+{lock_pct:.1f}% 利润安全线)
 - **触发时间**: {get_beijing_time_str()}
 
 ---
-> 系统已记录锁利预警线 `${lock_price:.4f}`。实时巡检发现价格触线时会发出离场通知。
+> 系统已记录锁利预警线 `${format_alert_price(lock_price)}`。实时巡检发现价格触线时会发出离场通知。
 """
-                if notifier.send_alert(title, desp):
-                    del pos["pending_trailing_activation_price"]
-                    pos_store.save()
-                    dirty = False
-                    events.append({"type": "TRAILING_ACTIVATED", "pos": pos})
-                    logger.info(f"🎯 {sym} 已发送移动止损激活通知: {lock_price}")
+                activation_alerts.append((sym, lock_price, title, desp))
 
             if pos.get("trailing_stop_triggered", False) and not pos.get("profit_lock_notified", False):
-                lock_price = float(pos["trailing_stop_price"])
+                raw_lock = pos.get("trailing_stop_price")
+                if raw_lock is None:
+                    logger.error(f"持仓 {sym} 已触发移动止盈但缺失 trailing_stop_price，跳过锁利离场检查")
+                    continue
+                lock_price = float(raw_lock)
                 if "pending_profit_lock_price" in pos or 0 < curr_price <= lock_price:
-                    trigger_price = float(pos.get("pending_profit_lock_price", curr_price))
+                    if "pending_profit_lock_price" not in pos:
+                        pos["pending_profit_lock_price"] = curr_price
+                        dirty = True
+                    trigger_price = float(pos["pending_profit_lock_price"])
                     trigger_pct = (trigger_price - entry_price) / entry_price * 100.0
 
                     title = f"🔔 【移动止盈离场】{sym} 触及移动止盈线，请平仓锁利离场！"
                     desp = f"""### 🔔 【移动止盈触发】建议市价平多落袋为安！
 
 - **持仓标的**: `{sym}`
-- **开仓价格**: `${entry_price:.4f}`
-- **触发行情价**: `${trigger_price:.4f}`
-- **锁利触发线**: `${lock_price:.4f}` (+{lock_pct:.1f}%)
+- **开仓价格**: `${format_alert_price(entry_price)}`
+- **触发行情价**: `${format_alert_price(trigger_price)}`
+- **锁利触发线**: `${format_alert_price(lock_price)}` (+{lock_pct:.1f}%)
 - **触发时浮动收益率**: `{trigger_pct:+.2f}%`
 - **触发时间**: {get_beijing_time_str()}
 
@@ -1147,30 +1342,59 @@ def check_feature_4_trailing_stops(
 > 💰 **操作指引**:
 > 行情出现回踩并触及移动保本线，请在币安确认当前仓位与可执行价格。
 """
-                    if not notifier.send_alert(title, desp):
-                        if "pending_profit_lock_price" not in pos:
-                            pos["pending_profit_lock_price"] = trigger_price
-                            pos_store.save()
-                            dirty = False
-                        continue
-
-                    pos.pop("pending_profit_lock_price", None)
-                    pos["profit_lock_notified"] = True
-                    if pos.get("source") != "BINANCE_SYNC":
-                        pos_store.close_position(
-                            sym,
-                            reason="PROFIT_LOCKED",
-                            exit_price=trigger_price,
-                        )
-                    pos_store.save()
-                    dirty = False
-                    events.append({"type": "PROFIT_LOCK_EXIT", "pos": pos})
-                    logger.info(f"🔔 {sym} 触及移动止盈线 {lock_price}，已通知平仓锁利离场！")
+                    profit_lock_alerts.append((sym, trigger_price, lock_price, title, desp))
 
         if dirty:
             pos_store.save()
 
-        return events
+    activated_syms: list[tuple[str, float]] = []
+    for sym, lock_price, title, desp in activation_alerts:
+        if notifier.send_alert(title, desp):
+            activated_syms.append((sym, lock_price))
+
+    exited_items: list[tuple[str, float, float]] = []
+    for sym, trigger_price, lock_price, title, desp in profit_lock_alerts:
+        if notifier.send_alert(title, desp):
+            exited_items.append((sym, trigger_price, lock_price))
+
+    if not activated_syms and not exited_items:
+        return []
+
+    events: list[dict[str, Any]] = []
+    with pos_store.transaction():
+        dirty = False
+        for sym, lock_price in activated_syms:
+            pos = next((p for p in pos_store.get_open_positions() if p["symbol"] == sym), None)
+            if pos is None:
+                continue
+            if "pending_trailing_activation_price" in pos:
+                del pos["pending_trailing_activation_price"]
+                dirty = True
+            events.append({"type": "TRAILING_ACTIVATED", "pos": dict(pos)})
+            logger.info(f"🎯 {sym} 已发送移动止损激活通知: {lock_price}")
+
+        for sym, trigger_price, lock_price in exited_items:
+            pos = next((p for p in pos_store.get_open_positions() if p["symbol"] == sym), None)
+            if pos is None:
+                continue
+            pos.pop("pending_profit_lock_price", None)
+            pos["profit_lock_notified"] = True
+            if pos.get("source") != "BINANCE_SYNC":
+                closed_pos = pos_store.close_position(
+                    sym,
+                    reason="PROFIT_LOCKED",
+                    exit_price=trigger_price,
+                )
+                events.append({"type": "PROFIT_LOCK_EXIT", "pos": closed_pos or pos})
+            else:
+                dirty = True
+                events.append({"type": "PROFIT_LOCK_EXIT", "pos": pos})
+            logger.info(f"🔔 {sym} 触及移动止盈线 {lock_price}，已通知平仓锁利离场！")
+
+        if dirty:
+            pos_store.save()
+
+    return events
 
 
 # ==============================================================================
@@ -1317,6 +1541,7 @@ class TradeAlertDaemon:
         layout_id = self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
 
         price_cache: Dict[str, float] = {}
+        positions_synced = False
         if self.binance_client.is_configured():
             try:
                 sync_res = bpc.sync_binance_positions(
@@ -1326,11 +1551,19 @@ class TradeAlertDaemon:
                     load_drawings=fetch_layout_drawings,
                 )
                 if sync_res.get("synced"):
+                    positions_synced = True
                     for p in sync_res.get("active_positions", []):
                         if p.get("mark_price"):
                             price_cache[p["symbol"]] = float(p["mark_price"])
             except (BinanceAPIError, HttpError, urllib.error.URLError, TimeoutError, OSError) as e:
                 logger.warning(f"后台自动同步币安持仓异常: {e}")
+
+        if not positions_synced:
+            self.pos_store.load()
+        has_pending_stop_loss = any(
+            p.get("status", "OPEN") == "OPEN" and "pending_stop_loss_candle" in p
+            for p in self.pos_store._open_positions
+        )
 
         current_bucket = int(now_ts // 900) * 900
         seconds_into_bucket = now_ts - current_bucket
@@ -1391,13 +1624,12 @@ class TradeAlertDaemon:
                     current_bucket=current_bucket,
                 ),
             )
-            if not f3_ran and any(
-                "pending_stop_loss_candle" in pos for pos in self.pos_store.get_open_positions()
-            ):
+            if not f3_ran and has_pending_stop_loss:
                 check_feature_3_stop_loss(
                     self.notifier,
                     self.pos_store,
                     layout_id,
+                    retry_only=True,
                     candle_cache=candle_cache,
                     current_bucket=current_bucket,
                 )
@@ -1413,11 +1645,12 @@ class TradeAlertDaemon:
                     layout_id,
                     retry_only=True,
                 )
-            if any("pending_stop_loss_candle" in pos for pos in self.pos_store.get_open_positions()):
+            if has_pending_stop_loss:
                 check_feature_3_stop_loss(
                     self.notifier,
                     self.pos_store,
                     layout_id,
+                    retry_only=True,
                     candle_cache=candle_cache,
                     current_bucket=current_bucket,
                 )
@@ -1485,12 +1718,18 @@ def format_positions_table(positions: List[dict]) -> str:
     lines = [header, divider]
     for p in positions:
         sym = p.get("symbol", "")
-        entry = f"{p.get('entry_price', 0):.4f}"
-        curr = f"{p.get('current_price', p.get('entry_price', 0)):.4f}"
-        highest = f"{p.get('highest_price', p.get('entry_price', 0)):.4f}"
+        entry_val = float(p.get("entry_price") or 0.0)
+        curr_raw = p.get("current_price")
+        curr_val = float(curr_raw) if curr_raw is not None else entry_val
+        high_raw = p.get("highest_price")
+        high_val = float(high_raw) if high_raw is not None else entry_val
+        entry = format_alert_price(entry_val)
+        curr = format_alert_price(curr_val)
+        highest = format_alert_price(high_val)
         curr_high = f"{curr} / {highest}"
-        pnl = f"{p.get('pnl_pct', 0):+.2f}%"
-        ts_price = f"{p.get('trailing_stop_price', 0):.4f}" if p.get("trailing_stop_price") else "--"
+        pnl = f"{float(p.get('pnl_pct') or 0.0):+.2f}%"
+        ts_raw = p.get("trailing_stop_price")
+        ts_price = format_alert_price(float(ts_raw)) if ts_raw else "--"
         status = p.get("status", "OPEN")
         entry_t = p.get("entry_time", "")
         lines.append(f"{sym:<12} | {entry:<10} | {curr_high:<18} | {pnl:<8} | {ts_price:<12} | {status:<14} | {entry_t}")
@@ -1575,11 +1814,13 @@ def main() -> None:
         if args.list_pos:
             store = PositionStore(db_path)
             open_pos = store.get_open_positions()
+            price_fetch_warning = ""
             if open_pos:
                 try:
                     prices = fetch_ticker_prices([clean_symbol(p["symbol"]) for p in open_pos])
                 except BinanceAPIError as e:
                     logger.warning(f"批量获取行情失败: {e}")
+                    price_fetch_warning = f"⚠️ 实时行情拉取失败 ({e})，以下价格与盈亏为本地缓存快照，仅供参考。"
                     prices = {}
                 for p in open_pos:
                     curr_p = prices.get(clean_symbol(p["symbol"]), 0.0)
@@ -1588,6 +1829,8 @@ def main() -> None:
                         p["current_price"] = curr_p
                         p["pnl_pct"] = round((curr_p - entry_val) / entry_val * 100.0, 2)
             print("\n========================= 当前有效开仓清单 =========================")
+            if price_fetch_warning:
+                print(price_fetch_warning)
             print(format_positions_table(open_pos))
             print("===================================================================\n")
             return

@@ -92,9 +92,16 @@
     } else if (mode === 'BINANCE_PARTIAL') {
       badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1.5';
       badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>币安部分数据可用</span>';
-    } else {
+    } else if (mode === 'BINANCE_SNAPSHOT_PENDING_INCOME') {
+      badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1.5';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>币安快照同步中</span>';
+    } else if (mode === 'OFFLINE_FALLBACK') {
       badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-slate-800 text-amber-300 border border-amber-500/20 flex items-center gap-1.5';
       badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>离线风控同步</span>';
+    } else {
+      badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center gap-1.5';
+      const label = mode ? ('接口状态异常 (' + mode + ')') : '接口状态缺失';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-rose-400" aria-hidden="true"></span><span>' + escapeHtml(label) + '</span>';
     }
   }
 
@@ -245,7 +252,7 @@
     if (shortWarn) {
       const hasUnmonitored = positions.some(p => {
         const side = String(p.side || '').toUpperCase();
-        return side === 'SHORT' || p.risk_monitored === false;
+        return side === 'SHORT' || p.risk_monitored !== true;
       });
       shortWarn.classList.toggle('hidden', !hasUnmonitored);
     }
@@ -261,8 +268,7 @@
       const safeSym = escapeHtml(sym);
       const side = String(p.side || 'UNKNOWN').toUpperCase();
       const safeSide = escapeHtml(side);
-      const isUnmonitored = p.risk_monitored === false || side === 'SHORT';
-      const riskMonitored = !isUnmonitored;
+      const riskMonitored = p.risk_monitored === true && side !== 'SHORT';
       const sideBadge = side === 'SHORT'
         ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">SHORT</span>'
         : (side === 'LONG'
@@ -281,14 +287,19 @@
 
       const tvUrl = getTvUrl(sym);
       const safeTlId = p.trendline_id ? escapeHtml(p.trendline_id) : '--';
+      const unknownMonitored = p.risk_monitored === undefined && side !== 'SHORT';
       const trailingHtml = riskMonitored
         ? (p.trailing_stop_triggered ? '<span class="text-emerald-400 font-semibold">已触发</span>' : '未触发')
-        : '<span class="text-amber-300/80">未纳入风控（仅多头）</span>';
+        : (unknownMonitored
+          ? '<span class="text-amber-300/80">风控状态缺失</span>'
+          : '<span class="text-amber-300/80">未纳入风控（仅多头）</span>');
       const slHtml = riskMonitored
         ? (p.stop_loss_notified ? '<span class="text-rose-300 font-semibold">已提醒</span>' : '监控中')
         : (side === 'SHORT'
           ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">未受风控监控（空单）</span>'
-          : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">未纳入风控监控</span>');
+          : (unknownMonitored
+            ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-300 border border-rose-500/30">风控状态未知</span>'
+            : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">未纳入风控监控</span>'));
 
       return (
         '<tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/60 font-mono text-xs">' +
@@ -751,11 +762,13 @@
   }
 
   function renderDashboard(accountData) {
-    if (!accountData) return;
+    if (!accountData || typeof accountData !== 'object' || !accountData.summary || typeof accountData.summary !== 'object' || !Array.isArray(accountData.active_positions)) {
+      throw new Error('Invalid /api/account payload');
+    }
     currentAccountData = accountData;
 
-    const summary = accountData.summary || {};
-    const positions = accountData.active_positions || [];
+    const summary = accountData.summary;
+    const positions = accountData.active_positions;
 
     setText('sync-time-text', accountData.generated_at || '--');
     updateApiStatusBadge(accountData, false);
@@ -848,8 +861,8 @@
       }
       if (etag) lastEtag = etag;
       if (snapshot !== latestSnapshot) {
-        if (report) report.hidden = false;
         renderDashboard(data);
+        if (report) report.hidden = false;
         latestSnapshot = snapshot;
       } else if (currentAccountData) {
         updateApiStatusBadge(currentAccountData, false);
