@@ -15,52 +15,33 @@ import json
 import logging
 import math
 import re
+import sys
 import threading
 import time
-from datetime import datetime
+import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
-import urllib.parse
 
-try:
-    from binance_client import (
-        BinanceAPIError,
-        fetch_bytes_with_retry,
-        fetch_json_with_retry,
-        fetch_klines,
-        get_closed_15m_candle,
-    )
-    from config import (
-        BEIJING_TZ,
-        DEFAULT_TV_LAYOUT_ID,
-        RUNS_DIR,
-        atomic_write_json,
-        clean_symbol,
-        file_lock,
-        get_beijing_time_str,
-    )
-except ImportError:
-    from scripts.binance_client import (
-        BinanceAPIError,
-        fetch_bytes_with_retry,
-        fetch_json_with_retry,
-        fetch_klines,
-        get_closed_15m_candle,
-    )
-    from scripts.config import (
-        BEIJING_TZ,
-        DEFAULT_TV_LAYOUT_ID,
-        RUNS_DIR,
-        atomic_write_json,
-        clean_symbol,
-        file_lock,
-        get_beijing_time_str,
-    )
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from binance_client import (  # noqa: E402
+    BinanceFuturesClient,
+    fetch_klines,
+    get_closed_15m_candle,
+)
+from config import (  # noqa: E402
+    DEFAULT_TV_LAYOUT_ID,
+    RUNS_DIR,
+    atomic_write_json,
+    clean_symbol,
+    file_lock,
+    get_beijing_time_str,
+)
+from http_client import HttpError, request_bytes, request_json  # noqa: E402
 
 logger = logging.getLogger("tv_engine")
-
-DEFAULT_LAYOUT_ID = DEFAULT_TV_LAYOUT_ID
-TZ_SHANGHAI = BEIJING_TZ
 
 TV_TOKEN_URLS = [
     "https://www.tradingview.com/chart-token/?image_url={layout_id}&user_id=-1",
@@ -76,6 +57,7 @@ USER_AGENT = (
 
 _TOKEN_LOCK = threading.Lock()
 _TOKEN_CACHE: dict[str, dict[str, Any]] = {}
+_SERVER_TIME_CLIENT = BinanceFuturesClient()
 
 _INTERVAL_SECONDS = {
     "m": 60,
@@ -85,6 +67,11 @@ _INTERVAL_SECONDS = {
 }
 
 
+def get_server_time_ms() -> int:
+    """Returns Binance server time in milliseconds using the shared offset-cached client."""
+    return _SERVER_TIME_CLIENT.get_server_time()
+
+
 def _extract_jwt_exp(token: str, fallback_exp: int) -> int:
     parts = token.split(".")
     if len(parts) != 3:
@@ -92,15 +79,28 @@ def _extract_jwt_exp(token: str, fallback_exp: int) -> int:
     try:
         padded = parts[1] + "=" * (-len(parts[1]) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-        exp = payload.get("exp")
+        exp = payload.get("exp") if isinstance(payload, dict) else None
         if isinstance(exp, (int, float)) and exp > 0:
             return int(exp)
-    except Exception:
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
         pass
     return fallback_exp
 
 
-def get_chart_token(layout_id: str = DEFAULT_LAYOUT_ID, force_refresh: bool = False) -> str:
+def _normalize_server_update_time(raw_val: object) -> Optional[int]:
+    """Normalize TradingView serverUpdateTime (seconds or ms) into integer epoch seconds."""
+    if not isinstance(raw_val, (int, float, str)) or isinstance(raw_val, bool):
+        return None
+    try:
+        val = float(raw_val)
+    except ValueError:
+        return None
+    if val <= 0:
+        return None
+    return int(val // 1000) if val > 1e11 else int(val)
+
+
+def get_chart_token(layout_id: str = DEFAULT_TV_LAYOUT_ID, force_refresh: bool = False) -> str:
     """Fetches and caches a TradingView chart JWT token for the given layout."""
     now = int(time.time())
     with _TOKEN_LOCK:
@@ -112,11 +112,11 @@ def get_chart_token(layout_id: str = DEFAULT_LAYOUT_ID, force_refresh: bool = Fa
     for tmpl in TV_TOKEN_URLS:
         url = tmpl.format(layout_id=layout_id)
         try:
-            data = fetch_json_with_retry(
+            data = request_json(
                 url,
                 headers={"User-Agent": USER_AGENT},
-                timeout=10,
-                max_retries=2,
+                timeout=10.0,
+                max_retries=1,
             )
             token = data.get("token") if isinstance(data, dict) else None
             if token:
@@ -126,23 +126,27 @@ def get_chart_token(layout_id: str = DEFAULT_LAYOUT_ID, force_refresh: bool = Fa
                 logger.info("Successfully fetched JWT chart token for layout %s", layout_id)
                 return str(token)
             errors.append(f"{url}: empty token")
-        except Exception as e:
+        except HttpError as e:
             errors.append(f"{url}: {e}")
             logger.warning("Failed to fetch token from %s: %s", url, e)
 
     raise RuntimeError(f"Unable to obtain chart token for TradingView layout {layout_id}: {'; '.join(errors)}")
 
 
-def get_layout_chart_ids(layout_id: str = DEFAULT_LAYOUT_ID) -> list[str]:
+def get_layout_chart_ids(layout_id: str = DEFAULT_TV_LAYOUT_ID) -> list[str]:
     """Parses TradingView layout HTML to extract chart IDs associated with the layout."""
     chart_ids = ["_shared"]
     url = TV_LAYOUT_PAGE_URL.format(layout_id=layout_id)
-    raw = fetch_bytes_with_retry(
-        url,
-        headers={"User-Agent": USER_AGENT},
-        timeout=12,
-        max_retries=2,
-    )
+    try:
+        raw = request_bytes(
+            url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=12.0,
+            max_retries=1,
+        )
+    except HttpError as e:
+        raise RuntimeError(f"Failed to fetch TradingView layout page {layout_id}: {e}") from e
+
     html = raw.decode("utf-8", errors="ignore")
     match = re.search(r"initData\.content\s*=\s*(\{.*?\});\s*initData\.", html, re.S)
     if not match:
@@ -162,11 +166,11 @@ def get_layout_chart_ids(layout_id: str = DEFAULT_LAYOUT_ID) -> list[str]:
 def _fetch_chart_sources(layout_id: str, chart_id: str, token: str) -> dict[str, Any]:
     query = urllib.parse.urlencode({"chart_id": chart_id, "jwt": token})
     url = f"{TV_SOURCES_URL.format(layout_id=layout_id)}?{query}"
-    data = fetch_json_with_retry(
+    data = request_json(
         url,
         headers={"User-Agent": USER_AGENT},
-        timeout=15,
-        max_retries=3,
+        timeout=15.0,
+        max_retries=2,
     )
     if not isinstance(data, dict):
         raise RuntimeError(f"Unexpected sources payload for chart_id '{chart_id}': {type(data).__name__}")
@@ -180,14 +184,13 @@ def _fetch_chart_sources(layout_id: str, chart_id: str, token: str) -> dict[str,
 
 
 def get_layout_drawings(
-    layout_id: str = DEFAULT_LAYOUT_ID,
+    layout_id: str = DEFAULT_TV_LAYOUT_ID,
     force_refresh: bool = False,
     save_cache: bool = True,
-    tool_types: tuple[str, ...] = ("LineToolTrendLine",),
 ) -> dict[str, list[dict[str, Any]]]:
     """
-    Fetches user drawings from TradingView cloud storage and normalizes them into
-    canonical flat dicts indexed strictly by normalized symbol (e.g. 'YBUSDT').
+    Fetches LineToolTrendLine drawings from TradingView cloud storage and normalizes
+    them into canonical flat dicts indexed strictly by normalized symbol (e.g. 'YBUSDT').
     Fails closed if fetching any chart source fails (never overwrites cache with partial/empty data).
     """
     cache_path = RUNS_DIR / f"tradingview_drawings_{layout_id}.json"
@@ -200,11 +203,16 @@ def get_layout_drawings(
     for chart_id in chart_ids:
         try:
             sources = _fetch_chart_sources(layout_id, chart_id, token)
-        except BinanceAPIError as e:
-            if e.code in (401, 403) and not retried_token:
+        except HttpError as e:
+            if e.status_code in (401, 403) and not retried_token:
                 retried_token = True
                 token = get_chart_token(layout_id=layout_id, force_refresh=True)
-                sources = _fetch_chart_sources(layout_id, chart_id, token)
+                try:
+                    sources = _fetch_chart_sources(layout_id, chart_id, token)
+                except HttpError as retry_err:
+                    raise RuntimeError(
+                        f"Failed to fetch sources for chart_id '{chart_id}': {retry_err}"
+                    ) from retry_err
             else:
                 raise RuntimeError(f"Failed to fetch sources for chart_id '{chart_id}': {e}") from e
 
@@ -221,7 +229,7 @@ def get_layout_drawings(
             continue
 
         tool_type = state_obj.get("type")
-        if tool_types and tool_type not in tool_types:
+        if tool_type != "LineToolTrendLine":
             continue
 
         inner_state = state_obj.get("state") if isinstance(state_obj.get("state"), dict) else {}
@@ -235,6 +243,8 @@ def get_layout_drawings(
             continue
 
         pt1, pt2 = points[0], points[1]
+        if not isinstance(pt1, dict) or not isinstance(pt2, dict):
+            continue
         t1, p1 = pt1.get("time_t"), pt1.get("price")
         t2, p2 = pt2.get("time_t"), pt2.get("price")
         if t1 is None or p1 is None or t2 is None or p2 is None:
@@ -253,9 +263,11 @@ def get_layout_drawings(
         line_iv = (
             inner_state.get("interval")
             or state_obj.get("interval")
-            or (pt1.get("interval") if isinstance(pt1, dict) else None)
+            or pt1.get("interval")
             or ""
         )
+        raw_linewidth = inner_state.get("linewidth")
+        line_width = int(raw_linewidth) if raw_linewidth is not None else 1
 
         drawing_meta: dict[str, Any] = {
             "id": sid,
@@ -269,10 +281,10 @@ def get_layout_drawings(
             "t2": t2_int,
             "dt1_str": dt1_str,
             "dt2_str": dt2_str,
-            "server_update_time": sdata.get("serverUpdateTime"),
+            "server_update_time": _normalize_server_update_time(sdata.get("serverUpdateTime")),
             "extend_right": bool(inner_state.get("extendRight", True)),
             "line_color": str(inner_state.get("linecolor", "")),
-            "line_width": int(inner_state.get("linewidth", 1)),
+            "line_width": line_width,
         }
         symbol_to_trendlines.setdefault(norm_sym, []).append(drawing_meta)
 
@@ -299,7 +311,7 @@ def is_valid_15m_trendline(
     """
     Validates canonical trendline dict:
     1. Interval MUST explicitly be '15' or '15M'.
-    2. Recency (server_update_time or t2) MUST exist and be within max_age_hours (default 72h).
+    2. Recency (server_update_time in seconds or t2) MUST exist and be within max_age_hours (default 72h).
     """
     if not isinstance(line, dict):
         return False
@@ -315,8 +327,7 @@ def is_valid_15m_trendline(
     s_time = line.get("server_update_time")
     if s_time is not None:
         try:
-            val = float(s_time)
-            recency_sec = val / 1000.0 if val > 1e11 else val
+            recency_sec = float(s_time)
         except (TypeError, ValueError):
             recency_sec = None
 
@@ -329,6 +340,8 @@ def is_valid_15m_trendline(
                 recency_sec = None
 
     if recency_sec is None or recency_sec <= 0:
+        return False
+    if recency_sec > now_ts + 86400 * 30:
         return False
     return (now_ts - recency_sec) <= max_age_sec
 
@@ -391,6 +404,7 @@ def fetch_candle_at_time(
     clean_sym = clean_symbol(symbol)
     iv_ms = _interval_to_ms(interval)
     target_ms = int(target_time_s * 1000)
+    server_time_ms = get_server_time_ms()
     klines = fetch_klines(
         clean_sym,
         interval=interval,
@@ -417,7 +431,7 @@ def fetch_candle_at_time(
                 "close": float(c[4]),
                 "volume": float(c[5]),
                 "candle_time": get_beijing_time_str(open_sec)[:16],
-                "is_closed": True,
+                "is_closed": c_ms <= server_time_ms,
             }
 
     raise ValueError(f"No candlestick found covering timestamp {target_time_s} for {clean_sym} ({interval})")
@@ -461,16 +475,17 @@ def check_symbol_breakout(
         close_price = float(candle["close"])
         candle_ts = int(candle["open_time"])
         prev_close = float(p_candle["close"])
-        prev_t = int(p_candle["open_time"])
+        if target_time is not None:
+            eval_t = int(target_time)
+            prev_t = int(p_candle["close_time"]) if at_close else int(p_candle["open_time"])
+        elif at_close:
+            eval_t = int(candle["close_time"])
+            prev_t = int(p_candle["close_time"])
+        else:
+            eval_t = candle_ts
+            prev_t = int(p_candle["open_time"])
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError(f"Invalid canonical candle/prev_candle payload for {clean_sym}") from e
-
-    if target_time is not None:
-        eval_t = int(target_time)
-    elif at_close:
-        eval_t = int(candle["close_time"])
-    else:
-        eval_t = candle_ts
 
     candle_time_str = str(candle.get("candle_time") or get_beijing_time_str(candle_ts)[:16])
 

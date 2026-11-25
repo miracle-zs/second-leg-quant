@@ -1,26 +1,25 @@
 (function() {
+  const Common = window.SecondLegCommon;
+  const {
+    escapeHtml,
+    isFiniteNum: isFiniteNumber,
+    formatCryptoPrice: commonFormatCryptoPrice,
+    formatSignedPct,
+    getTvUrl,
+    fetchJsonWithTimeout,
+  } = Common;
+
   const chartInstances = {};
   const HISTORY_SORT = { column: 'closed_ts', asc: false };
   let currentAccountData = null;
   let latestSnapshot = '';
   let lastEtag = null;
   let refreshInFlight = false;
-
-  function isFiniteNumber(val) {
-    if (val === null || val === undefined || val === '') return false;
-    const num = Number(val);
-    return Number.isFinite(num);
-  }
-
-  function escapeHtml(val) {
-    if (val === null || val === undefined) return '';
-    return String(val)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
+  let historySearchTimer = null;
+  let cachedEqGradient = null;
+  let cachedEqGradientTop = null;
+  let cachedEqGradientHeight = null;
+  let cachedEqGradientCtx = null;
 
   function formatMoney(val, options) {
     const opts = options || {};
@@ -37,23 +36,15 @@
   }
 
   function formatPct(val, options) {
-    const opts = options || {};
-    if (!isFiniteNumber(val)) return '--';
-    const num = Number(val);
-    const decimals = opts.decimals !== undefined ? opts.decimals : 2;
-    const signed = opts.signed !== undefined ? opts.signed : true;
-    return (signed && num > 0 ? '+' : '') + num.toFixed(decimals) + '%';
+    return formatSignedPct(val, options || {});
   }
 
   function formatCryptoPrice(val) {
-    if (!isFiniteNumber(val) || Number(val) <= 0) return '--';
-    const num = Number(val);
-    if (num >= 100) {
-      return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-    if (num >= 1) return num.toFixed(4);
-    if (num >= 0.0001) return num.toFixed(6);
-    return num.toFixed(8);
+    return commonFormatCryptoPrice(val, {
+      positiveOnly: true,
+      useGrouping: true,
+      dec4Threshold: 1,
+    });
   }
 
   function formatDollarPrice(val) {
@@ -94,8 +85,8 @@
       return;
     }
 
-    const mode = (accountData && accountData.api_status && accountData.api_status.mode) || (accountData && accountData.data_source) || '';
-    if (mode === 'BINANCE_REALTIME' || mode === 'BINANCE_API') {
+    const mode = (accountData && accountData.api_status && accountData.api_status.mode) || '';
+    if (mode === 'BINANCE_REALTIME') {
       badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1.5';
       badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span><span>币安实盘在线</span>';
     } else if (mode === 'BINANCE_PARTIAL') {
@@ -143,16 +134,25 @@
     setText('kpi-open-trades', openCount + ' 笔在途');
 
     setText('kpi-win-rate', formatPct(summary.win_rate_pct, { signed: false, decimals: 1 }));
-    const winCount = isFiniteNumber(summary.win_count) ? Number(summary.win_count) : 0;
-    const lossCount = isFiniteNumber(summary.loss_count) ? Number(summary.loss_count) : 0;
-    const beCount = isFiniteNumber(summary.breakeven_count) ? Number(summary.breakeven_count) : 0;
-    setText('kpi-wl-record', winCount + 'W / ' + lossCount + 'L / ' + beCount + 'BE');
+    const winCount = isFiniteNumber(summary.win_count) ? Number(summary.win_count) : null;
+    const lossCount = isFiniteNumber(summary.loss_count) ? Number(summary.loss_count) : null;
+    const beCount = isFiniteNumber(summary.breakeven_count) ? Number(summary.breakeven_count) : null;
+    if (winCount === null && lossCount === null && beCount === null) {
+      setText('kpi-wl-record', '--');
+    } else {
+      setText(
+        'kpi-wl-record',
+        (winCount !== null ? winCount + 'W' : '--') + ' / ' +
+        (lossCount !== null ? lossCount + 'L' : '--') + ' / ' +
+        (beCount !== null ? beCount + 'BE' : '--')
+      );
+    }
     setText('kpi-total-trades', isFiniteNumber(summary.closed_trades) ? Number(summary.closed_trades) + ' 笔' : '--');
 
     let pfText = '--';
     if (isFiniteNumber(summary.profit_factor)) {
       pfText = Number(summary.profit_factor).toFixed(2);
-    } else if (winCount > 0 && lossCount === 0) {
+    } else if (winCount !== null && lossCount !== null && winCount > 0 && lossCount === 0) {
       pfText = '∞ (全胜)';
     }
     setText('kpi-profit-factor', pfText);
@@ -201,7 +201,7 @@
     if (sortinoRating) {
       sortinoRating.classList.remove('text-purple-300', 'text-sky-400', 'text-amber-300', 'text-rose-400', 'text-slate-400', 'text-slate-300', 'text-emerald-400');
       if (!isFiniteNumber(summary.sortino_ratio)) {
-        if (winCount > 0 && lossCount === 0) {
+        if (winCount !== null && lossCount !== null && winCount > 0 && lossCount === 0) {
           sortinoRating.textContent = '零下行波动';
           sortinoRating.classList.add('text-emerald-400');
         } else {
@@ -261,12 +261,13 @@
       const safeSym = escapeHtml(sym);
       const side = String(p.side || 'UNKNOWN').toUpperCase();
       const safeSide = escapeHtml(side);
-      const riskMonitored = Boolean(p.risk_monitored);
+      const isUnmonitored = p.risk_monitored === false || side === 'SHORT';
+      const riskMonitored = !isUnmonitored;
       const sideBadge = side === 'SHORT'
-        ? '<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">SHORT</span>'
+        ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">SHORT</span>'
         : (side === 'LONG'
-          ? '<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">LONG</span>'
-          : '<span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-slate-800 text-slate-300 border border-slate-700">' + safeSide + '</span>');
+          ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">LONG</span>'
+          : '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-800 text-slate-300 border border-slate-700">' + safeSide + '</span>');
 
       const pnlVal = isFiniteNumber(p.unrealized_pnl) ? Number(p.unrealized_pnl) : null;
       const roeVal = isFiniteNumber(p.roe_pct) ? Number(p.roe_pct) : null;
@@ -278,14 +279,16 @@
       const notionalStr = formatMoney(p.notional);
       const amtStr = isFiniteNumber(p.amount) ? (Number(p.amount).toLocaleString('en-US') + ' 币') : '--';
 
-      const tvUrl = 'https://www.tradingview.com/chart/ig0LuDL8/?symbol=' + encodeURIComponent('BINANCE:' + sym + '.P');
+      const tvUrl = getTvUrl(sym);
       const safeTlId = p.trendline_id ? escapeHtml(p.trendline_id) : '--';
       const trailingHtml = riskMonitored
         ? (p.trailing_stop_triggered ? '<span class="text-emerald-400 font-semibold">已触发</span>' : '未触发')
         : '<span class="text-amber-300/80">未纳入风控（仅多头）</span>';
       const slHtml = riskMonitored
         ? (p.stop_loss_notified ? '<span class="text-rose-300 font-semibold">已提醒</span>' : '监控中')
-        : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">未受风控监控（空单）</span>';
+        : (side === 'SHORT'
+          ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">未受风控监控（空单）</span>'
+          : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">未纳入风控监控</span>');
 
       return (
         '<tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/60 font-mono text-xs">' +
@@ -371,14 +374,18 @@
   }
 
   function renderCloseReasonBadge(reason) {
-    const safeReason = escapeHtml(reason || '平仓');
-    if (reason.includes('保本') || reason.includes('锁利')) {
+    if (reason === null || reason === undefined || String(reason).trim() === '') {
+      return '<span class="text-slate-500">--</span>';
+    }
+    const text = String(reason);
+    const safeReason = escapeHtml(text);
+    if (text.includes('保本') || text.includes('锁利')) {
       return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">' + safeReason + '</span>';
     }
-    if (reason.includes('止损') || reason.includes('跌破')) {
+    if (text.includes('止损') || text.includes('跌破')) {
       return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">' + safeReason + '</span>';
     }
-    if (reason.includes('实盘') || reason.includes('BINANCE')) {
+    if (text.includes('实盘') || text.includes('BINANCE')) {
       return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">' + safeReason + '</span>';
     }
     return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">' + safeReason + '</span>';
@@ -415,7 +422,7 @@
       const cTime = escapeHtml(h.closed_at || '--');
       const eTime = escapeHtml(h.entry_time || '--');
       const dur = escapeHtml(h.duration_str || '--');
-      const tvUrl = 'https://www.tradingview.com/chart/ig0LuDL8/?symbol=' + encodeURIComponent('BINANCE:' + sym + '.P');
+      const tvUrl = getTvUrl(sym);
 
       const entryStr = isFiniteNumber(h.entry_price) && Number(h.entry_price) > 0 ? ('$' + formatCryptoPrice(h.entry_price)) : '--';
       const exitStr = isFiniteNumber(h.exit_price) && Number(h.exit_price) > 0 ? ('$' + formatCryptoPrice(h.exit_price)) : '--';
@@ -433,7 +440,7 @@
               '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" class="text-sky-400 hover:underline flex items-center gap-0.5">' +
                 '<span>' + safeSym + '</span><span class="text-[9px] text-slate-500">↗</span>' +
               '</a>' +
-              '<span class="px-1.5 py-0.2 rounded text-[9px] font-bold border ' + sideCls + '">' + escapeHtml(side) + '</span>' +
+              '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold border ' + sideCls + '">' + escapeHtml(side) + '</span>' +
             '</div>' +
           '</td>' +
           '<td class="px-3 py-2.5 tabular-nums text-slate-300"><div>' + escapeHtml(notionalStr) + '</div><div class="text-[10px] text-slate-500">' + escapeHtml(amtStr) + '</div></td>' +
@@ -442,7 +449,7 @@
           '<td class="px-3 py-2.5 tabular-nums font-bold ' + pnlCls + '"><div>' + escapeHtml(formatMoney(pnlVal, { signed: true })) + '</div></td>' +
           '<td class="px-3 py-2.5 tabular-nums font-bold ' + pnlCls + '"><div>' + escapeHtml(pctText) + '</div></td>' +
           '<td class="px-3 py-2.5 text-slate-300">' + dur + '</td>' +
-          '<td class="px-3 py-2.5">' + renderCloseReasonBadge(String(h.close_reason || '平仓')) + '</td>' +
+          '<td class="px-3 py-2.5">' + renderCloseReasonBadge(h.close_reason) + '</td>' +
           '<td class="px-3 py-2.5 text-slate-400">' + escapeHtml(h.trendline_label || '--') + '</td>' +
         '</tr>'
       );
@@ -453,6 +460,9 @@
     if (!canvas || typeof Chart === 'undefined') return;
     if (chartInstances[key]) {
       chartInstances[key].data = config.data;
+      if (config.options) {
+        chartInstances[key].options = config.options;
+      }
       chartInstances[key].update('none');
       return;
     }
@@ -486,10 +496,22 @@
 
     setText('daily-days-badge', dailyPnl.length + ' 天');
 
-    const winCount = isFiniteNumber(summary.win_count) ? Number(summary.win_count) : 0;
-    const lossCount = isFiniteNumber(summary.loss_count) ? Number(summary.loss_count) : 0;
-    const beCount = isFiniteNumber(summary.breakeven_count) ? Number(summary.breakeven_count) : 0;
-    setText('win-loss-summary-badge', winCount + '胜 / ' + lossCount + '负 / ' + beCount + '平');
+    const hasWin = isFiniteNumber(summary.win_count);
+    const hasLoss = isFiniteNumber(summary.loss_count);
+    const hasBe = isFiniteNumber(summary.breakeven_count);
+    if (!hasWin && !hasLoss && !hasBe) {
+      setText('win-loss-summary-badge', '--');
+    } else {
+      setText(
+        'win-loss-summary-badge',
+        (hasWin ? Number(summary.win_count) + '胜' : '--') + ' / ' +
+        (hasLoss ? Number(summary.loss_count) + '负' : '--') + ' / ' +
+        (hasBe ? Number(summary.breakeven_count) + '平' : '--')
+      );
+    }
+    const winCount = hasWin ? Number(summary.win_count) : 0;
+    const lossCount = hasLoss ? Number(summary.loss_count) : 0;
+    const beCount = hasBe ? Number(summary.breakeven_count) : 0;
 
     const totalBinned = bins.reduce((sum, b) => sum + (isFiniteNumber(b.count) ? Number(b.count) : 0), 0);
     setText('dist-summary-badge', totalBinned + ' 笔样本');
@@ -525,10 +547,22 @@
           const ctx = chart.ctx;
           const chartArea = chart.chartArea;
           if (!chartArea) return null;
-          const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-          g.addColorStop(0, 'rgba(56, 189, 248, 0.25)');
-          g.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
-          return g;
+          const height = chartArea.bottom - chartArea.top;
+          if (
+            !cachedEqGradient ||
+            cachedEqGradientCtx !== ctx ||
+            cachedEqGradientTop !== chartArea.top ||
+            cachedEqGradientHeight !== height
+          ) {
+            cachedEqGradientCtx = ctx;
+            cachedEqGradientTop = chartArea.top;
+            cachedEqGradientHeight = height;
+            const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+            g.addColorStop(0, 'rgba(56, 189, 248, 0.25)');
+            g.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+            cachedEqGradient = g;
+          }
+          return cachedEqGradient;
         },
         fill: true,
         tension: 0.25,
@@ -736,7 +770,13 @@
     const searchInput = document.getElementById('history-search-input');
     if (searchInput && !searchInput.dataset.bound) {
       searchInput.dataset.bound = 'true';
-      searchInput.addEventListener('input', renderHistoryTable);
+      searchInput.addEventListener('input', function() {
+        if (historySearchTimer) clearTimeout(historySearchTimer);
+        historySearchTimer = setTimeout(() => {
+          historySearchTimer = null;
+          renderHistoryTable();
+        }, 120);
+      });
     }
 
     const outcomeSelect = document.getElementById('history-outcome-filter');
@@ -749,6 +789,10 @@
     if (resetBtn && !resetBtn.dataset.bound) {
       resetBtn.dataset.bound = 'true';
       resetBtn.addEventListener('click', function() {
+        if (historySearchTimer) {
+          clearTimeout(historySearchTimer);
+          historySearchTimer = null;
+        }
         if (searchInput) searchInput.value = '';
         if (outcomeSelect) outcomeSelect.value = '';
         renderHistoryTable();
@@ -792,18 +836,18 @@
     try {
       const headers = {};
       if (lastEtag) headers['If-None-Match'] = lastEtag;
-      const response = await fetch('api/account', { cache: 'no-store', headers });
-      if (response.status === 304) {
+      const { notModified, etag, data, text: snapshot } = await fetchJsonWithTimeout(
+        'api/account',
+        { cache: 'no-store', headers },
+        12000
+      );
+      if (notModified) {
         if (currentAccountData) updateApiStatusBadge(currentAccountData, false);
         if (status) status.hidden = true;
         return;
       }
-      if (!response.ok) throw new Error('HTTP ' + response.status);
-      const etag = response.headers.get('ETag');
       if (etag) lastEtag = etag;
-      const snapshot = await response.text();
       if (snapshot !== latestSnapshot) {
-        const data = JSON.parse(snapshot);
         if (report) report.hidden = false;
         renderDashboard(data);
         latestSnapshot = snapshot;

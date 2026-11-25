@@ -4,9 +4,9 @@
 统一币安 USDⓈ-M 合约 HTTP 与签名客户端 (Unified Binance Futures Client)
 ==============================================================================
 核心特性:
-1. 线程安全 10 分钟时间偏移缓存 (server_time - local_time)，避免每次请求重复拉取 /fapi/v1/time；
-   遇到 -1021 时间戳漂移错误时自动重校准并重试一次。
-2. 统一指数退避重试，仅对 429/5xx/URLError/TimeoutError 重试，400/401/403/404 快速失败。
+1. 复用 scripts/http_client.py 的线程安全 Keep-Alive 连接池与指数退避重试。
+2. 线程安全 10 分钟时间偏移缓存 (server_time - local_time)，不持锁阻塞网络 IO；
+   遇到 -1021 时间戳漂移错误时自动重校准并重试一次（不重置重试计数）。
 3. 提供公共行情接口（批量价格、K 线、最新已收盘 15m K 线）与签名私有接口（账户、持仓、流水、成交），
    接口异常或缺失必填字段时显式抛出 BinanceAPIError，不做静默兜底。
 """
@@ -15,22 +15,22 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import http.client
 import json
 import logging
-import os
+import sys
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
-try:
-    from config import DEFAULT_ENV_PATH, clean_symbol, get_beijing_time_str, load_dotenv
-except ImportError:
-    from scripts.config import DEFAULT_ENV_PATH, clean_symbol, get_beijing_time_str, load_dotenv
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from config import DEFAULT_ENV_PATH, clean_symbol, get_beijing_time_str, get_env_setting  # noqa: E402
+import http_client  # noqa: E402
+from http_client import HttpError  # noqa: E402
 
 logger = logging.getLogger("binance_client")
 
@@ -39,29 +39,61 @@ POSITION_RISK_ENDPOINT = "/fapi/v2/positionRisk"
 SERVER_TIME_ENDPOINT = "/fapi/v1/time"
 TIME_SYNC_TTL_SEC = 600.0
 RETRYABLE_HTTP_CODES = frozenset({429, 500, 502, 503, 504})
-DEFAULT_USER_AGENT = "TradeAlertDaemon/1.0"
+DEFAULT_USER_AGENT = "second-leg-quant/3.5"
 
 
 class BinanceAPIError(RuntimeError):
     """币安接口请求、HTTP 状态码、鉴权或数据格式异常。"""
 
-    def __init__(self, message: str, *, code: Any = None, endpoint: str = ""):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Any = None,
+        endpoint: str = "",
+        status_code: Optional[int] = None,
+        binance_code: Optional[int] = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.msg = message
         self.endpoint = endpoint
+        self.status_code = status_code
+        self.binance_code = binance_code
 
 
-def _retry_delay(attempt: int, backoff: float, err: Optional[urllib.error.HTTPError] = None) -> float:
-    delay = backoff * (2 ** attempt)
-    if err is not None and err.code == 429 and err.headers:
-        retry_after = err.headers.get("Retry-After")
-        if retry_after is not None:
-            try:
-                delay = max(delay, min(float(retry_after), 10.0))
-            except ValueError:
-                pass
-    return delay
+def _parse_binance_error_payload(body: str) -> tuple[Optional[int], str]:
+    """Parse Binance JSON error payload `{"code": int, "msg": str}` when available."""
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return None, ""
+    if not isinstance(parsed, dict) or parsed.get("code") is None:
+        return None, ""
+    try:
+        return int(parsed["code"]), str(parsed.get("msg") or "")
+    except (TypeError, ValueError):
+        return None, ""
+
+
+def _http_error_to_binance_error(err: HttpError, *, endpoint: str = "") -> BinanceAPIError:
+    target = endpoint or err.url
+    if err.status_code is not None:
+        b_code, b_msg = _parse_binance_error_payload(err.body)
+        if b_code is not None:
+            message = f"HTTP {err.status_code} from {target} [{b_code}]: {b_msg}"
+        else:
+            message = f"HTTP {err.status_code} from {target}: {err.body}"
+        return BinanceAPIError(
+            message,
+            code=err.status_code,
+            endpoint=target,
+            status_code=err.status_code,
+            binance_code=b_code,
+        )
+    err_str = str(err)
+    code = "INVALID_JSON" if err_str.startswith("Invalid JSON") else "NETWORK_ERROR"
+    return BinanceAPIError(err_str, code=code, endpoint=target)
 
 
 def fetch_bytes_with_retry(
@@ -76,39 +108,18 @@ def fetch_bytes_with_retry(
     req_headers = {"User-Agent": DEFAULT_USER_AGENT}
     if headers:
         req_headers.update(headers)
-    req = urllib.request.Request(url, headers=req_headers)
-    last_err: Optional[Exception] = None
-    last_code: Any = None
-
-    for attempt in range(max_retries):
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return resp.read()
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
-            last_err = e
-            last_code = e.code
-            if e.code not in RETRYABLE_HTTP_CODES:
-                raise BinanceAPIError(
-                    f"HTTP {e.code} from {url}: {err_body}",
-                    code=e.code,
-                    endpoint=url,
-                ) from e
-            if attempt == max_retries - 1:
-                break
-            time.sleep(_retry_delay(attempt, backoff, e))
-        except (urllib.error.URLError, TimeoutError, http.client.HTTPException) as e:
-            last_err = e
-            last_code = "NETWORK_ERROR"
-            if attempt == max_retries - 1:
-                break
-            time.sleep(_retry_delay(attempt, backoff))
-
-    raise BinanceAPIError(
-        f"Request failed after {max_retries} attempts ({url}): {last_err}",
-        code=last_code,
-        endpoint=url,
-    ) from last_err
+    try:
+        return http_client.request_bytes(
+            url,
+            method="GET",
+            headers=req_headers,
+            timeout=float(timeout),
+            max_retries=max(0, max_retries - 1),
+            backoff_base=backoff,
+            retry_statuses=tuple(RETRYABLE_HTTP_CODES),
+        )
+    except HttpError as e:
+        raise _http_error_to_binance_error(e, endpoint=url) from e
 
 
 def fetch_json_with_retry(
@@ -120,17 +131,21 @@ def fetch_json_with_retry(
     backoff: float = 0.8,
 ) -> Any:
     """带指数退避重试的通用 HTTP GET JSON 请求。"""
-    raw = fetch_bytes_with_retry(
-        url,
-        headers=headers,
-        timeout=timeout,
-        max_retries=max_retries,
-        backoff=backoff,
-    )
+    req_headers = {"User-Agent": DEFAULT_USER_AGENT}
+    if headers:
+        req_headers.update(headers)
     try:
-        return json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as e:
-        raise BinanceAPIError(f"Invalid JSON from {url}: {e}", code="INVALID_JSON", endpoint=url) from e
+        return http_client.request_json(
+            url,
+            method="GET",
+            headers=req_headers,
+            timeout=float(timeout),
+            max_retries=max(0, max_retries - 1),
+            backoff_base=backoff,
+            retry_statuses=tuple(RETRYABLE_HTTP_CODES),
+        )
+    except HttpError as e:
+        raise _http_error_to_binance_error(e, endpoint=url) from e
 
 
 def _parse_candle_row(symbol: str, interval: str, row: Sequence[Any]) -> dict[str, Any]:
@@ -155,18 +170,6 @@ def _parse_candle_row(symbol: str, interval: str, row: Sequence[Any]) -> dict[st
     }
 
 
-def _extract_binance_error_code(err_body: str) -> Optional[int]:
-    try:
-        parsed = json.loads(err_body)
-        if isinstance(parsed, dict) and parsed.get("code") is not None:
-            return int(parsed["code"])
-    except (ValueError, TypeError):
-        pass
-    if '"code":-1021' in err_body.replace(" ", ""):
-        return -1021
-    return None
-
-
 class BinanceFuturesClient:
     """币安 USDⓈ-M 合约统一 API 客户端（含线程安全时间偏移缓存、签名鉴权与批量行情）。"""
 
@@ -177,7 +180,7 @@ class BinanceFuturesClient:
         base_url: str = BINANCE_FUTURES_BASE_URL,
         timeout: int = 8,
         time_sync_ttl: float = TIME_SYNC_TTL_SEC,
-    ):
+    ) -> None:
         self.api_key = (api_key or "").strip()
         self.api_secret = (api_secret or "").strip()
         self.base_url = base_url.rstrip("/")
@@ -190,15 +193,10 @@ class BinanceFuturesClient:
     @classmethod
     def from_env(cls, env_path: Path = DEFAULT_ENV_PATH) -> "BinanceFuturesClient":
         """优先从环境变量，其次从 .env 文件初始化客户端。"""
-        k = os.environ.get("BINANCE_API_KEY", "")
-        s = os.environ.get("BINANCE_API_SECRET", "")
-        if not k or not s:
-            dotenv = load_dotenv(env_path)
-            if not k:
-                k = dotenv.get("BINANCE_API_KEY", "")
-            if not s:
-                s = dotenv.get("BINANCE_API_SECRET", "")
-        return cls(api_key=k, api_secret=s)
+        return cls(
+            api_key=get_env_setting("BINANCE_API_KEY", "", env_path=env_path),
+            api_secret=get_env_setting("BINANCE_API_SECRET", "", env_path=env_path),
+        )
 
     def is_configured(self) -> bool:
         """检查 API 凭证是否已完整配置。"""
@@ -215,10 +213,10 @@ class BinanceFuturesClient:
     def get_server_time(self, force_sync: bool = False) -> int:
         """
         获取币安服务器毫秒级时间戳（线程安全实例级 10 分钟偏移缓存）。
-        拉取或解析失败时抛出 BinanceAPIError。
+        网络请求在锁外执行；拉取或解析失败时抛出 BinanceAPIError。
         """
-        now_mono = time.monotonic()
         with self._time_lock:
+            now_mono = time.monotonic()
             if (
                 not force_sync
                 and self._time_offset_ms is not None
@@ -226,51 +224,57 @@ class BinanceFuturesClient:
             ):
                 return int(time.time() * 1000) + self._time_offset_ms
 
-            url = f"{self.base_url}{SERVER_TIME_ENDPOINT}"
-            t0 = int(time.time() * 1000)
-            data = fetch_json_with_retry(url, timeout=5, max_retries=2)
-            t1 = int(time.time() * 1000)
-            if not isinstance(data, dict) or "serverTime" not in data:
-                raise BinanceAPIError(
-                    f"Missing serverTime in {SERVER_TIME_ENDPOINT} response: {data}",
-                    code="INVALID_RESPONSE",
-                    endpoint=SERVER_TIME_ENDPOINT,
-                )
-            try:
-                server_ms = int(data["serverTime"])
-            except (TypeError, ValueError) as e:
-                raise BinanceAPIError(
-                    f"Invalid serverTime in {SERVER_TIME_ENDPOINT}: {data['serverTime']}",
-                    code="INVALID_RESPONSE",
-                    endpoint=SERVER_TIME_ENDPOINT,
-                ) from e
+        url = f"{self.base_url}{SERVER_TIME_ENDPOINT}"
+        t0 = int(time.time() * 1000)
+        data = fetch_json_with_retry(url, timeout=5, max_retries=2)
+        t1 = int(time.time() * 1000)
+        if not isinstance(data, dict) or "serverTime" not in data:
+            raise BinanceAPIError(
+                f"Missing serverTime in {SERVER_TIME_ENDPOINT} response: {data}",
+                code="INVALID_RESPONSE",
+                endpoint=SERVER_TIME_ENDPOINT,
+            )
+        try:
+            server_ms = int(data["serverTime"])
+        except (TypeError, ValueError) as e:
+            raise BinanceAPIError(
+                f"Invalid serverTime in {SERVER_TIME_ENDPOINT}: {data['serverTime']}",
+                code="INVALID_RESPONSE",
+                endpoint=SERVER_TIME_ENDPOINT,
+            ) from e
+        with self._time_lock:
             self._time_offset_ms = server_ms - (t0 + t1) // 2
             self._time_synced_at = time.monotonic()
-            return server_ms
+        return server_ms
 
     def _send_signed_request(
         self,
         endpoint: str,
-        params: Optional[dict] = None,
-        _retry_time_sync: bool = True,
-        max_retries: int = 3,
+        params: Optional[dict[str, Any]] = None,
+        max_retries: int = 2,
         backoff: float = 0.8,
-    ) -> Tuple[Optional[Any], Optional[dict]]:
+    ) -> object:
         """
         发送已签名的 GET 请求至币安合约 API。
-        支持 429/5xx/URLError/TimeoutError 指数退避重试，以及 -1021 时间偏移重校准重试一次。
+        支持 429/5xx/网络异常指数退避重试，以及至多一次 -1021 时间偏移重校准。
+        失败时显式抛出 BinanceAPIError。
         """
         if not self.is_configured():
-            logger.warning("币安 API 凭据未配置，跳过网络请求。")
-            return None, {"code": "NOT_CONFIGURED", "msg": "API keys not configured"}
+            raise BinanceAPIError(
+                f"{endpoint} failed [NOT_CONFIGURED]: API keys not configured",
+                code="NOT_CONFIGURED",
+                endpoint=endpoint,
+            )
 
-        for attempt in range(max_retries):
-            try:
-                server_ts = self.get_server_time()
-            except BinanceAPIError as e:
-                return None, {"code": e.code or "TIME_SYNC_ERROR", "msg": str(e)}
+        time_resynced = False
+        headers = {
+            "X-MBX-APIKEY": self.api_key,
+            "User-Agent": DEFAULT_USER_AGENT,
+        }
 
-            p = dict(params or {})
+        for attempt in range(max_retries + 1):
+            server_ts = self.get_server_time()
+            p: dict[str, Any] = dict(params or {})
             p["timestamp"] = server_ts
             p["recvWindow"] = 5000
 
@@ -278,81 +282,61 @@ class BinanceFuturesClient:
             signature = self._generate_signature(query_str)
             url = f"{self.base_url}{endpoint}?{query_str}&signature={signature}"
 
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "X-MBX-APIKEY": self.api_key,
-                    "User-Agent": DEFAULT_USER_AGENT,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
-                method="GET",
-            )
-
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                if isinstance(data, dict) and data.get("code") is not None and int(data["code"]) < 0:
-                    code = int(data["code"])
-                    if code == -1021 and _retry_time_sync:
+                data = http_client.request_json(
+                    url,
+                    method="GET",
+                    headers=headers,
+                    timeout=float(self.timeout),
+                    max_retries=0,
+                )
+            except HttpError as e:
+                api_err = _http_error_to_binance_error(e, endpoint=endpoint)
+                if api_err.binance_code == -1021 and not time_resynced and attempt < max_retries:
+                    time_resynced = True
+                    logger.info("检测到币安 -1021 时间偏移，重新同步服务器时间后重试 [%s]", endpoint)
+                    self.get_server_time(force_sync=True)
+                    continue
+                retryable = e.status_code is None or e.status_code in RETRYABLE_HTTP_CODES
+                if retryable and attempt < max_retries:
+                    delay = backoff * (2 ** attempt)
+                    if e.retry_after is not None:
+                        delay = max(delay, e.retry_after)
+                    time.sleep(delay)
+                    continue
+                logger.warning("币安签名请求失败 [%s] (%s): %s", endpoint, api_err.code, api_err)
+                raise api_err from e
+
+            if isinstance(data, dict) and data.get("code") is not None:
+                try:
+                    b_code = int(data["code"])
+                except (TypeError, ValueError):
+                    b_code = 0
+                if b_code < 0:
+                    if b_code == -1021 and not time_resynced and attempt < max_retries:
+                        time_resynced = True
                         logger.info("检测到币安 -1021 时间偏移，重新同步服务器时间后重试 [%s]", endpoint)
-                        try:
-                            self.get_server_time(force_sync=True)
-                        except BinanceAPIError as ts_err:
-                            return None, {"code": ts_err.code or "TIME_SYNC_ERROR", "msg": str(ts_err)}
-                        return self._send_signed_request(
-                            endpoint,
-                            params,
-                            _retry_time_sync=False,
-                            max_retries=max_retries,
-                            backoff=backoff,
-                        )
-                    logger.error("币安接口返回错误 [%s]: [%s] %s", endpoint, code, data.get("msg"))
-                    return None, {"code": code, "msg": data.get("msg", "")}
-                return data, None
-            except urllib.error.HTTPError as e:
-                err_body = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
-                if _retry_time_sync and _extract_binance_error_code(err_body) == -1021:
-                    logger.info("检测到币安 HTTP -1021 时间偏移，重新同步服务器时间后重试 [%s]", endpoint)
-                    try:
                         self.get_server_time(force_sync=True)
-                    except BinanceAPIError as ts_err:
-                        return None, {"code": ts_err.code or "TIME_SYNC_ERROR", "msg": str(ts_err)}
-                    return self._send_signed_request(
-                        endpoint,
-                        params,
-                        _retry_time_sync=False,
-                        max_retries=max_retries,
-                        backoff=backoff,
+                        continue
+                    msg = str(data.get("msg") or "")
+                    logger.error("币安接口返回错误 [%s]: [%s] %s", endpoint, b_code, msg)
+                    raise BinanceAPIError(
+                        f"{endpoint} failed [{b_code}]: {msg}",
+                        code=b_code,
+                        endpoint=endpoint,
+                        binance_code=b_code,
                     )
-                if e.code in RETRYABLE_HTTP_CODES and attempt < max_retries - 1:
-                    time.sleep(_retry_delay(attempt, backoff, e))
-                    continue
-                logger.warning("币安 HTTP 请求失败 [%s] (%s): %s", endpoint, e.code, err_body)
-                return None, {"code": e.code, "msg": err_body}
-            except (urllib.error.URLError, TimeoutError, http.client.HTTPException) as e:
-                if attempt < max_retries - 1:
-                    time.sleep(_retry_delay(attempt, backoff))
-                    continue
-                logger.warning("请求币安接口网络异常 [%s]: %s", endpoint, e)
-                return None, {"code": "NETWORK_ERROR", "msg": str(e)}
-            except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                return None, {"code": "INVALID_JSON", "msg": str(e)}
+            return data
 
-        return None, {"code": "RETRY_EXHAUSTED", "msg": f"Exhausted retries for {endpoint}"}
-
-    def _require_signed(self, endpoint: str, params: Optional[dict] = None) -> Any:
-        data, err = self._send_signed_request(endpoint, params)
-        if err is not None:
-            raise BinanceAPIError(
-                f"{endpoint} failed [{err.get('code')}]: {err.get('msg')}",
-                code=err.get("code"),
-                endpoint=endpoint,
-            )
-        return data
+        raise BinanceAPIError(
+            f"Exhausted retries for {endpoint}",
+            code="RETRY_EXHAUSTED",
+            endpoint=endpoint,
+        )
 
     def get_account_positions(self) -> List[dict]:
         """请求 /fapi/v2/positionRisk 获取账户所有合约头寸信息。"""
-        data = self._require_signed(POSITION_RISK_ENDPOINT)
+        data = self._send_signed_request(POSITION_RISK_ENDPOINT)
         if not isinstance(data, list):
             raise BinanceAPIError(
                 f"Expected list from {POSITION_RISK_ENDPOINT}, got {type(data).__name__}",
@@ -363,7 +347,7 @@ class BinanceFuturesClient:
 
     def get_account_info(self) -> dict:
         """请求 /fapi/v2/account 获取合约账户全量资产、钱包余额与保证金信息。"""
-        data = self._require_signed("/fapi/v2/account")
+        data = self._send_signed_request("/fapi/v2/account")
         if not isinstance(data, dict):
             raise BinanceAPIError(
                 f"Expected dict from /fapi/v2/account, got {type(data).__name__}",
@@ -390,7 +374,7 @@ class BinanceFuturesClient:
             params["startTime"] = int(start_time)
         if end_time is not None:
             params["endTime"] = int(end_time)
-        data = self._require_signed("/fapi/v1/income", params)
+        data = self._send_signed_request("/fapi/v1/income", params)
         if not isinstance(data, list):
             raise BinanceAPIError(
                 f"Expected list from /fapi/v1/income, got {type(data).__name__}",
@@ -418,7 +402,7 @@ class BinanceFuturesClient:
             params["endTime"] = int(end_time)
         if from_id is not None:
             params["fromId"] = int(from_id)
-        data = self._require_signed("/fapi/v1/userTrades", params)
+        data = self._send_signed_request("/fapi/v1/userTrades", params)
         if not isinstance(data, list):
             raise BinanceAPIError(
                 f"Expected list from /fapi/v1/userTrades, got {type(data).__name__}",
@@ -467,7 +451,7 @@ class BinanceFuturesClient:
         start_time_ms: Optional[int] = None,
         end_time_ms: Optional[int] = None,
     ) -> List[list]:
-        """请求 /fapi/v1/klines 获取合约 K 线数组。"""
+        """请求 /fapi/v1/klines 获取合约 K 线数组（空数组返回 []）。"""
         clean_sym = clean_symbol(symbol)
         query_params: Dict[str, Any] = {
             "symbol": clean_sym,
@@ -480,10 +464,10 @@ class BinanceFuturesClient:
             query_params["endTime"] = int(end_time_ms)
         url = f"{self.base_url}/fapi/v1/klines?{urllib.parse.urlencode(query_params)}"
         data = fetch_json_with_retry(url, timeout=max(self.timeout, 10), max_retries=3)
-        if not isinstance(data, list) or not data:
+        if not isinstance(data, list):
             raise BinanceAPIError(
-                f"No candlestick data returned for {clean_sym} ({interval})",
-                code="EMPTY_KLINES",
+                f"Expected list from /fapi/v1/klines for {clean_sym} ({interval}), got {type(data).__name__}",
+                code="INVALID_RESPONSE",
                 endpoint="/fapi/v1/klines",
             )
         return data
@@ -501,6 +485,12 @@ class BinanceFuturesClient:
         clean_sym = clean_symbol(symbol)
         server_time_ms = self.get_server_time()
         klines_data = self.fetch_klines(clean_sym, interval=interval, limit=limit)
+        if not klines_data:
+            raise BinanceAPIError(
+                f"No candlestick data returned for {clean_sym} ({interval})",
+                code="EMPTY_KLINES",
+                endpoint="/fapi/v1/klines",
+            )
 
         closed_candles = [c for c in klines_data if int(c[6]) <= server_time_ms]
         if not closed_candles:
@@ -567,7 +557,16 @@ class BinanceFuturesClient:
         return active
 
 
-_PUBLIC_CLIENT = BinanceFuturesClient()
+_PUBLIC_CLIENT_LOCK = threading.Lock()
+_PUBLIC_CLIENT: Optional[BinanceFuturesClient] = None
+
+
+def _get_public_client() -> BinanceFuturesClient:
+    global _PUBLIC_CLIENT
+    with _PUBLIC_CLIENT_LOCK:
+        if _PUBLIC_CLIENT is None:
+            _PUBLIC_CLIENT = BinanceFuturesClient()
+        return _PUBLIC_CLIENT
 
 
 def fetch_klines(
@@ -579,7 +578,7 @@ def fetch_klines(
     end_time_ms: Optional[int] = None,
 ) -> List[list]:
     """共享公共行情 K 线拉取辅助函数。"""
-    return _PUBLIC_CLIENT.fetch_klines(
+    return _get_public_client().fetch_klines(
         symbol,
         interval=interval,
         limit=limit,
@@ -595,9 +594,9 @@ def get_closed_15m_candle(
     limit: int = 5,
 ) -> dict[str, Any]:
     """共享公共最新已收盘 K 线拉取辅助函数。"""
-    return _PUBLIC_CLIENT.get_closed_15m_candle(symbol, interval=interval, limit=limit)
+    return _get_public_client().get_closed_15m_candle(symbol, interval=interval, limit=limit)
 
 
 def fetch_ticker_prices(symbols: Optional[Sequence[str]] = None) -> Dict[str, float]:
     """共享公共批量最新成交价拉取辅助函数。"""
-    return _PUBLIC_CLIENT.get_ticker_prices(symbols=symbols)
+    return _get_public_client().get_ticker_prices(symbols=symbols)

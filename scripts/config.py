@@ -14,32 +14,27 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Iterator, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 RUNS_DIR = PROJECT_ROOT / "runs"
-CONFIG_DIR = PROJECT_ROOT / "config"
 WEB_DIR = PROJECT_ROOT / "web"
 
 DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_DB_PATH = RUNS_DIR / "account.sqlite3"
-DEFAULT_POOL_PATH = RUNS_DIR / "second_leg_candidates_pool.json"
-DEFAULT_SUB30M_HISTORY_PATH = RUNS_DIR / "sub_30m_history.json"
-DEFAULT_POSITIONS_PATH = RUNS_DIR / "trade_positions.json"
-DEFAULT_RESONANCE_STATE_PATH = RUNS_DIR / "resonance_state.json"
-DEFAULT_ANALYTICS_PATH = RUNS_DIR / "account_analytics.json"
 DEFAULT_TV_LAYOUT_ID = "ig0LuDL8"
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 def _parse_dotenv_value(raw_val: str) -> str:
-    """解析单行 .env 值：引号内保留 #，无引号时剥离行内 # 注释。"""
+    """解析单行 .env 值：引号内保留 #，无引号时剥离行内 # 注释；未闭合引号直接抛 ValueError。"""
     val = raw_val.strip()
     if not val:
         return ""
@@ -58,46 +53,54 @@ def _parse_dotenv_value(raw_val: str) -> str:
             if ch == quote:
                 return "".join(chars)
             chars.append(ch)
-        # 未闭合引号按无引号处理
+        raise ValueError(f"Unclosed {quote} quote in .env value: {raw_val!r}")
     if val.startswith("#"):
         return ""
     return re.split(r"\s+#", val, maxsplit=1)[0].strip()
 
 
 _DOTENV_CACHE: dict[Path, tuple[int, int, dict[str, str]]] = {}
+_DOTENV_LOCK = threading.Lock()
 
 
 def load_dotenv(env_path: Optional[Path] = None) -> dict[str, str]:
-    """解析 .env 文件为字典（跳过空行与注释，剥离引号与无引号行内注释；按 mtime/size 缓存）。"""
+    """线程安全地解析 .env 文件为字典（跳过空行与注释，剥离引号与无引号行内注释；按 mtime/size 缓存）。"""
     target = Path(env_path).resolve() if env_path is not None else DEFAULT_ENV_PATH.resolve()
-    if not target.exists():
-        _DOTENV_CACHE.pop(target, None)
-        return {}
-    st = target.stat()
-    cached = _DOTENV_CACHE.get(target)
-    if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
-        return dict(cached[2])
+    with _DOTENV_LOCK:
+        if not target.exists():
+            _DOTENV_CACHE.pop(target, None)
+            return {}
+        st = target.stat()
+        cached = _DOTENV_CACHE.get(target)
+        if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+            return dict(cached[2])
 
-    result: dict[str, str] = {}
-    with open(target, "r", encoding="utf-8") as f:
-        for line in f:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            if stripped.startswith("export "):
-                stripped = stripped[7:].strip()
-                if "=" not in stripped:
+        result: dict[str, str] = {}
+        with open(target, "r", encoding="utf-8") as f:
+            for lineno, line in enumerate(f, start=1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
                     continue
-            k, v = stripped.split("=", 1)
-            key = k.strip()
-            if key:
-                result[key] = _parse_dotenv_value(v)
-    _DOTENV_CACHE[target] = (st.st_mtime_ns, st.st_size, result)
-    return dict(result)
+                if stripped.startswith("export "):
+                    stripped = stripped[7:].strip()
+                    if "=" not in stripped:
+                        continue
+                k, v = stripped.split("=", 1)
+                key = k.strip()
+                if key:
+                    try:
+                        result[key] = _parse_dotenv_value(v)
+                    except ValueError as exc:
+                        raise ValueError(f"Invalid .env line {lineno} in {target} ({key}): {exc}") from exc
+        _DOTENV_CACHE[target] = (st.st_mtime_ns, st.st_size, result)
+        return dict(result)
 
 
 def get_env_setting(key: str, default: str = "", env_path: Optional[Path] = None) -> str:
-    """按 OS 环境变量 > .env 文件 > 默认值 的优先级读取配置项。"""
+    """
+    按 非空 OS 环境变量 > 非空 .env 值 > 默认值 的优先级读取配置项。
+    空白值 (\"\") 视为未配置，避免 .env 占位空行覆盖数字/默认配置或阻塞可选通道。
+    """
     val = os.environ.get(key)
     if val is not None and val != "":
         return val
@@ -135,10 +138,11 @@ def open_sqlite_connection(
         target.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(target, timeout=timeout)
     try:
+        # Set busy_timeout before PRAGMA journal_mode=WAL so initial WAL switch also honors timeout.
+        conn.execute("PRAGMA busy_timeout=15000")
         if not readonly:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=15000")
         return conn
     except Exception:
         conn.close()
@@ -163,7 +167,8 @@ def get_beijing_time_str(ts_sec: Optional[float] = None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def atomic_write_json(filepath: Path, data: Any, *, allow_nan: bool = False) -> None:
+# Retained for scripts/tv_trendline_engine.py drawings JSON cache (`runs/tradingview_drawings_<layout>.json`).
+def atomic_write_json(filepath: Path, data: object, *, allow_nan: bool = False) -> None:
     """原子化写入 JSON 文件（写临时文件 + fsync + os.replace），默认禁止 NaN/Infinity。"""
     target = Path(filepath)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -185,10 +190,7 @@ def atomic_write_json(filepath: Path, data: Any, *, allow_nan: bool = False) -> 
 
 @contextmanager
 def file_lock(filepath: Path) -> Iterator[None]:
-    """
-    基于 fcntl.flock 的跨进程独占建议锁，保护 JSON 状态文件的 read-modify-write 事务，
-    防止 --daemon 与 --check-once 并发写入造成状态丢失。
-    """
+    """基于 fcntl.flock 的跨进程独占建议锁（供 tv_trendline_engine.py 缓存写入使用）。"""
     target = Path(filepath)
     target.parent.mkdir(parents=True, exist_ok=True)
     lock_path = target.with_name(f".{target.name}.lock")

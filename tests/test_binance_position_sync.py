@@ -27,6 +27,8 @@ if str(ROOT_DIR) not in sys.path:
 
 import binance_client as bc
 import binance_position_client as bpc
+import db_store
+import http_client
 import trade_alert_daemon as tad
 
 
@@ -62,22 +64,16 @@ class TestBinanceFuturesClient(unittest.TestCase):
     def test_server_time_caching_and_explicit_error(self):
         client = bc.BinanceFuturesClient(api_key="key", api_secret="sec")
 
-        mock_resp = MagicMock()
-        mock_resp.__enter__.return_value = mock_resp
-        mock_resp.read.return_value = json.dumps({"serverTime": 1795200000123}).encode("utf-8")
-        with patch("urllib.request.urlopen", return_value=mock_resp):
+        with patch.object(bc.http_client, "request_json", return_value={"serverTime": 1795200000123}):
             t = client.get_server_time()
             self.assertEqual(t, 1795200000123)
 
         fresh_client = bc.BinanceFuturesClient(api_key="key", api_secret="sec")
-        with patch("urllib.request.urlopen", side_effect=TimeoutError("Timeout")), patch("time.sleep"):
+        with patch.object(bc.http_client, "request_json", side_effect=http_client.HttpError("Timeout")), patch("time.sleep"):
             with self.assertRaises(bc.BinanceAPIError):
                 fresh_client.get_server_time()
 
-        bad_resp = MagicMock()
-        bad_resp.__enter__.return_value = bad_resp
-        bad_resp.read.return_value = json.dumps({}).encode("utf-8")
-        with patch("urllib.request.urlopen", return_value=bad_resp):
+        with patch.object(bc.http_client, "request_json", return_value={}):
             with self.assertRaises(bc.BinanceAPIError):
                 fresh_client.get_server_time()
 
@@ -88,7 +84,11 @@ class TestBinanceFuturesClient(unittest.TestCase):
         self.assertEqual(ctx.exception.code, "NOT_CONFIGURED")
 
         configured = bc.BinanceFuturesClient(api_key="k", api_secret="s")
-        with patch.object(configured, "_send_signed_request", return_value=(None, {"code": -2015, "msg": "Invalid key"})):
+        with patch.object(
+            configured,
+            "_send_signed_request",
+            side_effect=bc.BinanceAPIError("Invalid key", code=-2015, binance_code=-2015),
+        ):
             with self.assertRaises(bc.BinanceAPIError):
                 configured.get_account_info()
             with self.assertRaises(bc.BinanceAPIError):
@@ -96,7 +96,7 @@ class TestBinanceFuturesClient(unittest.TestCase):
             with self.assertRaises(bc.BinanceAPIError):
                 configured.get_user_trades("BTCUSDT")
 
-        with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("down")), patch("time.sleep"):
+        with patch.object(bc.http_client, "request_json", side_effect=http_client.HttpError("down")), patch("time.sleep"):
             with self.assertRaises(bc.BinanceAPIError):
                 configured.get_ticker_prices(["BTCUSDT"])
 
@@ -105,38 +105,33 @@ class TestBinanceFuturesClient(unittest.TestCase):
         client._time_offset_ms = 0
         client._time_synced_at = time.monotonic()
 
-        err_429 = urllib.error.HTTPError(
-            "https://fapi.binance.com/fapi/v2/account", 429, "Too Many", {}, io.BytesIO(b'{"code":-1003}')
+        err_429 = http_client.HttpError(
+            "HTTP 429", status_code=429, body='{"code":-1003}', url="https://fapi.binance.com/fapi/v2/account"
         )
-        ok_resp = MagicMock()
-        ok_resp.__enter__.return_value = ok_resp
-        ok_resp.read.return_value = json.dumps({"totalWalletBalance": "100"}).encode("utf-8")
+        ok_payload = {"totalWalletBalance": "100"}
 
-        with patch("urllib.request.urlopen", side_effect=[err_429, ok_resp]) as mock_open, patch("time.sleep"):
-            data, err = client._send_signed_request("/fapi/v2/account")
-        self.assertIsNone(err)
+        with patch.object(bc.http_client, "request_json", side_effect=[err_429, ok_payload]) as mock_req, patch("time.sleep"):
+            data = client._send_signed_request("/fapi/v2/account")
         self.assertEqual(data["totalWalletBalance"], "100")
-        self.assertEqual(mock_open.call_count, 2)
+        self.assertEqual(mock_req.call_count, 2)
 
-        err_401 = urllib.error.HTTPError(
-            "https://fapi.binance.com/fapi/v2/account", 401, "Unauthorized", {}, io.BytesIO(b'{"code":-2015}')
+        err_401 = http_client.HttpError(
+            "HTTP 401", status_code=401, body='{"code":-2015}', url="https://fapi.binance.com/fapi/v2/account"
         )
-        with patch("urllib.request.urlopen", side_effect=err_401) as mock_open, patch("time.sleep"):
-            data, err = client._send_signed_request("/fapi/v2/account")
-        self.assertIsNone(data)
-        self.assertEqual(err["code"], 401)
-        self.assertEqual(mock_open.call_count, 1)
+        with patch.object(bc.http_client, "request_json", side_effect=err_401) as mock_req, patch("time.sleep"):
+            with self.assertRaises(bc.BinanceAPIError) as ctx:
+                client._send_signed_request("/fapi/v2/account")
+        self.assertEqual(ctx.exception.code, 401)
+        self.assertEqual(mock_req.call_count, 1)
 
-        err_1021 = urllib.error.HTTPError(
-            "https://fapi.binance.com/fapi/v2/account", 400, "Bad Request", {}, io.BytesIO(b'{"code":-1021,"msg":"ts"}')
+        err_1021 = http_client.HttpError(
+            "HTTP 400", status_code=400, body='{"code":-1021,"msg":"ts"}', url="https://fapi.binance.com/fapi/v2/account"
         )
-        time_resp = MagicMock()
-        time_resp.__enter__.return_value = time_resp
-        time_resp.read.return_value = json.dumps({"serverTime": int(time.time() * 1000)}).encode("utf-8")
-        with patch("urllib.request.urlopen", side_effect=[err_1021, time_resp, ok_resp]) as mock_open:
-            data, err = client._send_signed_request("/fapi/v2/account")
-        self.assertIsNone(err)
-        self.assertEqual(mock_open.call_count, 3)
+        time_payload = {"serverTime": int(time.time() * 1000)}
+        with patch.object(bc.http_client, "request_json", side_effect=[err_1021, time_payload, ok_payload]) as mock_req:
+            data = client._send_signed_request("/fapi/v2/account")
+        self.assertEqual(data["totalWalletBalance"], "100")
+        self.assertEqual(mock_req.call_count, 3)
 
     def test_get_active_positions_filtering_and_required_fields(self):
         client = bc.BinanceFuturesClient(api_key="test_key", api_secret="test_sec")
@@ -204,8 +199,8 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
-        self.pos_file = Path(self.test_dir) / "trade_positions.json"
-        self.pos_store = tad.PositionStore(self.pos_file)
+        self.db_path = Path(self.test_dir) / "test.sqlite3"
+        self.pos_store = tad.PositionStore(self.db_path)
         self.client = bc.BinanceFuturesClient(api_key="mock_key", api_secret="mock_sec")
 
     def tearDown(self):
@@ -221,10 +216,11 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
         now = time.time()
         missing_iv = {"id": "NO_IV", "p1": 10.0, "t1": now - 3600, "p2": 9.0, "t2": now - 600}
         stale_15m = {"id": "OLD_15M", "interval": "15", "p1": 10.0, "t1": now - 90 * 3600, "p2": 9.0, "t2": now - 80 * 3600}
-        self.assertIsNone(bpc.select_best_position_trendline([missing_iv, stale_15m], current_time=now))
+        malformed_15m = {"id": "BAD_15M", "interval": "15", "p1": None, "t1": now - 3600, "p2": 9.0, "t2": now - 100}
+        self.assertIsNone(bpc.select_best_position_trendline([missing_iv, stale_15m, malformed_15m], current_time=now))
 
         fresh_15m = {"id": "GOOD_15M", "interval": "15", "p1": 10.0, "t1": now - 3600, "p2": 9.0, "t2": now - 600}
-        chosen = bpc.select_best_position_trendline([missing_iv, stale_15m, fresh_15m], current_time=now)
+        chosen = bpc.select_best_position_trendline([missing_iv, stale_15m, malformed_15m, fresh_15m], current_time=now)
         self.assertIsNotNone(chosen)
         self.assertEqual(chosen["id"], "GOOD_15M")
 
@@ -323,7 +319,41 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
                 self.assertFalse(open_pos["profit_lock_notified"])
                 self.assertFalse(open_pos["stop_loss_notified"])
                 self.assertNotIn("pending_profit_lock_price", open_pos)
-                self.assertEqual(open_pos["highest_price"], 0.0550)
+                self.assertEqual(open_pos["highest_price"], 0.0580)
+
+    def test_micro_priced_entry_change_and_manual_source_current_price_preservation(self):
+        self.pos_store.add_position(
+            "PEPEUSDT",
+            entry_price=4.5e-7,
+            amount=1000000.0,
+            source="MANUAL",
+            current_price=4.9e-7,
+            highest_price=5.2e-7,
+            trailing_stop_triggered=True,
+        )
+        updated_longs = [
+            {
+                "symbol": "PEPEUSDT",
+                "amount": 1500000.0,
+                "entry_price": 4.6e-7,
+                "mark_price": 4.7e-7,
+                "unrealized_pnl": 0.015,
+                "leverage": 10,
+                "notional": 0.705,
+            }
+        ]
+        with patch.object(self.client, "get_active_positions", return_value=updated_longs):
+            with patch("tv_trendline_engine.get_layout_drawings", return_value={}):
+                res = bpc.sync_binance_positions(self.client, self.pos_store)
+
+        self.assertTrue(res["synced"])
+        open_pos = self.pos_store.get_open_positions()[0]
+        self.assertEqual(open_pos["entry_price"], 4.6e-7)
+        self.assertFalse(open_pos["trailing_stop_triggered"])
+        self.assertEqual(open_pos["highest_price"], 5.2e-7)
+        self.assertEqual(open_pos["source"], "MANUAL")
+        self.assertEqual(open_pos["mark_price"], 4.7e-7)
+        self.assertEqual(open_pos["current_price"], 4.9e-7)
 
     def test_sync_retries_missing_trendline_for_existing_position(self):
         now = int(time.time())
@@ -345,11 +375,18 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
             res = bpc.sync_binance_positions(self.client, self.pos_store, load_drawings=load_drawings)
             self.assertTrue(res["synced"])
             load_drawings.assert_called_once()
-            reloaded = tad.PositionStore(self.pos_file)
+            reloaded = tad.PositionStore(self.db_path)
             self.assertEqual(reloaded.get_open_positions()[0]["trendline"]["id"], "NEW_TL")
 
     def test_auto_archive_closed_position(self):
-        self.pos_store.add_position("YBUSDT", entry_price=0.0505, amount=2000.0, source="BINANCE_SYNC")
+        self.pos_store.add_position(
+            "YBUSDT",
+            entry_price=0.0500,
+            amount=2000.0,
+            source="BINANCE_SYNC",
+            mark_price=0.0550,
+            current_price=0.0540,
+        )
         self.assertEqual(len(self.pos_store.get_open_positions()), 1)
 
         with patch.object(self.client, "get_active_positions", return_value=[]):
@@ -359,10 +396,12 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
                 self.assertTrue(res["synced"])
                 self.assertIn("YBUSDT", res["auto_closed"])
                 self.assertEqual(len(self.pos_store.get_open_positions()), 0)
-                history = self.pos_store.data["history"]
+                history = self.pos_store.get_history()
                 self.assertEqual(len(history), 1)
                 self.assertEqual(history[0]["symbol"], "YBUSDT")
                 self.assertEqual(history[0]["status"], "BINANCE_POSITION_CLOSED")
+                self.assertEqual(history[0]["exit_price"], 0.0550)
+                self.assertAlmostEqual(history[0]["realized_pnl_pct"], 10.0, places=2)
 
     def test_manual_positions_not_auto_closed(self):
         self.pos_store.add_position("MANUALUSDT", entry_price=1.5, amount=100.0)
@@ -382,28 +421,30 @@ class TestCLIAndDaemonIntegration(unittest.TestCase):
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
-        self.pos_file = Path(self.test_dir) / "trade_positions.json"
-        self.state_file = Path(self.test_dir) / "resonance_state.json"
-        self.pool_file = Path(self.test_dir) / "pool.json"
-        self.pool_file.write_text("[]", encoding="utf-8")
+        self.db_path = Path(self.test_dir) / "test.sqlite3"
+        db_store.publish_candidates(self.db_path, [])
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_failed_position_snapshot_does_not_archive_open_position(self):
-        store = tad.PositionStore(self.pos_file)
+        store = tad.PositionStore(self.db_path)
         store.add_position("YBUSDT", 1.0, amount=1.0, source="BINANCE_SYNC")
         client = bc.BinanceFuturesClient("dummy_key", "dummy_secret")
 
-        with patch.object(client, "_send_signed_request", return_value=(None, {"code": "NETWORK_ERROR", "msg": "err"})):
+        with patch.object(
+            client,
+            "_send_signed_request",
+            side_effect=bc.BinanceAPIError("err", code="NETWORK_ERROR"),
+        ):
             with patch.object(bpc.tve, "get_layout_drawings", return_value={}):
                 report = bpc.sync_binance_positions(client, store)
 
         self.assertFalse(report["synced"])
         self.assertEqual(report["reason"], "POSITION_SNAPSHOT_FAILED")
-        reloaded = tad.PositionStore(self.pos_file)
+        reloaded = tad.PositionStore(self.db_path)
         self.assertEqual(len(reloaded.get_open_positions()), 1)
-        self.assertEqual(reloaded.data["history"], [])
+        self.assertEqual(reloaded.get_history(), [])
 
     @patch.dict(os.environ, clear=True)
     @patch.object(tad, "fetch_layout_drawings", return_value={})
@@ -416,13 +457,11 @@ class TestCLIAndDaemonIntegration(unittest.TestCase):
             encoding="utf-8",
         )
         cfg = tad.load_config(env_path=env_file)
-        cfg["positions_file"] = str(self.pos_file)
-        cfg["resonance_state_file"] = str(self.state_file)
-        cfg["resonance_pool_file"] = str(self.pool_file)
+        cfg["database_path"] = self.db_path
 
         notifier = tad.ServerChanNotifier(dry_run=True)
-        state_store = tad.ResonanceStateStore(self.state_file)
-        pos_store = tad.PositionStore(self.pos_file)
+        state_store = tad.ResonanceStateStore(self.db_path)
+        pos_store = tad.PositionStore(self.db_path)
 
         mock_active_longs = [
             {

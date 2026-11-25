@@ -27,6 +27,8 @@ if str(ROOT_DIR) not in sys.path:
 
 import binance_client as bc
 import config as cfg
+import db_store
+import http_client
 import tv_trendline_engine as tve
 import trade_alert_daemon as tad
 
@@ -59,7 +61,7 @@ class TestTVCloudAndFallback(unittest.TestCase):
         }
         with patch.object(tve, "get_chart_token", return_value="test-token"), patch.object(
             tve, "get_layout_chart_ids", return_value=["test-chart"]
-        ), patch.object(tve, "fetch_json_with_retry", return_value={"payload": {"sources": sources}}):
+        ), patch.object(tve, "request_json", return_value={"payload": {"sources": sources}}):
             drawings = tve.get_layout_drawings(layout_id="test-layout", save_cache=False)
 
         self.assertEqual(list(drawings.keys()), ["YBUSDT"])
@@ -82,14 +84,14 @@ class TestTVCloudAndFallback(unittest.TestCase):
             with patch.object(tve, "RUNS_DIR", runs_dir), patch.object(
                 tve, "get_chart_token", return_value="tok"
             ), patch.object(tve, "get_layout_chart_ids", return_value=["_shared"]), patch.object(
-                tve, "fetch_json_with_retry", side_effect=bc.BinanceAPIError("down", code=503)
+                tve, "request_json", side_effect=http_client.HttpError("down", status_code=503)
             ):
                 with self.assertRaises(RuntimeError):
                     tve.get_layout_drawings("test-layout", save_cache=True)
 
             self.assertEqual(json.loads(cache_file.read_text(encoding="utf-8")), original)
 
-        with patch.object(tve, "fetch_bytes_with_retry", return_value=b"<html>no initData</html>"):
+        with patch.object(tve, "request_bytes", return_value=b"<html>no initData</html>"):
             with self.assertRaises(RuntimeError):
                 tve.get_layout_chart_ids("any-layout")
 
@@ -129,13 +131,81 @@ class TestTVCloudAndFallback(unittest.TestCase):
 
     def test_fetch_candle_at_time_respects_interval_window(self):
         target_s = 1795200000
-        kline_4h = [[target_s * 1000, "1.0", "1.2", "0.9", "1.1", "50", (target_s + 14399) * 1000, "50", 10]]
-        with patch.object(tve, "fetch_klines", return_value=kline_4h) as mock_klines:
+        close_ms = (target_s + 14399) * 1000
+        kline_4h = [[target_s * 1000, "1.0", "1.2", "0.9", "1.1", "50", close_ms, "50", 10]]
+        with patch.object(tve, "fetch_klines", return_value=kline_4h) as mock_klines, patch.object(
+            tve, "get_server_time_ms", return_value=close_ms + 1000
+        ):
             candle = tve.fetch_candle_at_time("YBUSDT", target_time_s=target_s, interval="4h")
         self.assertEqual(candle["interval"], "4h")
+        self.assertTrue(candle["is_closed"])
         kwargs = mock_klines.call_args.kwargs
         self.assertEqual(kwargs["start_time_ms"], target_s * 1000 - 4 * 3600 * 1000)
         self.assertEqual(kwargs["end_time_ms"], target_s * 1000 + 8 * 3600 * 1000)
+
+        with patch.object(tve, "fetch_klines", return_value=kline_4h), patch.object(
+            tve, "get_server_time_ms", return_value=close_ms - 1000
+        ):
+            open_candle = tve.fetch_candle_at_time("YBUSDT", target_time_s=target_s, interval="4h")
+        self.assertFalse(open_candle["is_closed"])
+
+    def test_tv_drawings_handles_malformed_points_and_none_linewidth(self):
+        sources = {
+            "bad_pts": {
+                "symbol": "BINANCE:YBUSDT.P",
+                "state": {
+                    "type": "LineToolTrendLine",
+                    "points": [None, {"time_t": 1795210000, "price": 1.0}],
+                    "state": {"interval": "15"},
+                },
+            },
+            "none_lw": {
+                "symbol": "BINANCE:YBUSDT.P",
+                "state": {
+                    "type": "LineToolTrendLine",
+                    "points": [
+                        {"time_t": 1795200000, "price": 1.2},
+                        {"time_t": 1795210000, "price": 1.0},
+                    ],
+                    "state": {"interval": "15", "linewidth": None},
+                },
+            },
+        }
+        with patch.object(tve, "get_chart_token", return_value="tok"), patch.object(
+            tve, "get_layout_chart_ids", return_value=["_shared"]
+        ), patch.object(tve, "request_json", return_value={"payload": {"sources": sources}}):
+            drawings = tve.get_layout_drawings(layout_id="test-layout", save_cache=False)
+
+        self.assertEqual(len(drawings["YBUSDT"]), 1)
+        self.assertEqual(drawings["YBUSDT"][0]["id"], "none_lw")
+        self.assertEqual(drawings["YBUSDT"][0]["line_width"], 1)
+
+    def test_fetch_layout_drawings_uses_disk_mtime_and_respects_ttl(self):
+        layout_id = "ttl-layout"
+        stale_drawings = {"YBUSDT": [{"id": "OLD", "interval": "15", "p1": 1.2, "t1": 100, "p2": 1.0, "t2": 200}]}
+        fresh_drawings = {"YBUSDT": [{"id": "NEW", "interval": "15", "p1": 1.3, "t1": 100, "p2": 1.1, "t2": 200}]}
+        with tempfile.TemporaryDirectory() as directory:
+            runs_dir = Path(directory)
+            cache_file = runs_dir / f"tradingview_drawings_{layout_id}.json"
+            cache_file.write_text(json.dumps({"drawings_by_symbol": stale_drawings}), encoding="utf-8")
+            base_now = 1800000000.0
+            file_mtime = base_now - 50.0  # 50s old (< 60s ttl)
+            os.utime(cache_file, (file_mtime, file_mtime))
+
+            with patch.object(tad, "RUNS_DIR", runs_dir), patch.object(
+                tad, "_DRAWINGS_CACHE", {"data": None, "layout_id": "", "ts": 0.0}
+            ), patch.object(tve, "get_layout_drawings", return_value=fresh_drawings) as fetch_fn:
+                with patch("time.time", return_value=base_now):
+                    res1 = tad.fetch_layout_drawings(layout_id, ttl_sec=60)
+                    self.assertEqual(res1, stale_drawings)
+                    self.assertAlmostEqual(tad._DRAWINGS_CACHE["ts"], file_mtime, places=3)
+                    fetch_fn.assert_not_called()
+
+                # 15s later -> total age from file_mtime is 65s >= 60s -> must refresh
+                with patch("time.time", return_value=base_now + 15.0):
+                    res2 = tad.fetch_layout_drawings(layout_id, ttl_sec=60)
+                    self.assertEqual(res2, fresh_drawings)
+                    fetch_fn.assert_called_once_with(layout_id)
 
 
 class TestSharedCandidateSnapshot(unittest.TestCase):
@@ -143,15 +213,11 @@ class TestSharedCandidateSnapshot(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             database = root / "account.sqlite3"
-            store = tad.ResonanceStateStore(root / "resonance.json")
+            store = tad.ResonanceStateStore(database)
             notifier = tad.ServerChanNotifier(dry_run=True)
             batch = [{"symbol": "TESTUSDT", "is_resonance": True}]
-            with closing(cfg.open_sqlite_connection(database, readonly=False)) as connection:
-                connection.execute("CREATE TABLE candidate_snapshot (id INTEGER PRIMARY KEY, updated_at TEXT, payload TEXT)")
-                connection.execute("INSERT INTO candidate_snapshot VALUES (1, ?, ?)", ("2026-11-23 00:00:00", json.dumps(batch)))
-                connection.commit()
-            with patch.dict(os.environ, {"COIN_DATABASE": str(database)}):
-                tad.check_feature_1_resonance(notifier, store, root / "missing.json")
+            db_store.publish_candidates(database, batch, updated_at="2026-11-23 00:00:00+08:00")
+            tad.check_feature_1_resonance(notifier, store, database_path=database)
             self.assertEqual(store.get_active_symbols(), {"TESTUSDT"})
 
     def test_resonance_check_reads_dotenv_database_and_handles_missing_table(self):
@@ -167,10 +233,10 @@ class TestSharedCandidateSnapshot(unittest.TestCase):
                 loaded = tad.load_config(env_path=env_file)
             self.assertEqual(loaded["database_path"], database)
 
-            store = tad.ResonanceStateStore(root / "resonance.json")
+            store = tad.ResonanceStateStore(database)
             notifier = tad.ServerChanNotifier(dry_run=True)
             alerts = tad.check_feature_1_resonance(
-                notifier, store, root / "missing.json", database_path=loaded["database_path"]
+                notifier, store, database_path=loaded["database_path"]
             )
             self.assertEqual(alerts, [])
 
@@ -243,14 +309,34 @@ class TestLogarithmicVsLinearFormula(unittest.TestCase):
         with self.assertRaises(ValueError):
             tve.check_symbol_breakout("YBUSDT", trendline, candle=candle)
 
+    def test_check_symbol_breakout_at_close_uses_prev_close_time(self):
+        trendline = {"id": "L_close", "interval": "15", "p1": 100.0, "t1": 0, "p2": 50.0, "t2": 900}
+        candle = {
+            "symbol": "YBUSDT",
+            "open": 26.0,
+            "close": 27.0,
+            "open_time": 900,
+            "close_time": 1799,
+            "prev_candle": {
+                "close": 49.0,
+                "open_time": 0,
+                "close_time": 899,
+            },
+        }
+        res = tve.check_symbol_breakout("YBUSDT", trendline, candle=candle, at_close=True)
+        self.assertEqual(res["target_t"], 1799)
+        expected_prev_res = tve.calculate_log_resistance(100.0, 0, 50.0, 900, 899)
+        self.assertAlmostEqual(res["prev_res"], expected_prev_res, places=6)
+        self.assertEqual(res["target_t"] - 899, 900)
+        self.assertTrue(res["is_breakout"])
+
 
 class TestFeature1NewResonanceDetection(unittest.TestCase):
     """3. Feature 1: New resonance detection, cold start stability, and retry semantics"""
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
-        self.pool_path = Path(self.test_dir) / "pool.json"
-        self.state_path = Path(self.test_dir) / "resonance_state.json"
+        self.db_path = Path(self.test_dir) / "test.sqlite3"
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -267,14 +353,13 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
                 "zones": ["双核共振+逼空"],
             }
         ]
-        self.pool_path.write_text(json.dumps(candidates), encoding="utf-8")
+        db_store.publish_candidates(self.db_path, candidates)
         notifier = tad.ServerChanNotifier(dry_run=True)
-        state_store = tad.ResonanceStateStore(self.state_path)
+        state_store = tad.ResonanceStateStore(self.db_path)
 
         alerts = tad.check_feature_1_resonance(
             notifier=notifier,
             state_store=state_store,
-            pool_file=self.pool_path,
             layout_id="ig0LuDL8",
             cold_start=True,
         )
@@ -284,32 +369,32 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
 
     def test_empty_pool_does_not_rearm_cold_start(self):
         notifier = tad.ServerChanNotifier(dry_run=True)
-        state_store = tad.ResonanceStateStore(self.state_path)
+        state_store = tad.ResonanceStateStore(self.db_path)
 
-        self.pool_path.write_text(json.dumps([{"symbol": "INITUSDT", "is_resonance": True}]), encoding="utf-8")
-        self.assertEqual(tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=True), [])
+        db_store.publish_candidates(self.db_path, [{"symbol": "INITUSDT", "is_resonance": True}])
+        self.assertEqual(tad.check_feature_1_resonance(notifier, state_store, cold_start=True), [])
 
-        self.pool_path.write_text("[]", encoding="utf-8")
-        self.assertEqual(tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=True), [])
+        db_store.publish_candidates(self.db_path, [])
+        self.assertEqual(tad.check_feature_1_resonance(notifier, state_store, cold_start=True), [])
         self.assertEqual(state_store.get_active_symbols(), set())
 
-        self.pool_path.write_text(json.dumps([{"symbol": "NEWUSDT", "is_resonance": True}]), encoding="utf-8")
-        alerts = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=True)
+        db_store.publish_candidates(self.db_path, [{"symbol": "NEWUSDT", "is_resonance": True}])
+        alerts = tad.check_feature_1_resonance(notifier, state_store, cold_start=True)
         self.assertEqual([a["symbol"] for a in alerts], ["NEWUSDT"])
 
     def test_failed_send_alert_retries_next_cycle(self):
-        self.pool_path.write_text(json.dumps([{"symbol": "FAILUSDT", "is_resonance": True}]), encoding="utf-8")
+        db_store.publish_candidates(self.db_path, [{"symbol": "FAILUSDT", "is_resonance": True}])
         notifier = tad.ServerChanNotifier(dry_run=True)
-        state_store = tad.ResonanceStateStore(self.state_path)
+        state_store = tad.ResonanceStateStore(self.db_path)
         state_store.data["initialized"] = True
         state_store.save()
 
         with patch.object(notifier, "send_alert", side_effect=[False, True]) as mock_send:
-            alerts1 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path)
+            alerts1 = tad.check_feature_1_resonance(notifier, state_store)
             self.assertEqual(alerts1, [])
             self.assertNotIn("FAILUSDT", state_store.get_active_symbols())
 
-            alerts2 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path)
+            alerts2 = tad.check_feature_1_resonance(notifier, state_store)
             self.assertEqual([a["symbol"] for a in alerts2], ["FAILUSDT"])
             self.assertIn("FAILUSDT", state_store.get_active_symbols())
             self.assertEqual(mock_send.call_count, 2)
@@ -334,10 +419,10 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
                 "zones": [],
             },
         ]
-        self.pool_path.write_text(json.dumps(candidates), encoding="utf-8")
+        db_store.publish_candidates(self.db_path, candidates)
 
         notifier = tad.ServerChanNotifier(dry_run=True)
-        state_store = tad.ResonanceStateStore(self.state_path)
+        state_store = tad.ResonanceStateStore(self.db_path)
         state_store.data["active_resonance_symbols"] = ["GAMMAUSDT"]
         state_store.data["initialized"] = True
         state_store.save()
@@ -345,7 +430,6 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
         alerts = tad.check_feature_1_resonance(
             notifier=notifier,
             state_store=state_store,
-            pool_file=self.pool_path,
             layout_id="ig0LuDL8",
         )
         self.assertEqual(len(alerts), 1)
@@ -365,35 +449,35 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
                 "zones": ["双核共振+逼空"],
             }
         ]
-        self.pool_path.write_text(json.dumps(candidates), encoding="utf-8")
+        db_store.publish_candidates(self.db_path, candidates)
         notifier = tad.ServerChanNotifier(dry_run=True)
-        state_store = tad.ResonanceStateStore(self.state_path)
+        state_store = tad.ResonanceStateStore(self.db_path)
 
-        alerts1 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=False)
+        alerts1 = tad.check_feature_1_resonance(notifier, state_store, cold_start=False)
         self.assertEqual(len(alerts1), 1)
-        alerts2 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=False)
+        alerts2 = tad.check_feature_1_resonance(notifier, state_store, cold_start=False)
         self.assertEqual(len(alerts2), 0)
 
-        self.pool_path.write_text("[]", encoding="utf-8")
-        alerts3 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=False)
+        db_store.publish_candidates(self.db_path, [])
+        alerts3 = tad.check_feature_1_resonance(notifier, state_store, cold_start=False)
         self.assertEqual(len(alerts3), 0)
         self.assertEqual(state_store.get_active_symbols(), set())
 
     def test_feature_1_24h_debounce(self):
         candidates = [{"symbol": "ALPHAUSDT", "price": 1.25, "is_resonance": True, "turnover_ratio": 2.5}]
-        self.pool_path.write_text(json.dumps(candidates), encoding="utf-8")
+        db_store.publish_candidates(self.db_path, candidates)
 
         notifier = tad.ServerChanNotifier(dry_run=True)
-        state_store = tad.ResonanceStateStore(self.state_path)
+        state_store = tad.ResonanceStateStore(self.db_path)
 
-        alerts1 = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=False)
+        alerts1 = tad.check_feature_1_resonance(notifier, state_store, cold_start=False)
         self.assertEqual(len(alerts1), 1)
 
         state_store.data["active_resonance_symbols"] = []
         state_store.save()
 
         alerts2 = tad.check_feature_1_resonance(
-            notifier, state_store, self.pool_path, cold_start=False, debounce_hours=24.0
+            notifier, state_store, cold_start=False, debounce_hours=24.0
         )
         self.assertEqual(len(alerts2), 0)
         self.assertEqual(state_store.get_active_symbols(), {"ALPHAUSDT"})
@@ -403,7 +487,7 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
         state_store.save()
 
         alerts3 = tad.check_feature_1_resonance(
-            notifier, state_store, self.pool_path, cold_start=False, debounce_hours=24.0
+            notifier, state_store, cold_start=False, debounce_hours=24.0
         )
         self.assertEqual(len(alerts3), 1)
 
@@ -420,12 +504,12 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
                 "zones": ["双核黄金共振"],
             }
         ]
-        self.pool_path.write_text(json.dumps(candidates), encoding="utf-8")
+        db_store.publish_candidates(self.db_path, candidates)
         notifier = tad.ServerChanNotifier(dry_run=True)
-        state_store = tad.ResonanceStateStore(self.state_path)
+        state_store = tad.ResonanceStateStore(self.db_path)
 
         with patch.object(notifier, "send_alert", return_value=True) as mock_send:
-            alerts = tad.check_feature_1_resonance(notifier, state_store, self.pool_path, cold_start=False)
+            alerts = tad.check_feature_1_resonance(notifier, state_store, cold_start=False)
         self.assertEqual(len(alerts), 1)
         hist = state_store.data["history"]["NEWCOINUSDT"]
         self.assertEqual(hist["first_detected"], "2026-11-25 13:02:15")
@@ -440,9 +524,9 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
 
         candidates[0]["resonance_detected_at"] = "2026-11-25 18:02:10"
         candidates[0]["resonance_entry_time"] = "11-25 18:02"
-        self.pool_path.write_text(json.dumps(candidates), encoding="utf-8")
+        db_store.publish_candidates(self.db_path, candidates)
         alerts2 = tad.check_feature_1_resonance(
-            notifier, state_store, self.pool_path, cold_start=False, debounce_hours=24.0
+            notifier, state_store, cold_start=False, debounce_hours=24.0
         )
         self.assertEqual(alerts2, [])
         hist2 = state_store.data["history"]["NEWCOINUSDT"]
@@ -462,19 +546,19 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
                 "zones": ["双核黄金共振"],
             }
         ]
-        self.pool_path.write_text(json.dumps(candidates), encoding="utf-8")
+        db_store.publish_candidates(self.db_path, candidates)
         notifier = tad.ServerChanNotifier(dry_run=True)
 
-        daemon_store = tad.ResonanceStateStore(self.state_path)
+        daemon_store = tad.ResonanceStateStore(self.db_path)
         daemon_store.data["active_resonance_symbols"] = ["INITUSDT"]
         daemon_store.data["initialized"] = True
         daemon_store.save()
 
-        cron_store = tad.ResonanceStateStore(self.state_path)
-        alerts_cron = tad.check_feature_1_resonance(notifier, cron_store, self.pool_path, cold_start=False)
+        cron_store = tad.ResonanceStateStore(self.db_path)
+        alerts_cron = tad.check_feature_1_resonance(notifier, cron_store, cold_start=False)
         self.assertEqual(len(alerts_cron), 1)
 
-        alerts_daemon = tad.check_feature_1_resonance(notifier, daemon_store, self.pool_path, cold_start=False)
+        alerts_daemon = tad.check_feature_1_resonance(notifier, daemon_store, cold_start=False)
         self.assertEqual(len(alerts_daemon), 0)
         self.assertIn("BLESSUSDT", daemon_store.get_active_symbols())
 
@@ -484,8 +568,8 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
-        self.state_path = Path(self.test_dir) / "resonance_state.json"
-        self.state_store = tad.ResonanceStateStore(self.state_path)
+        self.db_path = Path(self.test_dir) / "test.sqlite3"
+        self.state_store = tad.ResonanceStateStore(self.db_path)
         self.state_store.data["active_resonance_symbols"] = ["YBUSDT"]
         self.state_store.data["initialized"] = True
         self.state_store.save()
@@ -655,10 +739,9 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         now = int(time.time())
         with self.state_store.transaction():
             for i in range(250):
-                self.state_store.mark_breakout_notified(f"SYM{i}_L{i}", timestamp_sec=now - 3600, auto_save=False)
-            self.state_store.save()
+                self.state_store.mark_breakout_notified(f"SYM{i}_L{i}", timestamp_sec=now - 3600)
 
-        reloaded = tad.ResonanceStateStore(self.state_path)
+        reloaded = tad.ResonanceStateStore(self.db_path)
         self.assertTrue(reloaded.has_breakout_notified("SYM0_L0"))
         self.assertEqual(len(reloaded.data["notified_breakout_keys"]), 250)
 
@@ -667,10 +750,14 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         line_240m = {"id": "line_4h", "interval": "240", "p1": 0.063, "t1": now_ts - 36000, "p2": 0.057, "t2": now_ts - 3600}
         line_d = {"id": "line_daily", "interval": "D", "p1": 0.063, "t1": now_ts - 36000, "p2": 0.057, "t2": now_ts - 3600}
         line_ancient = {"id": "line_ancient", "interval": "15", "p1": 0.07, "t1": now_ts - 90 * 3600, "p2": 0.06, "t2": now_ts - 80 * 3600}
+        line_far_future = {"id": "line_future", "interval": "15", "p1": 0.07, "t1": now_ts - 3600, "p2": 0.06, "t2": now_ts + 86400 * 60}
+        line_near_future = {"id": "line_near_future", "interval": "15", "p1": 0.07, "t1": now_ts - 3600, "p2": 0.06, "t2": now_ts + 3600}
 
         self.assertFalse(tad.is_valid_15m_trendline(line_240m, current_time=now_ts))
         self.assertFalse(tad.is_valid_15m_trendline(line_d, current_time=now_ts))
         self.assertFalse(tad.is_valid_15m_trendline(line_ancient, current_time=now_ts))
+        self.assertFalse(tad.is_valid_15m_trendline(line_far_future, current_time=now_ts))
+        self.assertTrue(tad.is_valid_15m_trendline(line_near_future, current_time=now_ts))
 
         runaway_line = {"id": "runaway", "interval": "15", "p1": 0.010, "t1": now_ts - 7200, "p2": 0.008, "t2": now_ts - 3600}
         candle_runaway = {
@@ -690,22 +777,73 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
                 alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
                 self.assertEqual(len(alerts), 0)
 
+    def test_malformed_drawing_does_not_abort_remaining_symbols(self):
+        self.state_store.data["active_resonance_symbols"] = ["AAAUSDT", "YBUSDT"]
+        self.state_store.save()
+        bad_line = {"id": "bad_1", "interval": "15", "p1": None, "t1": 1795104900, "p2": 0.05, "t2": 1795155300}
+        good_line = {"id": "SFzHy9", "interval": "15", "p1": 0.06306, "t1": 1795104900, "p2": 0.05757, "t2": 1795155300}
+        candle_aaa = {
+            "symbol": "AAAUSDT",
+            "open": 1.0,
+            "close": 1.1,
+            "open_time": 1795234500,
+            "close_time": 1795235399,
+            "prev_candle": {"close": 0.9, "open_time": 1795233600, "close_time": 1795234499},
+        }
+        candle_yb = {
+            "symbol": "YBUSDT",
+            "open": 0.04982,
+            "close": 0.05030,
+            "open_time": 1795234500,
+            "close_time": 1795235399,
+            "candle_time": "2026-11-21 12:15",
+            "prev_candle": {"close": 0.04975, "open_time": 1795233600, "close_time": 1795234499},
+        }
+        with patch.object(tad, "fetch_layout_drawings", return_value={"AAAUSDT": [bad_line], "YBUSDT": [good_line]}), patch.object(
+            tad, "get_closed_15m_candle", side_effect=lambda sym: candle_aaa if sym == "AAAUSDT" else candle_yb
+        ):
+            alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0]["symbol"], "YBUSDT")
+
+    def test_stale_candle_rejected_and_marks_had_error_for_f2(self):
+        current_bucket = 1795235400  # expected open_time = 1795234500
+        trendline = {"id": "SFzHy9", "interval": "15", "p1": 0.06306, "t1": 1795104900, "p2": 0.05757, "t2": 1795155300}
+        stale_candle = {
+            "symbol": "YBUSDT",
+            "open": 0.04982,
+            "close": 0.05030,
+            "open_time": 1795233600,  # one bucket too old!
+            "close_time": 1795234499,
+            "prev_candle": {"close": 0.04975, "open_time": 1795232700, "close_time": 1795233599},
+        }
+        status = {}
+        candle_cache = {}
+        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}), patch.object(
+            tad, "get_closed_15m_candle", return_value=stale_candle
+        ):
+            alerts = tad.check_feature_2_breakout(
+                self.notifier, self.state_store, candle_cache=candle_cache, status=status, current_bucket=current_bucket
+            )
+        self.assertEqual(alerts, [])
+        self.assertTrue(status.get("had_error"))
+        self.assertNotIn("YBUSDT", candle_cache)
+
 
 class TestFeature3PositionStopLoss(unittest.TestCase):
     """5. Feature 3: Position stop-loss and trendline persistence"""
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
-        self.pos_path = Path(self.test_dir) / "trade_positions.json"
-        self.pos_store = tad.PositionStore(self.pos_path)
+        self.db_path = Path(self.test_dir) / "test.sqlite3"
+        self.pos_store = tad.PositionStore(self.db_path)
         self.notifier = tad.ServerChanNotifier(dry_run=True)
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_pending_breakout_retries_after_restart(self):
-        state_path = Path(self.test_dir) / "resonance.json"
-        store = tad.ResonanceStateStore(state_path)
+        store = tad.ResonanceStateStore(self.db_path)
         store.data["pending_breakouts"] = {
             "TEST_line": {
                 "symbol": "TEST",
@@ -722,12 +860,12 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
             tad, "fetch_layout_drawings", return_value={}
         ):
             tad.check_feature_2_breakout(self.notifier, store)
-            store = tad.ResonanceStateStore(state_path)
+            store = tad.ResonanceStateStore(self.db_path)
             self.assertIn("TEST_line", store.data["pending_breakouts"])
             self.assertFalse(store.has_breakout_notified("TEST_line"))
 
             tad.check_feature_2_breakout(self.notifier, store)
-            store = tad.ResonanceStateStore(state_path)
+            store = tad.ResonanceStateStore(self.db_path)
             self.assertNotIn("TEST_line", store.data["pending_breakouts"])
             self.assertTrue(store.has_breakout_notified("TEST_line"))
             self.assertEqual(send.call_count, 2)
@@ -748,7 +886,9 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
             self.assertEqual(len(alerts), 1)
             self.assertEqual(alerts[0]["status"], "STOP_LOSS_TRIGGERED")
             self.assertEqual(alerts[0]["exit_price"], 7.60)
+            self.assertAlmostEqual(alerts[0]["realized_pnl_pct"], -15.56, places=2)
             self.assertEqual(len(self.pos_store.get_open_positions()), 0)
+            self.assertAlmostEqual(self.pos_store.get_history()[0]["realized_pnl_pct"], -15.56, places=2)
 
     def test_failed_stop_loss_retries_and_keeps_live_position_open(self):
         trendline = {"p1": 10.0, "t1": 0, "p2": 6.4, "t2": 100}
@@ -758,12 +898,12 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
             with patch.object(tad, "get_closed_15m_candle", return_value=candle):
                 self.assertEqual(tad.check_feature_3_stop_loss(self.notifier, self.pos_store), [])
 
-            store = tad.PositionStore(self.pos_path)
+            store = tad.PositionStore(self.db_path)
             self.assertFalse(store.get_open_positions()[0]["stop_loss_notified"])
             with patch.object(tad, "get_closed_15m_candle", side_effect=bc.BinanceAPIError("unused")):
                 self.assertEqual(len(tad.check_feature_3_stop_loss(self.notifier, store)), 1)
                 self.assertTrue(store.get_open_positions()[0]["stop_loss_notified"])
-                self.assertEqual(store.data["history"], [])
+                self.assertEqual(store.get_history(), [])
                 self.assertEqual(tad.check_feature_3_stop_loss(self.notifier, store), [])
             self.assertEqual(send.call_count, 2)
 
@@ -795,8 +935,24 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
         ):
             alerts = tad.check_feature_3_stop_loss(self.notifier, self.pos_store)
         self.assertEqual(alerts, [])
-        reloaded = tad.PositionStore(self.pos_path)
+        reloaded = tad.PositionStore(self.db_path)
         self.assertEqual(reloaded.get_open_positions()[0]["trendline"]["id"], "AUTO_TL")
+
+    def test_stale_candle_rejected_and_marks_had_error_for_f3(self):
+        current_bucket = 1795235400
+        trendline = {"p1": 10.0, "t1": 0, "p2": 6.4, "t2": 100, "id": "support_line_1"}
+        self.pos_store.add_position("TESTUSDT", entry_price=9.0, amount=100.0, trendline=trendline)
+        stale_candle = {"symbol": "TESTUSDT", "open_time": 1795233600, "close_time": 1795234499, "close": 1.0}
+        status = {}
+        candle_cache = {}
+        with patch.object(tad, "get_closed_15m_candle", return_value=stale_candle):
+            alerts = tad.check_feature_3_stop_loss(
+                self.notifier, self.pos_store, candle_cache=candle_cache, status=status, current_bucket=current_bucket
+            )
+        self.assertEqual(alerts, [])
+        self.assertTrue(status.get("had_error"))
+        self.assertNotIn("TESTUSDT", candle_cache)
+        self.assertEqual(len(self.pos_store.get_open_positions()), 1)
 
 
 class TestFeature4TrailingStopProtection(unittest.TestCase):
@@ -804,8 +960,8 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
-        self.pos_path = Path(self.test_dir) / "trade_positions.json"
-        self.pos_store = tad.PositionStore(self.pos_path)
+        self.db_path = Path(self.test_dir) / "test.sqlite3"
+        self.pos_store = tad.PositionStore(self.db_path)
         self.notifier = tad.ServerChanNotifier(dry_run=True)
 
     def tearDown(self):
@@ -819,7 +975,7 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
                 self.notifier, self.pos_store, activation_pct=6.0, lock_pct=1.0
             )
             self.assertEqual(len(events1), 0)
-            reloaded = tad.PositionStore(self.pos_path)
+            reloaded = tad.PositionStore(self.db_path)
             self.assertEqual(reloaded.get_open_positions()[0]["highest_price"], 1.0500)
             self.assertEqual(reloaded.get_open_positions()[0]["current_price"], 1.0500)
 
@@ -838,6 +994,7 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
             self.assertEqual(len(events3), 1)
             self.assertEqual(events3[0]["type"], "PROFIT_LOCK_EXIT")
             self.assertEqual(len(self.pos_store.get_open_positions()), 0)
+            self.assertAlmostEqual(self.pos_store.get_history()[0]["realized_pnl_pct"], 0.90, places=2)
 
     def test_failed_profit_lock_retries_after_price_rebounds(self):
         self.pos_store.add_position("COINUSDT", 1.0, amount=1.0, source="BINANCE_SYNC")
@@ -848,32 +1005,29 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
                 side_effect=[{"COINUSDT": 1.07}, {"COINUSDT": 1.009}, {"COINUSDT": 1.03}],
             ):
                 self.assertEqual(tad.check_feature_4_trailing_stops(self.notifier, self.pos_store), [])
-                store = tad.PositionStore(self.pos_path)
+                store = tad.PositionStore(self.db_path)
                 events = tad.check_feature_4_trailing_stops(self.notifier, store)
                 self.assertEqual([e["type"] for e in events], ["TRAILING_ACTIVATED"])
-                store = tad.PositionStore(self.pos_path)
+                store = tad.PositionStore(self.db_path)
                 events = tad.check_feature_4_trailing_stops(self.notifier, store)
                 self.assertEqual([e["type"] for e in events], ["PROFIT_LOCK_EXIT"])
             self.assertTrue(store.get_open_positions()[0]["profit_lock_notified"])
             self.assertIn("$1.0090", send.call_args.args[1])
 
     def test_zero_entry_price_guarded_without_crash(self):
-        self.pos_store.data["positions"].append({"symbol": "BADUSDT", "entry_price": 0.0, "status": "OPEN"})
-        self.pos_store.save()
+        db_store.upsert_open_position(self.db_path, {"symbol": "BADUSDT", "entry_price": 0.0, "status": "OPEN"})
         with patch.object(tad, "fetch_ticker_prices", return_value={"BADUSDT": 1.5}):
             events = tad.check_feature_4_trailing_stops(self.notifier, self.pos_store)
         self.assertEqual(events, [])
 
 
 class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
-    """7. Logging isolation, corrupt-JSON fail-fast, daemon bucket control, and CLI main()"""
+    """7. Logging isolation, corrupt-DB fail-fast, daemon bucket control, and CLI main()"""
 
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
-        self.pos_file = Path(self.test_dir) / "trade_positions.json"
-        self.state_file = Path(self.test_dir) / "resonance_state.json"
-        self.pool_file = Path(self.test_dir) / "pool.json"
-        self.pool_file.write_text("[]", encoding="utf-8")
+        self.db_path = Path(self.test_dir) / "test.sqlite3"
+        db_store.publish_candidates(self.db_path, [], updated_at="2026-11-25 11:00:00+08:00")
 
     def tearDown(self):
         shutil.rmtree(self.test_dir, ignore_errors=True)
@@ -891,13 +1045,17 @@ class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
         self.assertNotIn("[tv_engine]", content)
 
     def test_corrupt_json_store_raises_instead_of_wiping(self):
-        self.pos_file.write_text("{corrupt json", encoding="utf-8")
+        corrupt_pos_db = Path(self.test_dir) / "corrupt_pos.sqlite3"
+        with db_store.transaction(corrupt_pos_db) as conn:
+            conn.execute("INSERT INTO open_positions (symbol, payload) VALUES ('BAD', '{corrupt json')")
         with self.assertRaises(json.JSONDecodeError):
-            tad.PositionStore(self.pos_file)
+            tad.PositionStore(corrupt_pos_db)
 
-        self.state_file.write_text("[1, 2, 3]", encoding="utf-8")
+        corrupt_res_db = Path(self.test_dir) / "corrupt_res.sqlite3"
+        with db_store.transaction(corrupt_res_db) as conn:
+            conn.execute("INSERT INTO resonance_state (id, payload) VALUES (1, '[1, 2, 3]')")
         with self.assertRaises(ValueError):
-            tad.ResonanceStateStore(self.state_file)
+            tad.ResonanceStateStore(corrupt_res_db)
 
     def test_daemon_startup_avoids_double_run_and_retries_failed_15m_bucket(self):
         cfg_map = {
@@ -905,12 +1063,9 @@ class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
             "binance_api_key": "",
             "binance_api_secret": "",
             "tradingview_layout_id": "ig0LuDL8",
-            "resonance_pool_file": str(self.pool_file),
-            "resonance_state_file": str(self.state_file),
-            "positions_file": str(self.pos_file),
             "trailing_activation_pct": 6.0,
             "trailing_lock_pct": 1.0,
-            "database_path": None,
+            "database_path": self.db_path,
         }
         daemon = tad.TradeAlertDaemon(cfg_map, dry_run=True)
 
@@ -926,9 +1081,12 @@ class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
             daemon.run_iteration(now=bucket_ts + 25)
             self.assertEqual(f2_mock.call_count, 1)  # 60s 退避内不重复刷屏
             self.assertEqual(f1_mock.call_count, 1)  # 快照未更新不重复扫描 Feature 1
-            # 模拟小时扫描更新了候选池文件：即使不在 15m 收盘点，10s 节拍也会立即触发 Feature 1
-            os.utime(self.pool_file, (bucket_ts + 30, bucket_ts + 30))
-            self.pool_file.write_text('[{"symbol":"NEWUSDT"}]', encoding="utf-8")
+            # 模拟小时扫描更新了 SQLite 候选池快照：即使不在 15m 收盘点，10s 节拍也会立即触发 Feature 1
+            db_store.publish_candidates(
+                self.db_path,
+                [{"symbol": "NEWUSDT"}],
+                updated_at="2026-11-25 12:00:00+08:00",
+            )
             daemon.run_iteration(now=bucket_ts + 35)
             self.assertEqual(f1_mock.call_count, 2)
             daemon.run_iteration(now=bucket_ts + 80)
@@ -943,6 +1101,65 @@ class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
             self.assertEqual(daemon.last_evaluated_15m_bucket, bucket_ts)
             daemon.run_iteration(now=bucket_ts + 155)
             self.assertEqual(f2_ok.call_count, 1)
+
+    def test_daemon_retries_feature_3_independently_on_transient_or_stale_error(self):
+        cfg_map = {
+            "tradingview_layout_id": "ig0LuDL8",
+            "database_path": self.db_path,
+        }
+        daemon = tad.TradeAlertDaemon(cfg_map, dry_run=True)
+        bucket_ts = 1800000000
+        f3_calls = []
+
+        def fake_f3(*args, status=None, **kwargs):
+            f3_calls.append(1)
+            if len(f3_calls) == 1 and status is not None:
+                status["had_error"] = True
+            return []
+
+        with patch.object(tad, "check_feature_1_resonance", return_value=[]), patch.object(
+            tad, "check_feature_2_breakout", return_value=[]
+        ) as f2_mock, patch.object(tad, "check_feature_3_stop_loss", side_effect=fake_f3), patch.object(
+            tad, "check_feature_4_trailing_stops", return_value=[]
+        ):
+            daemon.run_iteration(now=bucket_ts + 15)
+            self.assertEqual(len(f3_calls), 1)
+            self.assertEqual(f2_mock.call_count, 1)
+            self.assertEqual(daemon.last_evaluated_15m_bucket, 0)  # F3 failed -> bucket NOT marked done
+
+            daemon.run_iteration(now=bucket_ts + 25)  # within 60s cooldown
+            self.assertEqual(len(f3_calls), 1)
+
+            daemon.run_iteration(now=bucket_ts + 80)  # F3 retries and succeeds; F2 already done
+            self.assertEqual(len(f3_calls), 2)
+            self.assertEqual(f2_mock.call_count, 1)
+            self.assertEqual(daemon.last_evaluated_15m_bucket, bucket_ts)
+
+    def test_daemon_start_survives_transient_errors_and_raises_fatal_errors(self):
+        cfg_map = {
+            "tradingview_layout_id": "ig0LuDL8",
+            "database_path": self.db_path,
+        }
+        daemon = tad.TradeAlertDaemon(cfg_map, dry_run=True)
+
+        def transient_then_stop():
+            if not getattr(transient_then_stop, "called", False):
+                transient_then_stop.called = True
+                raise bc.BinanceAPIError("temporary 503", code=503)
+            daemon.running = False
+
+        with patch.object(tad.signal, "signal"), patch.object(
+            tad, "run_evaluation_cycle", side_effect=bc.BinanceAPIError("startup 503", code=503)
+        ), patch.object(daemon, "run_iteration", side_effect=transient_then_stop), patch("time.sleep"):
+            daemon.start()
+        self.assertFalse(daemon.running)
+
+        daemon2 = tad.TradeAlertDaemon(cfg_map, dry_run=True)
+        with patch.object(tad.signal, "signal"), patch.object(
+            tad, "run_evaluation_cycle", return_value={"feature_2_had_error": False, "feature_3_had_error": False}
+        ), patch.object(daemon2, "run_iteration", side_effect=ValueError("corrupt state")), patch("time.sleep"):
+            with self.assertRaises(ValueError):
+                daemon2.start()
 
     def test_dotenv_inline_comments_and_quoted_hash(self):
         env_path = Path(self.test_dir) / ".env"
@@ -966,12 +1183,9 @@ class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
             "binance_api_key": "",
             "binance_api_secret": "",
             "tradingview_layout_id": "ig0LuDL8",
-            "resonance_pool_file": str(self.pool_file),
-            "resonance_state_file": str(self.state_file),
-            "positions_file": str(self.pos_file),
             "trailing_activation_pct": 6.0,
             "trailing_lock_pct": 1.0,
-            "database_path": None,
+            "database_path": self.db_path,
         }
         with patch.object(tad, "configure_logging", return_value=[]), patch.object(
             tad, "load_config", return_value=cfg_map

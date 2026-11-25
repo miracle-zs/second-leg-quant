@@ -1,5 +1,7 @@
 [Unit]
 Description=AI Coin Selector dashboard API
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 User=ai-coin-selector

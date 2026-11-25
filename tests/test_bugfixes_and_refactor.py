@@ -28,6 +28,8 @@ import account_dashboard_api as api
 import binance_client as bc
 import binance_position_client as bpc
 import config as cfg
+import db_store
+import http_client
 import tv_trendline_engine as tve
 
 
@@ -36,12 +38,12 @@ class TestTrendlineMatchingAndSelection(unittest.TestCase):
 
     def test_exact_symbol_matching_prevents_substring_collision(self):
         drawings = {
-            "BINANCE:ETHUSDT.P": [{"id": "ETH_LINE", "p1": 3500.0, "t1": 1000, "p2": 3400.0, "t2": 2000}],
-            "BINANCE:1000CATUSDT.P": [{"id": "CAT_LINE", "p1": 0.05, "t1": 1000, "p2": 0.04, "t2": 2000}],
+            cfg.clean_symbol("BINANCE:ETHUSDT.P"): [{"id": "ETH_LINE", "p1": 3500.0, "t1": 1000, "p2": 3400.0, "t2": 2000}],
+            cfg.clean_symbol("BINANCE:1000CATUSDT.P"): [{"id": "CAT_LINE", "p1": 0.05, "t1": 1000, "p2": 0.04, "t2": 2000}],
         }
         self.assertIsNone(bpc.match_symbol_drawings("HUSDT", drawings))
         self.assertIsNone(bpc.match_symbol_drawings("ATUSDT", drawings))
-        eth_match = bpc.match_symbol_drawings("ETHUSDT", drawings)
+        eth_match = bpc.match_symbol_drawings("BINANCE:ETHUSDT.P", drawings)
         self.assertIsNotNone(eth_match)
         self.assertEqual(eth_match[0]["id"], "ETH_LINE")
 
@@ -74,32 +76,49 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
     def test_cached_principal_preserved_when_income_page_becomes_full(self):
         client = bpc.BinanceFuturesClient("demo", "demo")
         engine = aae.AccountAnalyticsEngine(client=client)
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - 2_000_000
         with tempfile.TemporaryDirectory() as tmp:
-            out_path = Path(tmp) / "account_analytics.json"
+            db_path = Path(tmp) / "account.sqlite3"
             prev_report = {
+                "recording": {
+                    "start_ms": start_ms,
+                    "started_at": cfg.get_beijing_time_str(start_ms / 1000.0),
+                    "initial_equity": 1336.0,
+                },
+                "equity_curve": [
+                    {"timestamp": start_ms, "equity": 1336.0, "drawdown_usd": 0.0, "drawdown_pct": 0.0}
+                ],
                 "summary": {"initial_capital": 1336.0},
-                "income_breakdown": {"principal_source": "income_window"},
+                "income_breakdown": {"principal_source": "recording_start"},
             }
-            out_path.write_text(json.dumps(prev_report), encoding="utf-8")
+            db_store.publish_report(db_path, prev_report)
 
             full_income = [
-                {"incomeType": "REALIZED_PNL", "income": "1", "time": 1795200000000 + i * 1000}
+                {"incomeType": "REALIZED_PNL", "tranId": i + 1, "income": "1", "time": start_ms + i * 1000}
                 for i in range(aae.INCOME_PAGE_LIMIT)
             ]
+
+            def fake_signed(endpoint, params=None):
+                if endpoint == "/fapi/v2/account":
+                    return {"totalWalletBalance": "477.91", "totalMarginBalance": "477.91"}
+                if endpoint == "/fapi/v1/income":
+                    s_t = int(params["startTime"])
+                    e_t = int(params["endTime"])
+                    return [item for item in full_income if s_t <= int(item["time"]) <= e_t]
+                return []
+
             with patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client,
                 "_send_signed_request",
-                side_effect=[
-                    ({"totalWalletBalance": "477.91", "totalMarginBalance": "477.91"}, None),
-                    (full_income, None),
-                    ([], None),
-                ],
+                side_effect=fake_signed,
             ):
-                report = engine.run(out_path)
+                report = engine.run(database=db_path)
 
             self.assertEqual(report["summary"]["initial_capital"], 1336.0)
-            self.assertEqual(report["income_breakdown"]["principal_source"], "cached_baseline")
-            self.assertTrue(report["income_breakdown"]["page_full"])
+            self.assertEqual(report["income_breakdown"]["principal_source"], "recording_start")
+            self.assertFalse(report["income_breakdown"]["page_full"])
+            self.assertEqual(report["income_breakdown"]["raw_count"], aae.INCOME_PAGE_LIMIT)
 
     def test_database_first_run_with_existing_equity_table_does_not_crash(self):
         client = bpc.BinanceFuturesClient("demo", "demo")
@@ -114,7 +133,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
                 "fetch_binance_data",
                 return_value=({"totalWalletBalance": "500", "totalMarginBalance": "500"}, [], [], status),
             ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
-                client, "_send_signed_request", return_value=([], None)
+                client, "_send_signed_request", return_value=[]
             ):
                 report = engine.run(database=db_path)
             self.assertEqual(report["recording"]["initial_equity"], 500.0)
@@ -182,7 +201,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
         status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "account.sqlite3"
-            api.publish_report(db_path, previous)
+            db_store.publish_report(db_path, previous)
             with patch.object(
                 engine,
                 "fetch_binance_data",
@@ -190,7 +209,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
             ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client,
                 "_send_signed_request",
-                side_effect=lambda endpoint, params: (income if endpoint == "/fapi/v1/income" else fills, None),
+                side_effect=lambda endpoint, params=None: income if endpoint == "/fapi/v1/income" else fills,
             ):
                 report = engine.run(database=db_path)
 
@@ -212,7 +231,7 @@ class TestConcurrentTransactionLocking(unittest.TestCase):
     def test_position_store_transaction_prevents_lost_updates_across_processes(self):
         import subprocess
         with tempfile.TemporaryDirectory() as tmp:
-            pos_file = Path(tmp) / "positions.json"
+            db_path = Path(tmp) / "test.sqlite3"
             worker_code = """
 import sys, time
 from pathlib import Path
@@ -224,45 +243,58 @@ with store.transaction():
     time.sleep(0.05)
     store.add_position(sym, 1.23, amount=10.0)
 """
-            p1 = subprocess.Popen([sys.executable, "-c", worker_code, str(SCRIPTS_DIR), str(pos_file), "AAAUSDT"])
-            p2 = subprocess.Popen([sys.executable, "-c", worker_code, str(SCRIPTS_DIR), str(pos_file), "BBBUSDT"])
+            p1 = subprocess.Popen([sys.executable, "-c", worker_code, str(SCRIPTS_DIR), str(db_path), "AAAUSDT"])
+            p2 = subprocess.Popen([sys.executable, "-c", worker_code, str(SCRIPTS_DIR), str(db_path), "BBBUSDT"])
             self.assertEqual(p1.wait(timeout=10), 0)
             self.assertEqual(p2.wait(timeout=10), 0)
 
             import trade_alert_daemon as tad
-            final_store = tad.PositionStore(pos_file)
+            final_store = tad.PositionStore(db_path)
             syms = sorted(p["symbol"] for p in final_store.get_open_positions())
             self.assertEqual(syms, ["AAAUSDT", "BBBUSDT"])
 
 
 class TestBinanceClientAndConfig(unittest.TestCase):
-    """验证统一客户端时间偏移缓存与 config.py 工具"""
+    """验证统一客户端时间偏移缓存与 config.py / db_store 工具"""
 
     def test_server_time_cached_within_ttl(self):
         client = bc.BinanceFuturesClient("demo", "demo", time_sync_ttl=600.0)
-        mock_resp = MagicMock()
-        mock_resp.__enter__.return_value.read.return_value = json.dumps({"serverTime": int(time.time() * 1000)}).encode()
-
-        with patch("urllib.request.urlopen", return_value=mock_resp) as mock_open:
+        with patch.object(
+            bc.http_client,
+            "request_json",
+            return_value={"serverTime": int(time.time() * 1000)},
+        ) as mock_req:
             t1 = client.get_server_time()
             t2 = client.get_server_time()
             self.assertGreater(t1, 0)
             self.assertGreaterEqual(t2, t1 - 5)
-            self.assertEqual(mock_open.call_count, 1)
+            self.assertEqual(mock_req.call_count, 1)
 
-    def test_config_file_lock_and_atomic_write(self):
+    def test_sqlite_transaction_and_dotenv_unclosed_quote(self):
         with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "state.json"
-            with cfg.file_lock(p):
-                cfg.atomic_write_json(p, {"ok": True, "count": 42})
-            loaded = json.loads(p.read_text(encoding="utf-8"))
-            self.assertEqual(loaded, {"ok": True, "count": 42})
+            db_path = Path(tmp) / "state.sqlite3"
+            with db_store.transaction(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO resonance_state (id, payload) VALUES (1, ?)",
+                    (json.dumps({"initialized": True}),),
+                )
+            with self.assertRaises(RuntimeError):
+                with db_store.transaction(db_path) as conn:
+                    conn.execute("UPDATE resonance_state SET payload = '{}' WHERE id = 1")
+                    raise RuntimeError("abort tx")
+            loaded = db_store.load_resonance_state(db_path)
+            self.assertTrue(loaded["initialized"])
+
+            bad_env = Path(tmp) / ".env"
+            bad_env.write_text('BINANCE_API_KEY="unclosed\n', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                cfg.load_dotenv(bad_env)
 
 
 class TestDashboardAPIRoutes(unittest.TestCase):
-    """验证 account_dashboard_api.py 静态壳路由、ETag 缓存、重定向与安全边界"""
+    """验证 account_dashboard_api.py 静态壳路由、ETag 缓存、HEAD 请求与安全边界"""
 
-    def _invoke_get(self, handler_cls, raw_path: str, headers: dict = None):
+    def _invoke_request(self, handler_cls, method: str, raw_path: str, headers: dict = None):
         import io
         handler = handler_cls.__new__(handler_cls)
         handler.path = raw_path
@@ -288,13 +320,19 @@ class TestDashboardAPIRoutes(unittest.TestCase):
         handler.end_headers = fake_end_headers
         handler.send_error = fake_send_error
         handler.log_error = lambda *a, **kw: None
-        handler.do_GET()
+        if method == "HEAD":
+            handler.do_HEAD()
+        else:
+            handler.do_GET()
         return status_box.get("code", 0), resp_headers, handler.wfile.getvalue()
+
+    def _invoke_get(self, handler_cls, raw_path: str, headers: dict = None):
+        return self._invoke_request(handler_cls, "GET", raw_path, headers=headers)
 
     def test_static_shells_redirects_apis_and_etags(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.sqlite3"
-            api.publish_report(
+            db_store.publish_report(
                 db_path,
                 {
                     "summary": {"total_equity": 1234.56},
@@ -304,20 +342,17 @@ class TestDashboardAPIRoutes(unittest.TestCase):
                     "daily_pnl": [],
                 },
             )
-            with closing(cfg.open_sqlite_connection(db_path, readonly=False)) as conn, conn:
-                conn.execute(
-                    "CREATE TABLE candidate_snapshot (id INTEGER PRIMARY KEY, updated_at TEXT NOT NULL, payload TEXT NOT NULL)"
-                )
-                conn.execute(
-                    "INSERT INTO candidate_snapshot VALUES (1, '2026-11-23 12:00:00', ?)",
-                    (json.dumps([{"symbol": "BTCUSDT"}]),),
-                )
+            db_store.publish_candidates(
+                db_path,
+                [{"symbol": "BTCUSDT"}],
+                updated_at="2026-11-23T12:00:00+08:00",
+            )
 
             handler_cls = api.create_handler(db_path)
 
             # 1. Pure static shells & XSS immunity against X-Forwarded-Prefix
             xss_headers = {"X-Forwarded-Prefix": "</script><script>alert(1)</script>"}
-            for route in ("/", "/candidates", "/index.html"):
+            for route in ("/", "/index.html"):
                 code, headers, body = self._invoke_get(handler_cls, route, headers=xss_headers)
                 self.assertEqual(code, 200)
                 self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
@@ -338,35 +373,47 @@ class TestDashboardAPIRoutes(unittest.TestCase):
             self.assertEqual(code, 200)
             self.assertIn("static/styles.css", body.decode("utf-8"))
 
-            # 2. Trailing-slash & legacy playbook redirects
-            code, headers, body = self._invoke_get(handler_cls, "/account/")
-            self.assertEqual(code, 302)
-            self.assertEqual(headers["location"], "../account.html")
-            self.assertEqual(body, b"")
+            # 2. Deleted legacy routes all return 404
+            for deleted_route in (
+                "/candidates",
+                "/account/",
+                "/strategy/",
+                "/reports/strategy_second_leg_playbook.html",
+                "/account?t=123",
+                "/strategy",
+                "/candidate-version",
+            ):
+                code, _, _ = self._invoke_get(handler_cls, deleted_route)
+                self.assertEqual(code, 404, f"Expected 404 for deleted legacy route {deleted_route}")
 
-            for old_pb in ("/strategy/", "/reports/strategy_second_leg_playbook.html"):
-                code, headers, body = self._invoke_get(handler_cls, old_pb)
-                self.assertEqual(code, 302)
-                self.assertEqual(headers["location"], "../playbook.html")
-                self.assertEqual(body, b"")
+            # 3. JSON APIs & ETag / 304 Not Modified + HEAD support
+            code, headers, body = self._invoke_get(handler_cls, "/api/account?t=123")
+            self.assertEqual(code, 200)
+            self.assertEqual(json.loads(body)["summary"]["total_equity"], 1234.56)
+            etag = headers["etag"]
+            code_304, headers_304, body_304 = self._invoke_get(
+                handler_cls, "/api/account?t=123", headers={"If-None-Match": etag}
+            )
+            self.assertEqual(code_304, 304)
+            self.assertEqual(headers_304["etag"], etag)
+            self.assertEqual(body_304, b"")
 
-            # 3. JSON APIs & ETag / 304 Not Modified
-            for route in ("/account?t=123", "/api/account?t=123"):
-                code, headers, body = self._invoke_get(handler_cls, route)
-                self.assertEqual(code, 200)
-                self.assertEqual(json.loads(body)["summary"]["total_equity"], 1234.56)
-                etag = headers["etag"]
-                code_304, headers_304, body_304 = self._invoke_get(
-                    handler_cls, route, headers={"If-None-Match": etag}
-                )
-                self.assertEqual(code_304, 304)
-                self.assertEqual(headers_304["etag"], etag)
-                self.assertEqual(body_304, b"")
+            code_head, headers_head, body_head = self._invoke_request(handler_cls, "HEAD", "/api/account")
+            self.assertEqual(code_head, 200)
+            self.assertEqual(headers_head["etag"], etag)
+            self.assertEqual(headers_head["content-length"], str(len(body)))
+            self.assertEqual(body_head, b"")
+
+            code_head_root, headers_head_root, body_head_root = self._invoke_request(handler_cls, "HEAD", "/")
+            self.assertEqual(code_head_root, 200)
+            self.assertEqual(headers_head_root["content-type"], "text/html; charset=utf-8")
+            self.assertGreater(int(headers_head_root["content-length"]), 0)
+            self.assertEqual(body_head_root, b"")
 
             code, headers, body = self._invoke_get(handler_cls, "/api/candidates")
             self.assertEqual(code, 200)
             cand_payload = json.loads(body)
-            self.assertEqual(cand_payload["updated_at"], "2026-11-23 12:00:00")
+            self.assertEqual(cand_payload["updated_at"], "2026-11-23T12:00:00+08:00")
             self.assertEqual(cand_payload["candidates"], [{"symbol": "BTCUSDT"}])
             cand_etag = headers["etag"]
             code_304, _, body_304 = self._invoke_get(
@@ -377,7 +424,7 @@ class TestDashboardAPIRoutes(unittest.TestCase):
 
             code, _, body = self._invoke_get(handler_cls, "/api/candidate-version?v=1")
             self.assertEqual(code, 200)
-            self.assertEqual(json.loads(body)["updated_at"], "2026-11-23 12:00:00")
+            self.assertEqual(json.loads(body)["updated_at"], "2026-11-23T12:00:00+08:00")
 
             # 4. Static assets & 404
             for asset in ("/static/account.js", "/static/candidates.js", "/static/styles.css"):
@@ -387,6 +434,15 @@ class TestDashboardAPIRoutes(unittest.TestCase):
 
             code, _, _ = self._invoke_get(handler_cls, "/unknown?x=1")
             self.assertEqual(code, 404)
+
+            # 5. Missing static HTML shell returns 404 cleanly (no FileNotFoundError crash)
+            empty_web = Path(tmp) / "empty_web"
+            empty_web.mkdir()
+            with patch.object(api, "WEB_DIR", empty_web):
+                missing_handler_cls = api.create_handler(db_path)
+                for shell_route in ("/", "/index.html", "/account.html", "/playbook.html"):
+                    code, _, _ = self._invoke_get(missing_handler_cls, shell_route)
+                    self.assertEqual(code, 404, f"Expected 404 when static HTML missing for {shell_route}")
 
     def test_static_path_traversal_and_binary_mime_type(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -423,7 +479,7 @@ class TestDashboardAPIRoutes(unittest.TestCase):
     def test_http11_keepalive_server_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "live.sqlite3"
-            api.publish_report(
+            db_store.publish_report(
                 db_path,
                 {
                     "summary": {"total_equity": 999.0},
@@ -448,32 +504,36 @@ class TestDashboardAPIRoutes(unittest.TestCase):
                     self.assertIsNotNone(etag)
                     self.assertEqual(json.loads(raw1)["summary"]["total_equity"], 999.0)
 
-                    # Reuse same HTTP/1.1 connection for 304 and 302
+                    # Reuse same HTTP/1.1 connection for 304, HEAD, and 404
                     conn.request("GET", "/api/account", headers={"If-None-Match": etag})
                     resp2 = conn.getresponse()
                     raw2 = resp2.read()
                     self.assertEqual(resp2.status, 304)
                     self.assertEqual(raw2, b"")
 
-                    conn.request("GET", "/account/")
+                    conn.request("HEAD", "/api/account")
                     resp3 = conn.getresponse()
-                    resp3.read()
-                    self.assertEqual(resp3.status, 302)
-                    self.assertEqual(resp3.getheader("Location"), "../account.html")
+                    raw3 = resp3.read()
+                    self.assertEqual(resp3.status, 200)
+                    self.assertEqual(resp3.getheader("ETag"), etag)
+                    self.assertEqual(raw3, b"")
+
+                    conn.request("GET", "/account/")
+                    resp4 = conn.getresponse()
+                    resp4.read()
+                    self.assertEqual(resp4.status, 404)
                 finally:
                     conn.close()
                     server.shutdown()
 
     def test_binance_public_proxy_validation_caching_and_errors(self):
-        import urllib.error
-
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "empty.sqlite3"
             handler_cls = api.create_handler(db_path)
 
             calls = []
 
-            def fake_fetch(url: str) -> bytes:
+            def fake_fetch(url: str, **_kwargs) -> bytes:
                 calls.append(url)
                 if "ticker/24hr" in url:
                     return b'[{"symbol":"YBUSDT","lastPrice":"0.5"}]'
@@ -483,7 +543,7 @@ class TestDashboardAPIRoutes(unittest.TestCase):
                     return b'[[1700000000000,"0.5","0.6","0.4","0.55","1000"]]'
                 raise AssertionError(f"Unexpected URL: {url}")
 
-            with patch.object(api, "_fetch_binance_public", side_effect=fake_fetch):
+            with patch.object(http_client, "request_bytes", side_effect=fake_fetch):
                 # ticker24hr is cached within TTL
                 code1, _, body1 = self._invoke_get(handler_cls, "/api/binance/ticker24hr")
                 code2, _, body2 = self._invoke_get(handler_cls, "/api/binance/ticker24hr")
@@ -497,12 +557,15 @@ class TestDashboardAPIRoutes(unittest.TestCase):
                 self.assertEqual(code, 200)
                 self.assertEqual(json.loads(body)[0]["symbol"], "YBUSDT")
 
-                # klines valid request
-                code, _, body = self._invoke_get(
-                    handler_cls, "/api/binance/klines?symbol=YBUSDT&interval=15m&limit=168"
-                )
-                self.assertEqual(code, 200)
-                self.assertEqual(len(json.loads(body)), 1)
+                # klines valid request is cached within 12s TTL
+                kline_route = "/api/binance/klines?symbol=YBUSDT&interval=15m&limit=168"
+                code_k1, _, body_k1 = self._invoke_get(handler_cls, kline_route)
+                code_k2, _, body_k2 = self._invoke_get(handler_cls, kline_route)
+                self.assertEqual(code_k1, 200)
+                self.assertEqual(code_k2, 200)
+                self.assertEqual(body_k1, body_k2)
+                self.assertEqual(len(json.loads(body_k1)), 1)
+                self.assertEqual(sum(1 for u in calls if "klines" in u), 1)
 
                 # klines invalid parameters -> 400
                 for bad_route in (
@@ -515,9 +578,25 @@ class TestDashboardAPIRoutes(unittest.TestCase):
                     code, _, _ = self._invoke_get(handler_cls, bad_route)
                     self.assertEqual(code, 400, f"Expected 400 for {bad_route}")
 
-            # Upstream failure -> 502
+            # 4xx HttpError forwards upstream status & body cleanly
             with patch.object(
-                api, "_fetch_binance_public", side_effect=urllib.error.URLError("timeout")
+                http_client,
+                "request_bytes",
+                side_effect=http_client.HttpError(
+                    "HTTP 400",
+                    status_code=400,
+                    body='{"code":-1121,"msg":"Invalid symbol."}',
+                ),
+            ):
+                code, _, body = self._invoke_get(
+                    handler_cls, "/api/binance/klines?symbol=INVALIDUSDT&interval=15m&limit=60"
+                )
+                self.assertEqual(code, 400)
+                self.assertEqual(json.loads(body)["code"], -1121)
+
+            # Upstream HTTPException / transport failure -> 502
+            with patch.object(
+                http_client, "request_bytes", side_effect=http.client.HTTPException("bad gateway")
             ):
                 code, _, body = self._invoke_get(
                     handler_cls, "/api/binance/klines?symbol=YBUSDT&interval=15m&limit=60"
@@ -541,7 +620,6 @@ class TestDashboardAPIRoutes(unittest.TestCase):
 
             index_html = (ROOT_DIR / "web" / "index.html").read_text(encoding="utf-8")
             self.assertIn('<dialog id="chart-modal"', index_html)
-            self.assertIn('closedby="any"', index_html)
             self.assertIn('aria-labelledby="modal-chart-title"', index_html)
             self.assertNotIn('role="dialog"', index_html)
 
@@ -551,34 +629,37 @@ class TestDashboardAPIRoutes(unittest.TestCase):
 
 
 class TestSecondPassRegressions(unittest.TestCase):
-    """验证二次审查修复：daemon datetime/退避、DB Sharpe 本金、scanner 工具与连接池"""
+    """验证二次审查修复：daemon SQLite 持久化/退避、DB Sharpe 本金、scanner 工具与连接池"""
 
     def test_feature1_legacy_first_detected_does_not_raise_name_error(self):
         import trade_alert_daemon as tad
 
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            pool_file = tmp_path / "pool.json"
-            state_file = tmp_path / "state.json"
-            pool_file.write_text(
-                json.dumps([{"symbol": "YBUSDT", "is_resonance": True, "resonance_score": 2, "funding_rate_4h_pct": 0.01}]),
-                encoding="utf-8",
+            db_path = Path(tmp) / "test.sqlite3"
+            db_store.publish_candidates(
+                db_path,
+                [{"symbol": "YBUSDT", "is_resonance": True, "resonance_score": 2, "funding_rate_4h_pct": 0.01}],
             )
-            state_file.write_text(
-                json.dumps({
+            db_store.save_resonance_state(
+                db_path,
+                {
                     "initialized": True,
                     "active_resonance_symbols": [],
                     "history": {
-                        "YBUSDT": {"symbol": "YBUSDT", "first_detected": cfg.get_beijing_time_str()}
+                        "YBUSDT": {
+                            "symbol": "YBUSDT",
+                            "first_detected": cfg.get_beijing_time_str(),
+                            "last_notified_time": int(time.time()),
+                        }
                     },
-                }),
-                encoding="utf-8",
+                },
             )
-            store = tad.ResonanceStateStore(state_file)
+            store = tad.ResonanceStateStore(db_path)
             notifier = MagicMock()
             notifier.send_alert.return_value = True
-            with patch.object(tad, "resolve_database_path", return_value=None):
-                alerts = tad.check_feature_1_resonance(notifier, store, pool_file=pool_file, debounce_hours=24.0)
+            alerts = tad.check_feature_1_resonance(
+                notifier, store, database_path=db_path, debounce_hours=24.0
+            )
             self.assertEqual(alerts, [])
             notifier.send_alert.assert_not_called()
 
@@ -586,13 +667,9 @@ class TestSecondPassRegressions(unittest.TestCase):
         import trade_alert_daemon as tad
 
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
+            db_path = Path(tmp) / "test.sqlite3"
             d = tad.TradeAlertDaemon(
-                {
-                    "resonance_pool_file": str(tmp_path / "pool.json"),
-                    "resonance_state_file": str(tmp_path / "state.json"),
-                    "positions_file": str(tmp_path / "pos.json"),
-                },
+                {"database_path": str(db_path)},
                 dry_run=True,
             )
             f2_calls = []
@@ -634,7 +711,7 @@ class TestSecondPassRegressions(unittest.TestCase):
         status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "account.sqlite3"
-            api.publish_report(db_path, previous)
+            db_store.publish_report(db_path, previous)
             with patch.object(
                 engine,
                 "fetch_binance_data",
@@ -642,7 +719,7 @@ class TestSecondPassRegressions(unittest.TestCase):
             ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client,
                 "_send_signed_request",
-                side_effect=lambda endpoint, params: (income if endpoint == "/fapi/v1/income" else [], None),
+                side_effect=lambda endpoint, params=None: income if endpoint == "/fapi/v1/income" else [],
             ):
                 report = engine.run(database=db_path)
 
@@ -660,30 +737,32 @@ class TestSecondPassRegressions(unittest.TestCase):
         self.assertEqual(ssp.extract_base_and_multiplier("1MBABYDOGEUSDT"), ("BABYDOGE", 1_000_000.0))
         self.assertEqual(ssp.extract_base_and_multiplier("BTCUSDT"), ("BTC", 1.0))
 
-        ema = ssp.calc_ema_series([1.0, 2.0, 3.0, 4.0, 5.0], 3)
-        self.assertEqual(ema[:2], [None, None])
-        self.assertAlmostEqual(ema[2], 2.0)
-        self.assertAlmostEqual(ema[3], 3.0)
-        self.assertAlmostEqual(ema[4], 4.0)
+        self.assertIsNone(ssp.calc_ema([1.0, 2.0], 3))
+        self.assertAlmostEqual(ssp.calc_ema([1.0, 2.0, 3.0, 4.0, 5.0], 3), 4.0)
 
         # CMC HTTP 400 bisection skips invalid symbol while keeping valid symbols
-        def fake_fetch(url, **kwargs):
-            if "BAD" in url:
-                raise bc.BinanceAPIError("HTTP 400", code=400, endpoint=url)
-            return {"data": {"GOOD": {"symbol": "GOOD"}}}
+        client = http_client.HttpClient(max_per_host=2)
+        try:
+            def fake_request(url, **kwargs):
+                if "BAD" in url:
+                    raise http_client.HttpError("HTTP 400", status_code=400, url=url)
+                return {"data": {"GOOD": {"symbol": "GOOD"}}}
 
-        with patch.object(ssp, "fetch_json_with_retry", side_effect=fake_fetch):
-            res = ssp._fetch_cmc_batch(["GOOD", "BAD"], "demo-key")
-        self.assertIn("GOOD", res)
-        self.assertNotIn("BAD", res)
+            with patch.object(client, "request_json", side_effect=fake_request):
+                res = ssp._fetch_cmc_batch(["GOOD", "BAD"], "demo-key", client)
+            self.assertIn("GOOD", res)
+            self.assertNotIn("BAD", res)
 
-        # _reset_conn removes closed connection from pool tracking list
-        pool = ssp._KlineConnectionPool(host="example.com")
-        conn = pool._get_conn()
-        self.assertIn(conn, pool._conns)
-        pool._reset_conn()
-        self.assertEqual(pool._conns, [])
-        pool.close()
+            # HttpClient pool release and close clears tracked connections cleanly
+            key = ("https", "example.com", 443)
+            conn, from_pool = client._acquire_conn(key, timeout=5.0)
+            self.assertFalse(from_pool)
+            client._release_conn(key, conn)
+            self.assertEqual(len(client._pools[key]), 1)
+            client.close()
+            self.assertEqual(client._pools, {})
+        finally:
+            client.close()
 
 
 if __name__ == "__main__":

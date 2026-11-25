@@ -4,21 +4,19 @@
 币安合约实时持仓同步客户端 (Binance USDⓈ-M Futures Position Client)
 ==============================================================================
 1. 复用 scripts/binance_client.py 的统一 BinanceFuturesClient。
-2. 与本地风控持仓文件 (runs/trade_positions.json) 执行双向自动同步:
+2. 与本地 SQLite 风控持仓存储 (PositionStore / open_positions + position_history) 执行双向自动同步:
    - 新开多仓 -> 录入实际开仓均价、持仓数量与标记价，匹配有效 15m TradingView 趋势线。
    - 加仓/减仓导致开仓均价变化 -> 重置移动止盈与止损提醒状态，重新跟踪最高价。
    - 已有仓位缺少趋势线 -> 自动重试匹配有效 15m 趋势线。
-   - 币安已平仓 -> 自动归档至 history 历史记录。
+   - 币安已平仓 -> 自动归档至 position_history 历史记录。
 """
 
 from __future__ import annotations
 
 import logging
 import sys
-import urllib.error
-from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
@@ -35,23 +33,8 @@ import tv_trendline_engine as tve  # noqa: E402
 logger = logging.getLogger("binance_client")
 
 
-def _extract_line_recency(line: dict[str, Any]) -> float:
-    s_time = line.get("server_update_time")
-    if s_time is not None:
-        try:
-            val = float(s_time)
-            return val / 1000.0 if val > 1e11 else val
-        except (TypeError, ValueError):
-            pass
-    t2 = line.get("t2")
-    try:
-        return float(t2) if t2 is not None else 0.0
-    except (TypeError, ValueError):
-        return 0.0
-
-
 def select_best_position_trendline(
-    lines: Any,
+    lines: Optional[list[dict[str, Any]]],
     current_time: Optional[float] = None,
 ) -> Optional[dict[str, Any]]:
     """
@@ -61,36 +44,39 @@ def select_best_position_trendline(
     """
     if not lines:
         return None
-    raw_candidates = lines if isinstance(lines, list) else [lines]
-    valid = [
-        line for line in raw_candidates
-        if tve.is_valid_15m_trendline(line, current_time=current_time)
-    ]
+    valid: list[tuple[int, int, dict[str, Any]]] = []
+    for line in lines:
+        if not tve.is_valid_15m_trendline(line, current_time=current_time):
+            continue
+        try:
+            p1 = float(line["p1"])
+            p2 = float(line["p2"])
+            t1 = int(line["t1"])
+            t2 = int(line["t2"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if p1 <= 0 or p2 <= 0 or t1 == t2:
+            continue
+        descending = 1 if p1 >= p2 else 0
+        s_time = line.get("server_update_time")
+        recency = int(s_time) if s_time is not None else t2
+        valid.append((descending, recency, line))
+
     if not valid:
         return None
-
-    def _sort_key(line: dict[str, Any]) -> tuple[int, float]:
-        try:
-            descending = 1 if float(line["p1"]) >= float(line["p2"]) else 0
-        except (KeyError, TypeError, ValueError):
-            descending = 0
-        return (descending, _extract_line_recency(line))
-
-    valid.sort(key=_sort_key, reverse=True)
-    return valid[0]
+    valid.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return valid[0][2]
 
 
-def match_symbol_drawings(symbol: str, drawings_map: dict[str, Any]) -> Any:
-    """严格按标准化币种名称精确匹配画线，杜绝短币名子串串线。"""
+def match_symbol_drawings(
+    symbol: str,
+    drawings_map: Mapping[str, list[dict[str, Any]]],
+) -> Optional[list[dict[str, Any]]]:
+    """按标准化币种名称精确匹配画线（get_layout_drawings 已以 clean_symbol 为键）。"""
     target = clean_symbol(symbol)
     if not target or not drawings_map:
         return None
-    if target in drawings_map:
-        return drawings_map[target]
-    for k, lines in drawings_map.items():
-        if clean_symbol(k) == target:
-            return lines
-    return None
+    return drawings_map.get(target)
 
 
 def sync_binance_positions(
@@ -129,9 +115,8 @@ def sync_binance_positions(
 
     new_added: list[str] = []
     auto_closed: list[str] = []
-    tx_ctx = pos_store.transaction() if hasattr(pos_store, "transaction") else nullcontext()
 
-    with tx_ctx:
+    with pos_store.transaction():
         current_open_positions = {p["symbol"]: p for p in pos_store.get_open_positions()}
         missing_trendline_syms = {
             sym for sym, p in current_open_positions.items()
@@ -144,7 +129,7 @@ def sync_binance_positions(
             fetcher = load_drawings if load_drawings is not None else tve.get_layout_drawings
             try:
                 drawings_map = fetcher(layout_id) or {}
-            except (BinanceAPIError, RuntimeError, TimeoutError, urllib.error.URLError) as e:
+            except (BinanceAPIError, RuntimeError, TimeoutError, OSError) as e:
                 logger.warning("同步拉取 TV 画线失败: %s", e)
 
         dirty = False
@@ -163,10 +148,8 @@ def sync_binance_positions(
                     leverage=b_pos["leverage"],
                     mark_price=b_pos["mark_price"],
                     current_price=b_pos["mark_price"],
-                    auto_save=False,
                 )
                 new_added.append(sym)
-                dirty = True
                 logger.info(
                     "⚡ [币安实盘自动同步] 发现新开多仓: %s @ %s (数量: %s)",
                     sym, b_pos["entry_price"], b_pos["amount"],
@@ -174,7 +157,9 @@ def sync_binance_positions(
                 continue
 
             local_p = current_open_positions[sym]
-            entry_changed = abs(float(local_p["entry_price"]) - b_pos["entry_price"]) > 1e-6
+            old_entry = float(local_p["entry_price"])
+            new_entry = float(b_pos["entry_price"])
+            entry_changed = abs(old_entry - new_entry) / max(abs(new_entry), 1e-12) > 1e-5
             amount_changed = abs(float(local_p["amount"]) - b_pos["amount"]) > 1e-6
 
             if entry_changed:
@@ -187,7 +172,11 @@ def sync_binance_positions(
                 local_p["trailing_stop_price"] = None
                 local_p["profit_lock_notified"] = False
                 local_p["stop_loss_notified"] = False
-                local_p["highest_price"] = max(b_pos["mark_price"], b_pos["entry_price"])
+                local_p["highest_price"] = max(
+                    float(local_p.get("highest_price") or 0.0),
+                    b_pos["mark_price"],
+                    b_pos["entry_price"],
+                )
                 for key in (
                     "trailing_stop_activated_at",
                     "pending_stop_loss_candle",
@@ -207,31 +196,28 @@ def sync_binance_positions(
                     local_p["trendline"] = matched_trendline
                     dirty = True
 
-            if local_p.get("source") != "BINANCE_SYNC":
-                local_p["source"] = "BINANCE_SYNC"
-                dirty = True
             if local_p.get("leverage") != b_pos["leverage"]:
                 local_p["leverage"] = b_pos["leverage"]
                 dirty = True
-            if b_pos["mark_price"] > 0 and (
-                local_p.get("mark_price") != b_pos["mark_price"]
-                or local_p.get("current_price") != b_pos["mark_price"]
-            ):
-                local_p["mark_price"] = b_pos["mark_price"]
-                local_p["current_price"] = b_pos["mark_price"]
-                dirty = True
+            if b_pos["mark_price"] > 0:
+                if local_p.get("mark_price") != b_pos["mark_price"]:
+                    local_p["mark_price"] = b_pos["mark_price"]
+                    dirty = True
+                if not local_p.get("current_price") or float(local_p["current_price"]) <= 0:
+                    local_p["current_price"] = b_pos["mark_price"]
+                    dirty = True
 
         for p in pos_store.get_open_positions():
             sym = p["symbol"]
             if p.get("source") == "BINANCE_SYNC" and sym not in binance_symbols:
+                exit_price = p.get("mark_price") or p.get("current_price")
                 closed_p = pos_store.close_position(
                     sym,
                     reason="BINANCE_POSITION_CLOSED",
-                    auto_save=False,
+                    exit_price=exit_price,
                 )
                 if closed_p:
                     auto_closed.append(sym)
-                    dirty = True
                     logger.info("🏁 [币安实盘自动同步] 监测到币安已平仓，自动归档: %s", sym)
 
         if dirty:

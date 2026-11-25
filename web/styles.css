@@ -19,17 +19,6 @@ body {
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
-@supports not (scrollbar-color: auto) {
-  .custom-scrollbar::-webkit-scrollbar {
-    width: 5px;
-    height: 5px;
-  }
-  .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: var(--scrollbar-thumb);
-    border-radius: 3px;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .animate-ping,
   .animate-pulse {

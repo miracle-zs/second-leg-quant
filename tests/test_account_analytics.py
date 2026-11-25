@@ -45,6 +45,7 @@ if str(ROOT_DIR) not in sys.path:
 
 import account_analytics_engine as aae  # noqa: E402
 import binance_client as bc  # noqa: E402
+import db_store  # noqa: E402
 
 
 class TestDataEnrichment(unittest.TestCase):
@@ -428,12 +429,12 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
 
         def fake_send(endpoint, params=None):
             if endpoint == "/fapi/v2/account":
-                return mock_acc_data, None
+                return mock_acc_data
             if endpoint == "/fapi/v1/income":
-                return mock_income_data, None
+                return mock_income_data
             if endpoint == "/fapi/v2/positionRisk":
-                return [], None
-            return None, {"code": 404, "msg": "Not Found"}
+                return []
+            raise bc.BinanceAPIError("Not Found", code=404, endpoint=endpoint)
 
         with patch.object(client, "_send_signed_request", side_effect=fake_send):
             acc = client.get_account_info()
@@ -449,17 +450,21 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
     def test_account_report_distinguishes_empty_positions_from_request_failure(self):
         client = bc.BinanceFuturesClient("test-key", "test-secret")
         engine = aae.AccountAnalyticsEngine(client=client)
-        local_positions = [{"symbol": "YBUSDT", "entry_price": 1, "amount": 1}]
-        income = [{"symbol": "YBUSDT", "incomeType": "REALIZED_PNL", "income": "12.50", "time": 1795200000000}]
-        with tempfile.TemporaryDirectory() as directory, patch.object(
-            engine, "load_local_positions_store", return_value=(local_positions, [])
-        ):
-            path = Path(directory) / "account.json"
-            account_response = ({"totalWalletBalance": "100"}, None)
-            with patch.object(client, "_send_signed_request", side_effect=[
-                account_response, (income, None), ([], None)
-            ]):
-                report = engine.run(path)
+        now_ms = int(time.time() * 1000)
+        income = [{"symbol": "YBUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "income": "12.50", "time": now_ms - 1000}]
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "account.sqlite3"
+            account_response = {"totalWalletBalance": "100", "totalMarginBalance": "100"}
+
+            def fake_ok(endpoint, params=None):
+                if endpoint == "/fapi/v2/account":
+                    return account_response
+                if endpoint == "/fapi/v1/income":
+                    return income
+                return []
+
+            with patch.object(client, "_send_signed_request", side_effect=fake_ok):
+                report = engine.run(database=db_path, recording_start_ms=now_ms - 5000)
             self.assertEqual(report["active_positions"], [])
             self.assertEqual(report["positions_source"], "BINANCE_API")
             self.assertIsNone(report["trade_history"][0]["pnl_pct"])
@@ -469,32 +474,54 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             self.assertEqual(coverage["coverage_start"], coverage["coverage_end"])
             self.assertEqual(coverage["raw_count"], 1)
 
-            with patch.object(client, "_send_signed_request", side_effect=[
-                account_response, ([], None), (None, {"code": "NETWORK_ERROR", "msg": "err"})
-            ]):
-                report = engine.run(path)
-            self.assertEqual(report["active_positions"][0]["symbol"], "YBUSDT")
-            self.assertEqual(report["positions_source"], "LOCAL_CACHE")
-            self.assertEqual(report["api_status"]["mode"], "BINANCE_PARTIAL")
+            def fake_pos_err(endpoint, params=None):
+                if endpoint == "/fapi/v2/account":
+                    return account_response
+                if endpoint == "/fapi/v1/income":
+                    return []
+                raise bc.BinanceAPIError("err", code="NETWORK_ERROR", endpoint=endpoint)
 
-    def test_full_income_page_reports_coverage_without_inferring_principal(self):
+            with patch.object(client, "_send_signed_request", side_effect=fake_pos_err):
+                _, _, _, partial_status = engine.fetch_binance_data()
+                self.assertFalse(partial_status["positions_available"])
+                self.assertEqual(partial_status["mode"], "BINANCE_PARTIAL")
+                with self.assertRaises(RuntimeError):
+                    engine.run(database=db_path)
+
+            # Previous valid snapshot in SQLite must remain intact after partial failure
+            persisted = db_store.load_report(db_path)
+            self.assertIsNotNone(persisted)
+            self.assertEqual(persisted["positions_source"], "BINANCE_API")
+
+    def test_full_income_page_bisects_and_uses_recording_principal(self):
         client = bc.BinanceFuturesClient("test-key", "test-secret")
         engine = aae.AccountAnalyticsEngine(client=client)
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - 2_000_000
         income = [
-            {"incomeType": "TRANSFER", "income": "1", "time": 1795200000000 + i * 1000}
+            {"incomeType": "TRANSFER", "tranId": i + 1, "income": "1", "time": start_ms + i * 1000}
             for i in range(aae.INCOME_PAGE_LIMIT)
         ]
+
+        def fake_signed(endpoint, params=None):
+            if endpoint == "/fapi/v2/account":
+                return {"totalWalletBalance": "100", "totalMarginBalance": "100"}
+            if endpoint == "/fapi/v1/income":
+                s_t = int(params["startTime"])
+                e_t = int(params["endTime"])
+                return [item for item in income if s_t <= int(item["time"]) <= e_t]
+            return []
+
         with tempfile.TemporaryDirectory() as directory, patch.object(
-            engine, "load_local_positions_store", return_value=([], [])
-        ), patch.object(client, "_send_signed_request", side_effect=[
-            ({"totalWalletBalance": "100"}, None), (income, None), ([], None)
-        ]):
-            report = engine.run(Path(directory) / "account.json")
+            client, "_send_signed_request", side_effect=fake_signed
+        ):
+            report = engine.run(database=Path(directory) / "account.sqlite3", recording_start_ms=start_ms)
 
         coverage = report["income_breakdown"]
-        self.assertTrue(coverage["page_full"])
+        self.assertFalse(coverage["page_full"])
+        self.assertEqual(coverage["raw_count"], aae.INCOME_PAGE_LIMIT)
         self.assertLess(coverage["coverage_start"], coverage["coverage_end"])
-        self.assertEqual(coverage["principal_source"], "default")
+        self.assertEqual(coverage["principal_source"], "recording_start")
 
     def test_database_with_candidates_initializes_account_recording(self):
         client = bc.BinanceFuturesClient("test", "test")
@@ -507,7 +534,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             with patch.object(engine, "fetch_binance_data", return_value=(
                 {"totalWalletBalance": "1000", "totalMarginBalance": "1000"}, [], [], status
             )), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
-                client, "_send_signed_request", return_value=([], None)
+                client, "_send_signed_request", return_value=[]
             ):
                 report = engine.run(database=database)
             self.assertEqual(report["recording"]["initial_equity"], 1000)
@@ -515,8 +542,6 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             self.assertEqual(report["equity_curve"][0]["cash"], 1000)
 
     def test_recording_sync_persists_and_deduplicates_exchange_events(self):
-        from account_dashboard_api import publish_report
-
         client = bc.BinanceFuturesClient("test", "test")
         engine = aae.AccountAnalyticsEngine(client=client)
         start = 1795200000000
@@ -533,12 +558,12 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "account.sqlite3"
-            publish_report(database, previous)
+            db_store.publish_report(database, previous)
             with patch.object(engine, "fetch_binance_data", return_value=(
                 {"totalWalletBalance": "1110", "totalMarginBalance": "1110"}, income, [], status
             )), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client, "_send_signed_request", side_effect=lambda endpoint, params: (
-                    income if endpoint == "/fapi/v1/income" else [fill], None
+                    income if endpoint == "/fapi/v1/income" else [fill]
                 )
             ):
                 report = engine.run(database=database)
@@ -562,8 +587,6 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             self.assertEqual(report["equity_curve"][-1]["drawdown_usd"], 0)
 
     def test_multiple_fills_form_one_closed_order(self):
-        from account_dashboard_api import publish_report
-
         client = bc.BinanceFuturesClient("test", "test")
         engine = aae.AccountAnalyticsEngine(client=client)
         start = 1795200000000
@@ -580,7 +603,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "account.sqlite3"
-            publish_report(database, previous)
+            db_store.publish_report(database, previous)
             with patch.object(
                 engine,
                 "fetch_binance_data",
@@ -588,7 +611,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client,
                 "_send_signed_request",
-                side_effect=lambda endpoint, params: (income if endpoint == "/fapi/v1/income" else fills, None),
+                side_effect=lambda endpoint, params: income if endpoint == "/fapi/v1/income" else fills,
             ):
                 report = engine.run(database=database)
         self.assertEqual(report["summary"]["closed_trades"], 1)
@@ -600,8 +623,6 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         self.assertEqual(trade["duration_seconds"], 4)
 
     def test_multi_roundtrip_partial_close_short_and_bnb_fee_isolation_in_db_mode(self):
-        from account_dashboard_api import publish_report
-
         client = bc.BinanceFuturesClient("test", "test")
         engine = aae.AccountAnalyticsEngine(client=client)
         day1 = 1795000000000  # 2026-11-18
@@ -639,13 +660,13 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
 
         def fake_signed(endpoint, params=None):
             if endpoint == "/fapi/v1/income":
-                return income, None
+                return income
             sym = (params or {}).get("symbol")
-            return (btc_fills if sym == "BTCUSDT" else eth_fills), None
+            return btc_fills if sym == "BTCUSDT" else eth_fills
 
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "account.sqlite3"
-            publish_report(database, previous)
+            db_store.publish_report(database, previous)
             with patch.object(
                 engine,
                 "fetch_binance_data",
@@ -705,7 +726,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         with patch.object(
             client,
             "_send_signed_request",
-            return_value=(None, {"code": 451, "msg": "Service unavailable from a restricted location"}),
+            side_effect=bc.BinanceAPIError("Service unavailable from a restricted location", code=451),
         ):
             engine = aae.AccountAnalyticsEngine(client=client)
             acc_info, _, _, status = engine.fetch_binance_data()
@@ -732,20 +753,24 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         self.assertEqual(status["mode"], "OFFLINE_FALLBACK")
         mock_client.get_account_info.assert_not_called()
 
-    def test_corrupted_positions_file_raises_loudly(self):
+    def test_corrupted_positions_db_raises_loudly(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            corrupt_path = Path(tmp_dir) / "corrupt.json"
-            corrupt_path.write_text("CORRUPTED_JSON_DATA {{{}}", encoding="utf-8")
-            engine = aae.AccountAnalyticsEngine(positions_path=corrupt_path, offline_mode=True)
+            db_path = Path(tmp_dir) / "corrupt.sqlite3"
+            with db_store.transaction(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO open_positions (symbol, payload) VALUES (?, ?)",
+                    ("BTCUSDT", "CORRUPTED_JSON_DATA {{{}}"),
+                )
+            engine = aae.AccountAnalyticsEngine(offline_mode=True)
             with self.assertRaises(json.JSONDecodeError):
-                engine.load_local_positions_store()
+                engine.load_local_positions_store(db_path)
             with self.assertRaises(json.JSONDecodeError):
-                engine.run(output_path=Path(tmp_dir) / "out.json")
+                engine.run(database=db_path)
 
-    def test_missing_positions_file_handling(self):
-        missing_path = Path("/tmp/definitely_non_existent_file_12345.json")
-        engine = aae.AccountAnalyticsEngine(positions_path=missing_path, offline_mode=True)
-        pos, hist = engine.load_local_positions_store()
+    def test_missing_positions_db_handling(self):
+        missing_db = Path("/tmp/definitely_non_existent_db_12345.sqlite3")
+        engine = aae.AccountAnalyticsEngine(offline_mode=True)
+        pos, hist = engine.load_local_positions_store(missing_db)
         self.assertEqual(pos, [])
         self.assertEqual(hist, [])
 
@@ -857,21 +882,37 @@ class TestAccountHTMLGenerationAndIntegrity(unittest.TestCase):
 
 
 class TestFullEngineExecution(unittest.TestCase):
-    """6. 测试引擎端到端执行、文件输出与原子化写入"""
+    """6. 测试引擎端到端执行与 SQLite 持久化输出"""
 
-    def test_run_generates_valid_json(self):
+    def test_run_persists_valid_sqlite_report(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            out_file = Path(tmp_dir) / "account_analytics.json"
+            db_path = Path(tmp_dir) / "test.sqlite3"
+            db_store.save_open_positions(
+                db_path,
+                [{"symbol": "BTCUSDT", "entry_price": 90000.0, "amount": 0.1, "leverage": 5}],
+            )
+            db_store.append_position_history(
+                db_path,
+                {
+                    "symbol": "ETHUSDT",
+                    "entry_price": 3000.0,
+                    "exit_price": 3150.0,
+                    "amount": 1.0,
+                    "entry_time": "2026-11-20T10:00:00+08:00",
+                    "closed_at": "2026-11-20T12:00:00+08:00",
+                    "status": "MANUAL_CLOSE",
+                },
+            )
             engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
-            engine.run(output_path=out_file)
+            engine.run(database=db_path)
 
-            self.assertTrue(out_file.exists())
-            with open(out_file, "r", encoding="utf-8") as f:
-                saved_data = json.load(f)
-
+            saved_data = db_store.load_report(db_path)
+            self.assertIsNotNone(saved_data)
             self.assertEqual(saved_data["version"], 1)
             for key in ("summary", "equity_curve", "daily_pnl", "trade_history", "active_positions", "income_breakdown"):
                 self.assertIn(key, saved_data)
+            self.assertEqual(len(saved_data["active_positions"]), 1)
+            self.assertEqual(len(saved_data["trade_history"]), 1)
 
             s = saved_data["summary"]
             for field in (
@@ -905,14 +946,282 @@ class TestFullEngineExecution(unittest.TestCase):
             ):
                 self.assertIn(field, s)
 
-    def test_atomic_write_json_atomicity(self):
+    def test_cli_main_persists_to_sqlite_database(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            target = Path(tmp_dir) / "data.json"
-            aae.atomic_write_json(target, {"status": "ok", "step": 1})
-            self.assertTrue(target.exists())
-            with open(target, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            self.assertEqual(d["status"], "ok")
+            db_path = Path(tmp_dir) / "cli.sqlite3"
+            with patch.object(sys, "argv", ["account_analytics_engine.py", "--database", str(db_path), "--offline"]):
+                aae.main()
+            persisted = db_store.load_report(db_path)
+            self.assertIsNotNone(persisted)
+            self.assertEqual(persisted["data_source"], "LOCAL_OFFLINE_FALLBACK")
+
+
+class TestP0AnalyticsFixes(unittest.TestCase):
+    """7. 验证 P0 分析引擎缺陷修复：游标窗口、充提隔离、夏普边界、时区与成交重构"""
+
+    def test_sync_db_ledger_fills_cursor_honors_query_start_and_89d_guard(self):
+        client = bc.BinanceFuturesClient("test", "test")
+        engine = aae.AccountAnalyticsEngine(client=client)
+        now_ms = int(time.time() * 1000)
+        day_ms = 86400 * 1000
+        start_ms = now_ms - 120 * day_ms  # > 89 days ago
+        last_sync_ms = now_ms - 300 * 1000
+        dormant_cursor_ms = now_ms - 95 * day_ms
+        expected_query_start = last_sync_ms - day_ms
+
+        previous = {
+            "recording": {
+                "start_ms": start_ms,
+                "started_at": aae.get_beijing_time_str(start_ms / 1000.0),
+                "initial_equity": 1000.0,
+                "ledger_synced_until_ms": last_sync_ms,
+                "fills_cursor_ms": {"BTCUSDT": dormant_cursor_ms},
+            },
+            "equity_curve": [],
+        }
+        new_income = [
+            {
+                "incomeType": "REALIZED_PNL",
+                "tranId": 1,
+                "tradeId": "10",
+                "time": now_ms - 60_000,
+                "income": "5",
+                "asset": "USDT",
+                "symbol": "BTCUSDT",
+            },
+            {
+                "incomeType": "REALIZED_PNL",
+                "tranId": 2,
+                "tradeId": "11",
+                "time": now_ms - 50_000,
+                "income": "8",
+                "asset": "USDT",
+                "symbol": "ETHUSDT",
+            },
+        ]
+        trade_query_starts = {}
+
+        def fake_signed(endpoint, params=None):
+            if endpoint == "/fapi/v1/income":
+                return new_income
+            if endpoint == "/fapi/v1/userTrades":
+                sym = params["symbol"]
+                trade_query_starts.setdefault(sym, []).append(int(params["startTime"]))
+                return []
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "account.sqlite3"
+            db_store.publish_report(db_path, previous)
+            with patch.object(client, "_send_signed_request", side_effect=fake_signed):
+                engine._sync_db_ledger(
+                    db_path,
+                    {"totalMarginBalance": "1013", "totalWalletBalance": "1013"},
+                    [],
+                    None,
+                )
+
+        # 休眠币种 BTCUSDT 与新增币种 ETHUSDT 都应受 query_start (89天窗口内) 约束，而非回溯至 95~120 天前
+        self.assertIn("BTCUSDT", trade_query_starts)
+        self.assertIn("ETHUSDT", trade_query_starts)
+        self.assertGreaterEqual(trade_query_starts["BTCUSDT"][0], expected_query_start)
+        self.assertGreaterEqual(trade_query_starts["ETHUSDT"][0], expected_query_start)
+        self.assertLessEqual(now_ms - trade_query_starts["BTCUSDT"][0], 2 * day_ms)
+        self.assertLessEqual(now_ms - trade_query_starts["ETHUSDT"][0], 2 * day_ms)
+
+    def test_transfer_aware_db_daily_pnl_and_risk_ratios(self):
+        engine = aae.AccountAnalyticsEngine(offline_mode=True)
+        day1_ms = int(aae.parse_to_timestamp("2026-11-20 12:00:00") * 1000)
+        day2_ms = int(aae.parse_to_timestamp("2026-11-21 12:00:00") * 1000)
+        day3_ms = int(aae.parse_to_timestamp("2026-11-22 12:00:00") * 1000)
+        income_list = [
+            {"incomeType": "TRANSFER", "time": day1_ms, "income": "9000", "asset": "USDT"},
+            {"incomeType": "REALIZED_PNL", "time": day1_ms + 1000, "income": "500", "asset": "USDT"},
+            # Day 2 仅出金 2000，无交易
+            {"incomeType": "TRANSFER", "time": day2_ms, "income": "-2000", "asset": "USDT"},
+            # Day 3 在 8500 本金上亏损 170 (-2.00%)
+            {"incomeType": "REALIZED_PNL", "time": day3_ms, "income": "-170", "asset": "USDT"},
+        ]
+        daily_pnl = engine._build_db_daily_pnl(income_list, [], initial_equity=1000.0)
+        self.assertEqual([d["date"] for d in daily_pnl], ["2026-11-20", "2026-11-22"])
+        # Day 1 资金基数 = 1000 + 9000 = 10000 -> 500/10000 = 5.0%
+        self.assertAlmostEqual(daily_pnl[0]["return_pct"], 5.0, places=2)
+        self.assertAlmostEqual(daily_pnl[0]["net_transfer"], 9000.0, places=2)
+        # Day 3 资金基数 = 10500 - 2000 = 8500 -> -170/8500 = -2.0%
+        self.assertAlmostEqual(daily_pnl[1]["return_pct"], -2.0, places=2)
+
+        sharpe, sortino, method = engine._compute_risk_ratios(daily_pnl, [], 1000.0)
+        self.assertEqual(method, "DAILY_RETURNS")
+        rets = [0.05, 0.0, -0.02]
+        mean_r = sum(rets) / 3
+        std_r = math.sqrt(sum((r - mean_r) ** 2 for r in rets) / 2)
+        down_std = math.sqrt((0.02 ** 2) / 3)
+        self.assertAlmostEqual(sharpe, round((mean_r / std_r) * math.sqrt(365), 2), places=2)
+        self.assertAlmostEqual(sortino, round((mean_r / down_std) * math.sqrt(365), 2), places=2)
+
+    def test_single_day_multiple_trades_do_not_annualize_sharpe_by_sqrt365(self):
+        engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
+        trades = [
+            {"realized_pnl": 100.0, "fee": 0.0, "net_pnl": 100.0, "pnl_pct": 1.0, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
+            {"realized_pnl": -50.0, "fee": 0.0, "net_pnl": -50.0, "pnl_pct": -0.5, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
+        ]
+        summary, _, daily_pnl = engine.calculate_quant_risk_metrics(trades, [], None)
+        self.assertEqual(len(daily_pnl), 1)
+        self.assertIsNone(summary["sharpe_ratio"])
+        self.assertIsNone(summary["sortino_ratio"])
+        self.assertEqual(summary["sharpe_method"], "NONE")
+
+    def test_build_trade_daily_pnl_handles_none_fields_and_beijing_tz(self):
+        engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
+        raw = {
+            "symbol": "BTCUSDT",
+            "entry_price": 100.0,
+            "exit_price": 110.0,
+            "amount": 1.0,
+            "entry_time": "2026-11-20T18:00:00Z",
+            "closed_at": "2026-11-20T20:00:00Z",  # 北京时间 2026-11-21 04:00:00
+        }
+        enriched = engine.enrich_trade_record(raw, 0)
+        self.assertEqual(enriched["closed_at"], "2026-11-21 04:00:00")
+        self.assertEqual(enriched["entry_time"], "2026-11-21 02:00:00")
+
+        trades = [
+            {
+                "symbol": "BTCUSDT",
+                "realized_pnl": None,
+                "fee": None,
+                "net_pnl": 25.0,
+                "outcome": "WIN",
+                "closed_at": "2026-11-20T20:00:00Z",  # 应归入 UTC+8 的 2026-11-21
+            }
+        ]
+        daily = engine._build_trade_daily_pnl(trades, 10000.0)
+        self.assertEqual(len(daily), 1)
+        self.assertEqual(daily[0]["date"], "2026-11-21")
+        self.assertEqual(daily[0]["realized_pnl"], 0.0)
+        self.assertEqual(daily[0]["fee"], 0.0)
+        self.assertEqual(daily[0]["net_pnl"], 25.0)
+
+        db_daily = engine._build_db_daily_pnl([], trades, 10000.0)
+        self.assertEqual(len(db_daily), 1)
+        self.assertEqual(db_daily[0]["date"], "2026-11-21")
+
+    def test_both_mode_empty_queue_zero_pnl_close_detected_via_context_and_reduce_only(self):
+        engine = aae.AccountAnalyticsEngine(offline_mode=True)
+        # 场景 A: 已有盘前多单在 100 价位 0 盈亏平仓一半 (无 income 行，realizedPnl="0")，随后同向 SELL 在 105 盈利平掉剩余仓位
+        fills_ctx = [
+            {"symbol": "BTCUSDT", "id": 1, "orderId": 1, "side": "SELL", "time": 1000, "positionSide": "BOTH", "price": "100", "qty": "1", "realizedPnl": "0"},
+            {"symbol": "BTCUSDT", "id": 2, "orderId": 2, "side": "SELL", "time": 2000, "positionSide": "BOTH", "price": "105", "qty": "1", "realizedPnl": "5"},
+        ]
+        trades_ctx, _ = engine.reconstruct_binance_trades([], [], fills_ctx)
+        self.assertEqual(len(trades_ctx), 2)
+        self.assertEqual(trades_ctx[0]["side"], "LONG")
+        self.assertEqual(trades_ctx[0]["realized_pnl"], 0.0)
+        self.assertEqual(trades_ctx[1]["side"], "LONG")
+        self.assertEqual(trades_ctx[1]["realized_pnl"], 5.0)
+
+        # 场景 B: 盘前多单在 100 价位 reduceOnly 0 盈亏全平，随后 BUY 在 110 开新多并在 120 平仓
+        fills_ro = [
+            {"symbol": "ETHUSDT", "id": 10, "orderId": 10, "side": "SELL", "time": 1000, "positionSide": "BOTH", "price": "100", "qty": "1", "realizedPnl": "0", "reduceOnly": True},
+            {"symbol": "ETHUSDT", "id": 11, "orderId": 11, "side": "BUY", "time": 2000, "positionSide": "BOTH", "price": "110", "qty": "1", "realizedPnl": "0"},
+            {"symbol": "ETHUSDT", "id": 12, "orderId": 12, "side": "SELL", "time": 3000, "positionSide": "BOTH", "price": "120", "qty": "1", "realizedPnl": "10"},
+        ]
+        trades_ro, _ = engine.reconstruct_binance_trades([], [], fills_ro)
+        self.assertEqual(len(trades_ro), 2)
+        self.assertEqual(trades_ro[0]["realized_pnl"], 0.0)
+        self.assertEqual(trades_ro[1]["entry_price"], 110.0)
+        self.assertEqual(trades_ro[1]["exit_price"], 120.0)
+        self.assertEqual(trades_ro[1]["realized_pnl"], 10.0)
+
+    def test_pop_matching_local_trade_matches_side_closest_ts_and_rejects_inconsistent_pnl(self):
+        engine = aae.AccountAnalyticsEngine(offline_mode=True)
+        t0 = 1795200000
+        local_history = [
+            # 同币种但方向不匹配 (SHORT)
+            {"symbol": "BTCUSDT", "side": "SHORT", "closed_at": aae.get_beijing_time_str(t0), "trendline": {"id": "TL_WRONG_SIDE"}},
+            # 同方向但时间较远 (+120s)
+            {"symbol": "BTCUSDT", "side": "LONG", "closed_at": aae.get_beijing_time_str(t0 + 120), "leverage": 3, "highest_price": 112.0, "trendline": {"id": "TL_FAR"}},
+            # 同方向且时间最近 (+5s)
+            {"symbol": "BTCUSDT", "side": "LONG", "closed_at": aae.get_beijing_time_str(t0 + 5), "leverage": 7, "highest_price": 115.0, "trendline": {"id": "TL_NEAR"}},
+        ]
+        used = set()
+        matched = aae._pop_matching_local_trade("BTCUSDT", float(t0), local_history, used, side="LONG")
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched["trendline"]["id"], "TL_NEAR")
+
+        # fills 路径应保留 leverage / roe_pct / highest_price
+        fills = [
+            {"symbol": "BTCUSDT", "id": 1, "orderId": 1, "side": "BUY", "time": (t0 - 60) * 1000, "positionSide": "LONG", "price": "100", "qty": "2", "quoteQty": "200"},
+            {"symbol": "BTCUSDT", "id": 2, "orderId": 2, "side": "SELL", "time": t0 * 1000, "positionSide": "LONG", "price": "110", "qty": "2", "quoteQty": "220"},
+        ]
+        income = [
+            {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "tradeId": "2", "time": t0 * 1000, "income": "20", "asset": "USDT"}
+        ]
+        trades_fills, _ = engine.reconstruct_binance_trades(income, local_history, fills=fills)
+        self.assertEqual(len(trades_fills), 1)
+        self.assertEqual(trades_fills[0]["trendline_id"], "TL_NEAR")
+        self.assertEqual(trades_fills[0]["leverage"], 7)
+        self.assertEqual(trades_fills[0]["highest_price"], 115.0)
+        self.assertAlmostEqual(trades_fills[0]["roe_pct"], 70.0, places=2)
+
+        # income_clusters 路径当 pnl_consistent=False 时，不得保留本地错配元数据
+        inconsistent_local = [
+            {
+                "symbol": "ETHUSDT",
+                "side": "LONG",
+                "entry_price": 100.0,
+                "exit_price": 150.0,
+                "amount": 1.0,  # 本地 pnl=50 vs 币安 pnl=5 -> 不一致
+                "entry_time": aae.get_beijing_time_str(t0 - 600),
+                "closed_at": aae.get_beijing_time_str(t0),
+                "status": "BREAK_TRENDLINE_STOP",
+                "trendline": {"id": "TL_BAD", "p1": 110, "p2": 105},
+            }
+        ]
+        inc_only = [
+            {"symbol": "ETHUSDT", "incomeType": "REALIZED_PNL", "tranId": 9, "tradeId": "99", "time": t0 * 1000, "income": "5", "asset": "USDT"}
+        ]
+        trades_inc, _ = engine.reconstruct_binance_trades(inc_only, inconsistent_local, fills=[])
+        self.assertEqual(len(trades_inc), 1)
+        t_inc = trades_inc[0]
+        self.assertEqual(t_inc["source"], "BINANCE_REALTIME")
+        self.assertEqual(t_inc["entry_time"], "--")
+        self.assertEqual(t_inc["duration_seconds"], 0)
+        self.assertEqual(t_inc["close_reason"], "币安实盘平仓")
+        self.assertIsNone(t_inc["trendline_id"])
+
+    def test_run_preserves_recording_initial_equity_when_no_transfers(self):
+        client = bc.BinanceFuturesClient("test-key", "test-secret")
+        engine = aae.AccountAnalyticsEngine(client=client)
+        now_ms = int(time.time() * 1000)
+        start_ms = now_ms - 3600_000
+        previous = {
+            "recording": {
+                "start_ms": start_ms,
+                "started_at": aae.get_beijing_time_str(start_ms / 1000.0),
+                "initial_equity": 2500.0,
+            },
+            "equity_curve": [],
+        }
+        income = [
+            {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "income": "50", "time": now_ms - 1000}
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "account.sqlite3"
+            db_store.publish_report(db_path, previous)
+            with patch.object(
+                client,
+                "_send_signed_request",
+                side_effect=lambda endpoint, params=None: (
+                    {"totalWalletBalance": "2550", "totalMarginBalance": "2550"}
+                    if endpoint == "/fapi/v2/account"
+                    else (income if endpoint == "/fapi/v1/income" else [])
+                ),
+            ):
+                report = engine.run(database=db_path)
+
+        self.assertEqual(report["summary"]["initial_capital"], 2500.0)
+        self.assertEqual(report["income_breakdown"]["principal_source"], "recording_start")
 
 
 if __name__ == "__main__":

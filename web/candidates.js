@@ -1,18 +1,17 @@
 (function () {
-  const TV_LAYOUT_ID = 'ig0LuDL8';
-  const TV_INTERVAL_MAP = {
-    '15m': '15',
-    '1h': '60',
-    '4h': '240',
-    '1d': '1D',
-  };
-  const CHINESE_TV_MAP = {
-    '龙虾USDT': 'BINANCE:LONGXIAUSDT.P',
-    '哈基米USDT': 'BINANCE:HAJIMIUSDT.P',
-    '我踏马来了USDT': 'BINANCE:WOTAMALAILIAOUSDT.P',
-    '币安人生USDT': 'BINANCE:BIANRENSHENGUSDT.P',
-    '牛来USDT': 'BINANCE:NIULAIUSDT.P',
-  };
+  const Common = window.SecondLegCommon;
+  const {
+    TV_LAYOUT_ID,
+    TV_INTERVAL_MAP,
+    escapeHtml,
+    isFiniteNum,
+    formatCryptoPrice,
+    formatSignedPct,
+    getTvSymbol,
+    getTvUrl,
+    fetchJsonWithTimeout,
+  } = Common;
+
   const ZONE_NAMES = {
     resonance: '顺势高换手共振区',
     neg_fr: '负费率贴水区',
@@ -25,9 +24,9 @@
   const VALID_BAR_COUNTS = new Set([60, 120, 168]);
 
   let candidatesState = [];
-  const candidateBySym = new Map();
   const rowRefsBySym = new Map();
   const prevPriceBySym = new Map();
+  const copyResetTimers = new WeakMap();
 
   let currentVersion = null;
   let lastEtag = null;
@@ -37,9 +36,13 @@
   let sortAsc = true;
 
   let pollController = null;
+  let snapshotController = null;
   let pollTimer = null;
   let versionTimer = null;
+  let countdownTimer = null;
+  let filterDebounceTimer = null;
   let activeFetchId = 0;
+  let activeSnapshotFetchId = 0;
   let toastTimer = null;
 
   let modalCurrentSymbol = '';
@@ -142,40 +145,12 @@
   const modalHudEma5 = document.getElementById('modal-hud-ema5');
   const modalHudEma10 = document.getElementById('modal-hud-ema10');
 
-  function escapeHtml(val) {
-    if (val === null || val === undefined) return '';
-    return String(val)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
-
-  function isFiniteNum(v) {
-    return typeof v === 'number' && Number.isFinite(v);
-  }
-
   function formatCryptoVal(val, refDiff = null) {
-    if (!isFiniteNum(val)) return '--';
-    const absV = Math.abs(val);
-    let baseDec = 8;
-    if (absV >= 100) baseDec = 2;
-    else if (absV >= 0.01) baseDec = 4;
-    else if (absV >= 0.0001) baseDec = 6;
-    if (isFiniteNum(refDiff) && Math.abs(refDiff) > 0 && Math.abs(refDiff) < Math.pow(10, -baseDec)) {
-      baseDec = Math.min(8, baseDec + 2);
-    }
-    return val.toFixed(baseDec);
+    return formatCryptoPrice(val, { refDiff });
   }
 
   function formatPrice(p) {
-    return formatCryptoVal(p);
-  }
-
-  function formatSignedPct(val, decimals = 2) {
-    if (!isFiniteNum(val)) return '--';
-    return (val >= 0 ? '+' : '') + val.toFixed(decimals) + '%';
+    return formatCryptoPrice(p);
   }
 
   function formatMillions(val) {
@@ -196,15 +171,6 @@
       `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth() + 1)}-${pad(bj.getUTCDate())} ` +
       `${pad(bj.getUTCHours())}:${pad(bj.getUTCMinutes())}:${pad(bj.getUTCSeconds())} (北京时间)`
     );
-  }
-
-  function getTvSymbol(sym) {
-    return CHINESE_TV_MAP[sym] || `BINANCE:${sym}.P`;
-  }
-
-  function getTvUrl(tvSym, interval) {
-    const tvInterval = TV_INTERVAL_MAP[interval] || '15';
-    return `https://cn.tradingview.com/chart/${TV_LAYOUT_ID}/?symbol=${encodeURIComponent(tvSym)}&interval=${tvInterval}`;
   }
 
   function getEffectiveSupply(c) {
@@ -270,14 +236,14 @@
 
     const tags = [];
     if (c.is_ema_bull) {
-      tags.push('<span class="px-1 py-0.2 rounded text-[9px] bg-emerald-950/60 text-emerald-300 border border-emerald-500/20">1h顺势</span>');
+      tags.push('<span class="px-1 py-0.5 rounded text-[9px] bg-emerald-950/60 text-emerald-300 border border-emerald-500/20">1h顺势</span>');
     }
     if (c.is_high_turnover) {
       const trLabel = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) + 'x' : '--';
-      tags.push(`<span class="px-1 py-0.2 rounded text-[9px] bg-purple-950/60 text-purple-300 border border-purple-500/20">换手${escapeHtml(trLabel)}</span>`);
+      tags.push(`<span class="px-1 py-0.5 rounded text-[9px] bg-purple-950/60 text-purple-300 border border-purple-500/20">换手${escapeHtml(trLabel)}</span>`);
     }
     if (c.is_neg_funding) {
-      tags.push('<span class="px-1 py-0.2 rounded text-[9px] bg-rose-950/60 text-rose-300 border border-rose-500/20" title="合约相对现货深度贴水，空头情绪极强">负费率贴水</span>');
+      tags.push('<span class="px-1 py-0.5 rounded text-[9px] bg-rose-950/60 text-rose-300 border border-rose-500/20" title="合约相对现货深度贴水，空头情绪极强">负费率贴水</span>');
     }
 
     return `<div class="flex items-center gap-1.5 flex-wrap">${resonanceBadge}${tags.length ? tags.join('') : '<span class="text-slate-500 text-[10px]">基础底池</span>'}</div>`;
@@ -285,18 +251,18 @@
 
   function buildIntervalBadge(interval) {
     if (interval === 1) {
-      return '<span class="px-1 py-0.2 text-[9px] font-sans font-bold rounded border bg-amber-500/20 text-amber-300 border-amber-500/30">1h期</span>';
+      return '<span class="px-1 py-0.5 text-[9px] font-sans font-bold rounded border bg-amber-500/20 text-amber-300 border-amber-500/30">1h期</span>';
     }
     if (interval === 4) {
-      return '<span class="px-1 py-0.2 text-[9px] font-sans rounded border bg-sky-500/20 text-sky-300 border-sky-500/30">4h期</span>';
+      return '<span class="px-1 py-0.5 text-[9px] font-sans rounded border bg-sky-500/20 text-sky-300 border-sky-500/30">4h期</span>';
     }
     if (interval === 8) {
-      return '<span class="px-1 py-0.2 text-[9px] font-sans rounded border bg-slate-800 text-slate-400 border-slate-700">8h期</span>';
+      return '<span class="px-1 py-0.5 text-[9px] font-sans rounded border bg-slate-800 text-slate-400 border-slate-700">8h期</span>';
     }
     if (isFiniteNum(interval) && interval > 0) {
-      return `<span class="px-1 py-0.2 text-[9px] font-sans rounded border bg-slate-800 text-slate-400 border-slate-700">${escapeHtml(interval)}h期</span>`;
+      return `<span class="px-1 py-0.5 text-[9px] font-sans rounded border bg-slate-800 text-slate-400 border-slate-700">${escapeHtml(interval)}h期</span>`;
     }
-    return '<span class="px-1 py-0.2 text-[9px] font-sans rounded border bg-slate-800 text-slate-500 border-slate-700">--期</span>';
+    return '<span class="px-1 py-0.5 text-[9px] font-sans rounded border bg-slate-800 text-slate-500 border-slate-700">--期</span>';
   }
 
   function buildEmaHtml(c) {
@@ -313,7 +279,7 @@
       return `<div class="whitespace-nowrap">
         <div class="flex items-center gap-1.5">
           <span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span>
-          <span class="text-amber-300 font-bold px-1.5 py-0.2 rounded bg-amber-500/15 border border-amber-500/30 text-[10px]">粘合走平</span>
+          <span class="text-amber-300 font-bold px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-[10px]">粘合走平</span>
           <span class="text-[10px] text-amber-300/80 font-mono">(${spreadText})</span>
         </div>
         <div class="text-[10px] text-slate-500 font-mono mt-0.5">5:${ema5Str} / 10:${ema10Str}</div>
@@ -343,8 +309,11 @@
     if (!c.is_resonance) {
       return '<span class="text-slate-600 font-mono text-xs">--</span>';
     }
-    const resHours = isFiniteNum(c.resonance_duration_hours) ? Math.floor(c.resonance_duration_hours) : 0;
     const entryStr = c.resonance_entry_time ? `<div class="text-[9px] font-mono text-slate-400 mt-0.5">入圈: ${escapeHtml(c.resonance_entry_time)}</div>` : '';
+    if (!isFiniteNum(c.resonance_duration_hours) || Number(c.resonance_duration_hours) < 0) {
+      return `<div><span class="text-slate-500 font-mono text-xs">--</span>${entryStr}</div>`;
+    }
+    const resHours = Math.floor(Number(c.resonance_duration_hours));
     let badge;
     if (resHours > 0) {
       if (resHours <= 3) {
@@ -477,7 +446,7 @@
       const safeSym = escapeHtml(sym);
       const tvSym = getTvSymbol(sym);
       const safeTvSym = escapeHtml(tvSym);
-      const tvUrl = getTvUrl(tvSym, '15m');
+      const tvUrl = getTvUrl(tvSym, TV_LAYOUT_ID, '15m');
       const binanceUrl = `https://www.binance.com/zh-CN/futures/${encodeURIComponent(sym)}`;
 
       const pStr = escapeHtml(formatPrice(c.price));
@@ -502,7 +471,7 @@
         const daysLeft = isFiniteNum(c.overflow_days_left) ? c.overflow_days_left.toFixed(1) : '--';
         mcHtml = `<div>
           <div class="text-amber-300 font-mono tabular-nums font-semibold sym-mc-val">${mcStr}</div>
-          <span class="px-1.5 py-0.2 rounded text-[9px] bg-amber-500/15 text-amber-300 border border-amber-500/30 inline-flex items-center gap-0.5" title="曾落入3000wu以下，突破后保持7天持续跟踪">溢出剩${escapeHtml(daysLeft)}天</span>
+          <span class="px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-300 border border-amber-500/30 inline-flex items-center gap-0.5" title="曾落入3000wu以下，突破后保持7天持续跟踪">溢出剩${escapeHtml(daysLeft)}天</span>
         </div>`;
       } else {
         mcHtml = `<div class="text-slate-200 font-mono tabular-nums sym-mc-val">${mcStr}</div>`;
@@ -522,12 +491,12 @@
         <th scope="row" class="py-1.5 px-2 font-normal whitespace-nowrap sticky-col">
           <div class="flex items-center gap-1">
             <span class="text-white font-bold font-sans text-sm tracking-tight">${safeSym}</span>
-            <button type="button" class="btn-copy-sym px-1 py-0.2 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 text-[10px] transition-all" data-copy="${safeTvSym}" title="复制 TV 代码 (${safeTvSym})">复制</button>
+            <button type="button" class="btn-copy-sym px-1 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 text-[10px] transition-all" data-copy="${safeTvSym}" data-label="复制" title="复制 TV 代码 (${safeTvSym})">复制</button>
           </div>
           <div class="flex items-center gap-1 mt-0.5 text-[10px] font-sans">
-            <button type="button" class="btn-preview-chart px-1.5 py-0.2 rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 transition-all font-semibold" data-sym="${safeSym}" data-tv="${safeTvSym}" title="站内弹窗预览 15m 实时 K 线">15m图</button>
-            <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="px-1.5 py-0.2 rounded bg-[#2962FF]/15 hover:bg-[#2962FF]/25 text-[#38bdf8] hover:text-white border border-[#2962FF]/30 transition-all font-semibold" title="在 TradingView 打开 15m 专属画线布局 (ig0LuDL8)"><span>TV↗</span></a>
-            <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="px-1.5 py-0.2 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 hover:text-white border border-amber-500/30 transition-all" title="直达币安合约盘口深度"><span>币安↗</span></a>
+            <button type="button" class="btn-preview-chart px-1.5 py-0.5 rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 transition-all font-semibold" data-sym="${safeSym}" data-tv="${safeTvSym}" title="站内弹窗预览 15m 实时 K 线">15m图</button>
+            <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="px-1.5 py-0.5 rounded bg-[#2962FF]/15 hover:bg-[#2962FF]/25 text-[#38bdf8] hover:text-white border border-[#2962FF]/30 transition-all font-semibold" title="在 TradingView 打开 15m 专属画线布局 (ig0LuDL8)"><span>TV↗</span></a>
+            <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 hover:text-white border border-amber-500/30 transition-all" title="直达币安合约盘口深度"><span>币安↗</span></a>
           </div>
         </th>
         <td class="py-1.5 px-2 whitespace-nowrap">
@@ -563,6 +532,7 @@
       if (!sym) return;
       rowRefsBySym.set(sym, {
         rowEl,
+        rankEl: rowEl.querySelector('.sym-rank'),
         priceEl: rowEl.querySelector('.sym-price'),
         posBoxEl: rowEl.querySelector('.sym-pos-box'),
         posBarEl: rowEl.querySelector('.sym-pos-bar'),
@@ -580,23 +550,53 @@
   }
 
   function applySortOrder() {
-    if (!tableBody || !sortColumn) return;
-    candidatesState.sort((a, b) => {
-      const valA = getSortMetric(a, sortColumn);
-      const valB = getSortMetric(b, sortColumn);
-      const okA = Number.isFinite(valA);
-      const okB = Number.isFinite(valB);
-      if (!okA && !okB) return 0;
-      if (!okA) return 1;
-      if (!okB) return -1;
-      return sortAsc ? valA - valB : valB - valA;
-    });
-    const frag = document.createDocumentFragment();
-    candidatesState.forEach((c) => {
+    if (!tableBody) return;
+    if (sortColumn) {
+      candidatesState.sort((a, b) => {
+        const valA = getSortMetric(a, sortColumn);
+        const valB = getSortMetric(b, sortColumn);
+        const okA = Number.isFinite(valA);
+        const okB = Number.isFinite(valB);
+        if (!okA && !okB) return (a.originalOrder ?? 0) - (b.originalOrder ?? 0);
+        if (!okA) return 1;
+        if (!okB) return -1;
+        const diff = sortAsc ? valA - valB : valB - valA;
+        return diff !== 0 ? diff : (a.originalOrder ?? 0) - (b.originalOrder ?? 0);
+      });
+    } else {
+      candidatesState.sort((a, b) => (a.originalOrder ?? 0) - (b.originalOrder ?? 0));
+    }
+
+    const domRows = tableBody.querySelectorAll('tr.candidate-row');
+    let orderChanged = domRows.length !== candidatesState.length;
+    if (!orderChanged) {
+      for (let i = 0; i < candidatesState.length; i++) {
+        const refs = rowRefsBySym.get(candidatesState[i].symbol);
+        if (!refs || domRows[i] !== refs.rowEl) {
+          orderChanged = true;
+          break;
+        }
+      }
+    }
+
+    if (orderChanged) {
+      const frag = document.createDocumentFragment();
+      candidatesState.forEach((c) => {
+        const refs = rowRefsBySym.get(c.symbol);
+        if (refs && refs.rowEl) frag.appendChild(refs.rowEl);
+      });
+      tableBody.appendChild(frag);
+    }
+
+    candidatesState.forEach((c, idx) => {
       const refs = rowRefsBySym.get(c.symbol);
-      if (refs && refs.rowEl) frag.appendChild(refs.rowEl);
+      if (refs && refs.rankEl) {
+        const nextRank = String(idx + 1);
+        if (refs.rankEl.textContent !== nextRank) {
+          refs.rankEl.textContent = nextRank;
+        }
+      }
     });
-    tableBody.appendChild(frag);
   }
 
   function matchesCurrentFilter(c) {
@@ -651,25 +651,11 @@
     if (!text) return;
     let ok = false;
     try {
-      if (navigator.clipboard && window.isSecureContext) {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
         await navigator.clipboard.writeText(text);
         ok = true;
       }
     } catch (_) {}
-    if (!ok) {
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.left = '-9999px';
-        ta.style.top = '-9999px';
-        document.body.appendChild(ta);
-        ta.focus();
-        ta.select();
-        ok = document.execCommand('copy');
-        document.body.removeChild(ta);
-      } catch (_) {}
-    }
     showToast(ok ? successMsg : '复制失败，请手动选择复制');
   }
 
@@ -898,19 +884,41 @@
     }
   }
 
+  function clearModalChartDisplay() {
+    modalCandles = [];
+    modalHoverIndex = -1;
+    if (modalTooltip) modalTooltip.classList.add('hidden');
+    if (modalChartPrice) {
+      modalChartPrice.textContent = '--';
+      modalChartPrice.className = 'font-mono text-emerald-400 font-bold text-sm';
+    }
+    if (modalHudEma5) modalHudEma5.textContent = '--';
+    if (modalHudEma10) modalHudEma10.textContent = '--';
+    if (modalCanvas) {
+      const ctx = modalCanvas.getContext('2d');
+      if (ctx) {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, modalCanvas.width, modalCanvas.height);
+        ctx.restore();
+      }
+    }
+  }
+
   async function fetchModalKlines(sym, interval) {
     if (!modalNativeView || !modalLoading) return;
     if (modalFetchController) modalFetchController.abort();
     modalFetchController = new AbortController();
+    const signal = modalFetchController.signal;
 
+    clearModalChartDisplay();
     modalLoading.classList.remove('hidden');
     if (modalError) modalError.classList.add('hidden');
 
     try {
       const url = `api/binance/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&limit=168`;
-      const res = await fetch(url, { signal: modalFetchController.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const raw = await res.json();
+      const { data: raw } = await fetchJsonWithTimeout(url, { signal }, 12000);
+      if (signal.aborted) return;
       if (!Array.isArray(raw) || raw.length === 0) throw new Error('No kline data');
 
       modalCandles = raw.map((d) => ({
@@ -939,11 +947,11 @@
       }
       renderModalChart();
     } catch (err) {
-      if (err.name === 'AbortError') return;
+      if (err && err.name === 'AbortError') return;
       console.error('Failed to load klines:', err);
       if (modalError) modalError.classList.remove('hidden');
     } finally {
-      if (modalLoading) modalLoading.classList.add('hidden');
+      if (modalLoading && !signal.aborted) modalLoading.classList.add('hidden');
     }
   }
 
@@ -951,10 +959,10 @@
     if (!chartModal) return;
     modalCurrentSymbol = sym;
     modalCurrentTvSymbol = tvSym;
-    modalHoverIndex = -1;
+    clearModalChartDisplay();
 
     if (modalChartTitle) modalChartTitle.textContent = sym;
-    if (modalExternalLink) modalExternalLink.href = getTvUrl(tvSym, modalCurrentInterval);
+    if (modalExternalLink) modalExternalLink.href = getTvUrl(tvSym, TV_LAYOUT_ID, modalCurrentInterval);
     if (!chartModal.open) {
       chartModal.showModal();
     }
@@ -976,8 +984,7 @@
   function resetModalStateOnClose() {
     if (modalFetchController) modalFetchController.abort();
     if (modalTvIframe) modalTvIframe.src = 'about:blank';
-    modalHoverIndex = -1;
-    if (modalTooltip) modalTooltip.classList.add('hidden');
+    clearModalChartDisplay();
   }
 
   function closeTvModal() {
@@ -1002,11 +1009,7 @@
     if (pollController) pollController.abort();
     pollController = new AbortController();
     const fetchId = ++activeFetchId;
-
-    let signal = pollController.signal;
-    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function' && typeof AbortSignal.any === 'function') {
-      signal = AbortSignal.any([pollController.signal, AbortSignal.timeout(4500)]);
-    }
+    const signal = pollController.signal;
 
     if (syncBtn) {
       syncBtn.setAttribute('aria-busy', 'true');
@@ -1015,15 +1018,13 @@
 
     try {
       const [tickerRes, premiumRes] = await Promise.all([
-        fetch('api/binance/ticker24hr', { signal }),
-        fetch('api/binance/premiumIndex', { signal }),
+        fetchJsonWithTimeout('api/binance/ticker24hr', { signal }, 12000),
+        fetchJsonWithTimeout('api/binance/premiumIndex', { signal }, 12000),
       ]);
-      if (!tickerRes.ok || !premiumRes.ok) {
-        throw new Error(`Binance HTTP ${tickerRes.status}/${premiumRes.status}`);
-      }
-
-      const [tickers, premiums] = await Promise.all([tickerRes.json(), premiumRes.json()]);
       if (fetchId !== activeFetchId) return;
+
+      const tickers = tickerRes.data;
+      const premiums = premiumRes.data;
 
       const tickMap = new Map();
       tickers.forEach((t) => tickMap.set(t.symbol, t));
@@ -1172,18 +1173,21 @@
   }
 
   async function loadCandidateSnapshot({ force = false } = {}) {
+    if (snapshotController) snapshotController.abort();
+    snapshotController = new AbortController();
+    const fetchId = ++activeSnapshotFetchId;
     const headers = {};
     if (!force && lastEtag) headers['If-None-Match'] = lastEtag;
 
     try {
-      const res = await fetch('api/candidates', { cache: 'no-store', headers });
-      if (res.status === 304) return;
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const etag = res.headers.get('ETag');
+      const { notModified, etag, data: payload } = await fetchJsonWithTimeout(
+        'api/candidates',
+        { cache: 'no-store', headers, signal: snapshotController.signal },
+        12000
+      );
+      if (fetchId !== activeSnapshotFetchId) return;
+      if (notModified) return;
       if (etag) lastEtag = etag;
-
-      const payload = await res.json();
       if (!payload || !Array.isArray(payload.candidates)) {
         throw new Error('Invalid /api/candidates payload');
       }
@@ -1194,14 +1198,12 @@
         poolUpdatedEl.className = 'px-2 py-0.5 text-[11px] font-mono text-slate-400 bg-slate-800/80 rounded-md border border-slate-700/60';
       }
 
-      candidatesState = payload.candidates.map((raw) => {
-        const copy = { ...raw };
+      candidatesState = payload.candidates.map((raw, idx) => {
+        const copy = { ...raw, originalOrder: idx };
         classifyCandidate(copy);
         if (isFiniteNum(copy.price)) prevPriceBySym.set(copy.symbol, copy.price);
         return copy;
       });
-      candidateBySym.clear();
-      candidatesState.forEach((c) => candidateBySym.set(c.symbol, c));
 
       renderTableRows(candidatesState);
       updateKpiCards(candidatesState);
@@ -1209,6 +1211,8 @@
       applyFilter();
       syncBinancePool();
     } catch (err) {
+      if (err && err.name === 'AbortError') return;
+      if (fetchId !== activeSnapshotFetchId) return;
       console.error('Failed to load candidate pool:', err);
       if (poolUpdatedEl) {
         poolUpdatedEl.textContent = '候选池加载失败';
@@ -1223,9 +1227,7 @@
   async function checkSnapshotVersion() {
     if (document.hidden) return;
     try {
-      const res = await fetch('api/candidate-version', { cache: 'no-store' });
-      if (!res.ok) return;
-      const data = await res.json();
+      const { data } = await fetchJsonWithTimeout('api/candidate-version', { cache: 'no-store' }, 8000);
       if (data && data.updated_at && data.updated_at !== currentVersion) {
         await loadCandidateSnapshot({ force: true });
       }
@@ -1259,6 +1261,10 @@
 
   if (resetBtn) {
     resetBtn.addEventListener('click', () => {
+      if (filterDebounceTimer) {
+        clearTimeout(filterDebounceTimer);
+        filterDebounceTimer = null;
+      }
       if (searchInput) searchInput.value = '';
       searchQuery = '';
       sortColumn = null;
@@ -1267,6 +1273,7 @@
         const icon = h.querySelector('.sort-icon');
         if (icon) icon.textContent = '↕';
       });
+      applySortOrder();
       switchZone('all');
     });
   }
@@ -1275,7 +1282,11 @@
     searchInput.addEventListener('input', (e) => {
       searchQuery = e.target.value;
       saveUiState();
-      applyFilter();
+      if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
+      filterDebounceTimer = setTimeout(() => {
+        filterDebounceTimer = null;
+        applyFilter();
+      }, 120);
     });
   }
 
@@ -1334,14 +1345,18 @@
         e.stopPropagation();
         const tvSym = copyBtn.getAttribute('data-copy');
         if (!tvSym) return;
-        const originalText = copyBtn.textContent;
+        const label = copyBtn.getAttribute('data-label') || '复制';
+        const prevTimer = copyResetTimers.get(copyBtn);
+        if (prevTimer) clearTimeout(prevTimer);
         await copyText(tvSym, `已复制: ${tvSym}`);
         copyBtn.textContent = '✓';
         copyBtn.classList.add('bg-emerald-600', 'text-white');
-        setTimeout(() => {
-          copyBtn.textContent = originalText;
+        const timerId = setTimeout(() => {
+          copyBtn.textContent = label;
           copyBtn.classList.remove('bg-emerald-600', 'text-white');
+          copyResetTimers.delete(copyBtn);
         }, 1200);
+        copyResetTimers.set(copyBtn, timerId);
         return;
       }
 
@@ -1418,7 +1433,7 @@
 
       modalCurrentInterval = btn.getAttribute('data-interval') || '15m';
       if (modalExternalLink && modalCurrentTvSymbol) {
-        modalExternalLink.href = getTvUrl(modalCurrentTvSymbol, modalCurrentInterval);
+        modalExternalLink.href = getTvUrl(modalCurrentTvSymbol, TV_LAYOUT_ID, modalCurrentInterval);
       }
       if (modalActiveEngine === 'native') {
         fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
@@ -1459,19 +1474,17 @@
   if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeTvModal);
   if (chartModal) {
     chartModal.addEventListener('close', resetModalStateOnClose);
-    if (!('closedBy' in HTMLDialogElement.prototype)) {
-      const outsideDialog = (e) => {
-        const r = chartModal.getBoundingClientRect();
-        return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
-      };
-      let pressedOutside = false;
-      chartModal.addEventListener('pointerdown', (e) => {
-        pressedOutside = outsideDialog(e);
-      });
-      chartModal.addEventListener('pointerup', (e) => {
-        if (pressedOutside && outsideDialog(e)) closeTvModal();
-      });
-    }
+    const outsideDialog = (e) => {
+      const r = chartModal.getBoundingClientRect();
+      return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    };
+    let pressedOutside = false;
+    chartModal.addEventListener('pointerdown', (e) => {
+      pressedOutside = outsideDialog(e);
+    });
+    chartModal.addEventListener('pointerup', (e) => {
+      if (pressedOutside && outsideDialog(e)) closeTvModal();
+    });
   }
   window.addEventListener('resize', () => {
     if (chartModal && chartModal.open && modalActiveEngine === 'native') {
@@ -1498,6 +1511,10 @@
       if (tvDrawer && !tvDrawer.classList.contains('hidden')) {
         tvDrawer.classList.add('hidden');
       } else if (searchInput && (searchInput.value || document.activeElement === searchInput)) {
+        if (filterDebounceTimer) {
+          clearTimeout(filterDebounceTimer);
+          filterDebounceTimer = null;
+        }
         searchInput.value = '';
         searchQuery = '';
         searchInput.blur();
@@ -1518,12 +1535,27 @@
     }
   });
 
+  function startCountdown() {
+    if (countdownTimer !== null) return;
+    updateSettleCountdown();
+    countdownTimer = setInterval(updateSettleCountdown, 1000);
+  }
+
+  function stopCountdown() {
+    if (countdownTimer !== null) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+    }
+  }
+
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
       stopPolling();
+      stopCountdown();
       activeFetchId += 1;
       if (pollController) pollController.abort();
     } else {
+      startCountdown();
       checkSnapshotVersion();
       syncBinancePool();
       startPolling();
@@ -1550,8 +1582,11 @@
   }
   updateModalBarsUi();
 
-  setInterval(updateSettleCountdown, 1000);
-  updateSettleCountdown();
+  if (!document.hidden) {
+    startCountdown();
+  } else {
+    updateSettleCountdown();
+  }
   loadCandidateSnapshot({ force: true });
   startPolling();
 })();

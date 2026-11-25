@@ -7,10 +7,11 @@
   <title>突破追多与移动保本系统 —— 策略监控</title>
   <link rel="stylesheet" href="static/tailwind.css">
   <link rel="stylesheet" href="static/styles.css">
+  <script src="static/common.js" defer></script>
   <script src="static/candidates.js" defer></script>
 </head>
 <body class="p-2 md:p-3 antialiased custom-scrollbar">
-  <main id="main-content" class="w-full max-w-[1600px] mx-auto space-y-2">
+  <main class="w-full max-w-[1600px] mx-auto space-y-2">
 
     <!-- Compact HUD Header -->
     <header class="bg-slate-900/95 border border-slate-800 rounded-xl px-3.5 py-2 shadow-lg backdrop-blur-sm">
@@ -19,7 +20,7 @@
           <h1 class="text-base md:text-lg font-black tracking-tight text-white mr-1">突破追多与移动保本系统</h1>
           <span id="pool-updated-time" class="px-2 py-0.5 text-[11px] font-mono text-slate-400 bg-slate-800/80 rounded-md border border-slate-700/60">更新: --</span>
           <span id="sync-status-badge" class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1.5" role="status" aria-live="polite"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" aria-hidden="true"></span><span>币安 60 秒轮询</span></span>
-          <span id="settle-timer-badge" class="px-2 py-0.5 text-[11px] font-mono font-semibold rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/20 flex items-center gap-1" title="距离下个整点资费结算窗口倒计时"><span>结算</span><span id="settle-countdown">--:--</span></span>
+          <span class="px-2 py-0.5 text-[11px] font-mono font-semibold rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/20 flex items-center gap-1" title="距离下个整点资费结算窗口倒计时"><span>结算</span><span id="settle-countdown">--:--</span></span>
         </div>
 
         <div class="flex flex-wrap items-center gap-2 shrink-0">
@@ -66,7 +67,7 @@
       <div data-zone="resonance" class="kpi-card card-resonance active px-3 py-2 rounded-xl bg-slate-900 border border-amber-500/40 flex flex-col justify-between space-y-1">
         <div class="flex items-center justify-between gap-1">
           <span class="font-bold text-amber-300 text-xs truncate">顺势高换手共振区</span>
-          <span class="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">破线开多</span>
+          <span class="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">破线开多</span>
         </div>
         <div class="flex items-baseline justify-between gap-2">
           <div class="text-xl font-black font-mono text-white tabular-nums"><span id="kpi-resonance-count">--</span></div>
@@ -78,11 +79,11 @@
       <div data-zone="neg_fr" class="kpi-card card-neg-fr px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-rose-500/40 flex flex-col justify-between space-y-1">
         <div class="flex items-center justify-between gap-1">
           <span class="font-semibold text-rose-400 text-xs truncate">负费率贴水区</span>
-          <span class="px-1.5 py-0.2 rounded text-[9px] font-mono text-rose-300/80 bg-rose-500/10 border border-rose-500/20 shrink-0">4h&lt;0</span>
+          <span class="px-1.5 py-0.5 rounded text-[9px] font-mono text-rose-300/80 bg-rose-500/10 border border-rose-500/20 shrink-0">4h&lt;0</span>
         </div>
         <div class="flex items-baseline justify-between gap-2">
           <div class="text-xl font-black font-mono text-white tabular-nums"><span id="kpi-neg-fr-count">--</span></div>
-          <div id="kpi-neg-fr-sub" class="text-[10px] text-rose-400/90 font-mono truncate">空头拥挤</div>
+          <div class="text-[10px] text-rose-400/90 font-mono truncate">空头拥挤</div>
         </div>
         <div id="kpi-neg-fr-sample" class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">贴水深: --</div>
       </div>
@@ -90,11 +91,11 @@
       <div data-zone="high_tr" class="kpi-card card-high-tr px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-purple-500/40 flex flex-col justify-between space-y-1">
         <div class="flex items-center justify-between gap-1">
           <span class="font-semibold text-purple-400 text-xs truncate">巨量高换手区</span>
-          <span class="px-1.5 py-0.2 rounded text-[9px] font-mono text-purple-300/80 bg-purple-500/10 border border-purple-500/20 shrink-0">≥1.5x</span>
+          <span class="px-1.5 py-0.5 rounded text-[9px] font-mono text-purple-300/80 bg-purple-500/10 border border-purple-500/20 shrink-0">≥1.5x</span>
         </div>
         <div class="flex items-baseline justify-between gap-2">
           <div class="text-xl font-black font-mono text-white tabular-nums"><span id="kpi-high-tr-count">--</span></div>
-          <div id="kpi-high-tr-sub" class="text-[10px] text-purple-400/90 font-mono truncate">筹码洗刷</div>
+          <div class="text-[10px] text-purple-400/90 font-mono truncate">筹码洗刷</div>
         </div>
         <div id="kpi-high-tr-sample" class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">最高: --</div>
       </div>
@@ -102,11 +103,11 @@
       <div data-zone="ema_bull" class="kpi-card card-ema-bull px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-emerald-500/40 flex flex-col justify-between space-y-1">
         <div class="flex items-center justify-between gap-1">
           <span class="font-semibold text-emerald-400 text-xs truncate">1h EMA顺势区</span>
-          <span class="px-1.5 py-0.2 rounded text-[9px] font-mono text-emerald-300/80 bg-emerald-500/10 border border-emerald-500/20 shrink-0">5&gt;10</span>
+          <span class="px-1.5 py-0.5 rounded text-[9px] font-mono text-emerald-300/80 bg-emerald-500/10 border border-emerald-500/20 shrink-0">5&gt;10</span>
         </div>
         <div class="flex items-baseline justify-between gap-2">
           <div class="text-xl font-black font-mono text-white tabular-nums"><span id="kpi-ema-bull-count">--</span></div>
-          <div id="kpi-ema-bull-sub" class="text-[10px] text-emerald-400/90 font-mono truncate">多头动能</div>
+          <div class="text-[10px] text-emerald-400/90 font-mono truncate">多头动能</div>
         </div>
         <div id="kpi-ema-bull-sample" class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">多头: --</div>
       </div>
@@ -114,13 +115,13 @@
       <div data-zone="all" class="kpi-card card-all px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-sky-500/40 flex flex-col justify-between space-y-1 col-span-2 md:col-span-1">
         <div class="flex items-center justify-between gap-1">
           <span class="font-semibold text-sky-400 text-xs truncate">全量候选底池</span>
-          <span class="px-1.5 py-0.2 rounded text-[9px] font-mono text-sky-300/80 bg-sky-500/10 border border-sky-500/20 shrink-0">&lt;$30M</span>
+          <span class="px-1.5 py-0.5 rounded text-[9px] font-mono text-sky-300/80 bg-sky-500/10 border border-sky-500/20 shrink-0">&lt;$30M</span>
         </div>
         <div class="flex items-baseline justify-between gap-2">
           <div class="text-xl font-black font-mono text-white tabular-nums"><span id="kpi-all-count">--</span></div>
           <div id="kpi-all-sub" class="text-[10px] text-sky-400/90 font-mono truncate">--</div>
         </div>
-        <div id="kpi-all-sample" class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">&lt;$30M 底池 + 7d 溢出跟踪</div>
+        <div class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">&lt;$30M 底池 + 7d 溢出跟踪</div>
       </div>
     </section>
 
@@ -167,7 +168,7 @@
             </tr>
           </thead>
           <tbody id="candidate-table-body" class="divide-y divide-slate-800/60 text-slate-300">
-            <tr id="pool-status-row">
+            <tr>
               <td colspan="11" class="py-12 text-center text-slate-400 font-sans">正在加载候选币池数据...</td>
             </tr>
           </tbody>
@@ -183,7 +184,7 @@
   </main>
 
   <!-- In-Page Interactive 15m/1h Candlestick & TV Chart Dialog -->
-  <dialog id="chart-modal" closedby="any" aria-labelledby="modal-chart-title" class="chart-modal-dialog bg-slate-900 border border-slate-700/80 rounded-2xl w-[calc(100vw-1rem)] max-w-5xl h-[85vh] max-h-[720px] shadow-2xl flex-col overflow-hidden">
+  <dialog id="chart-modal" aria-labelledby="modal-chart-title" class="chart-modal-dialog bg-slate-900 border border-slate-700/80 rounded-2xl w-[calc(100vw-1rem)] max-w-5xl h-[85vh] max-h-[720px] shadow-2xl flex-col overflow-hidden">
     <div class="px-4 py-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
       <div class="flex items-center gap-2 flex-wrap">
         <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>
@@ -202,7 +203,7 @@
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <div id="modal-ema-hud" class="hidden sm:flex items-center gap-2 text-xs font-mono">
+        <div class="hidden sm:flex items-center gap-2 text-xs font-mono">
           <span class="flex items-center gap-1 text-amber-400"><span class="w-2 h-0.5 bg-amber-400 inline-block"></span>EMA5: <span id="modal-hud-ema5">--</span></span>
           <span class="flex items-center gap-1 text-purple-400"><span class="w-2 h-0.5 bg-purple-400 inline-block"></span>EMA10: <span id="modal-hud-ema10">--</span></span>
         </div>
@@ -236,7 +237,7 @@
   </dialog>
 
   <!-- Floating Toast Notification -->
-  <div id="toast-container">
+  <div>
     <div id="toast" class="fixed bottom-6 right-6 z-50 hidden px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-xs shadow-2xl flex items-center gap-2">
       <span class="text-emerald-400 font-bold">✓</span>
       <span id="toast-text">已复制</span>

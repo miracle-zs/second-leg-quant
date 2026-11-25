@@ -1,18 +1,18 @@
-"""Store account/candidate snapshots in SQLite (WAL) and serve pure static HUD shells + JSON APIs."""
+"""Store/serve static HUD shells and JSON APIs backed by SQLite (WAL) via db_store."""
 import argparse
+from collections import OrderedDict
 import hashlib
+import http.client
 import json
 import mimetypes
 import sqlite3
+import stat
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
-from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional
 from urllib.parse import parse_qs, quote, urlsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -24,19 +24,16 @@ if str(SCRIPTS_DIR) not in sys.path:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config import open_sqlite_connection  # noqa: E402
+import db_store  # noqa: E402
+import http_client  # noqa: E402
 
 _TEXT_CONTENT_TYPES = {"application/javascript", "application/json"}
 _BINANCE_FAPI_BASE = "https://fapi.binance.com"
 _BINANCE_ALLOWED_INTERVALS = frozenset({"15m", "1h", "4h", "1d"})
 _BINANCE_PROXY_TTL_SEC = 15.0
+_BINANCE_KLINES_TTL_SEC = 12.0
+_BINANCE_PROXY_CACHE_MAX_ENTRIES = 128
 _BINANCE_PROXY_TIMEOUT_SEC = 10.0
-
-
-def _fetch_binance_public(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "second-leg-quant/3.5"})
-    with urllib.request.urlopen(req, timeout=_BINANCE_PROXY_TIMEOUT_SEC) as resp:
-        return resp.read()
 
 
 def _is_valid_symbol(symbol: str) -> bool:
@@ -67,112 +64,15 @@ def _matches_etag(if_none_match: Optional[str], etag: str) -> bool:
     return False
 
 
-def publish_report(database: Path, report: dict, income: Sequence[dict] = (), fills: Sequence[dict] = ()) -> None:
-    """Persist the latest complete account report, ledger events, fills, and equity observations."""
-    payload = json.dumps(report, ensure_ascii=False, allow_nan=False)
-    with closing(open_sqlite_connection(database, readonly=False)) as connection, connection:
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS account_snapshot (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                payload TEXT NOT NULL
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS income_ledger (
-                income_type TEXT NOT NULL,
-                transaction_id TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                payload TEXT NOT NULL,
-                PRIMARY KEY (income_type, transaction_id)
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS trade_fills (
-                symbol TEXT NOT NULL,
-                trade_id TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                payload TEXT NOT NULL,
-                PRIMARY KEY (symbol, trade_id)
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS equity_observations (
-                timestamp INTEGER PRIMARY KEY,
-                payload TEXT NOT NULL
-            )
-        """)
-        connection.execute("""
-            CREATE TABLE IF NOT EXISTS account_recording (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                payload TEXT NOT NULL
-            )
-        """)
-        if report.get("recording") is not None:
-            connection.execute("""
-                INSERT INTO account_recording VALUES (1, ?)
-                ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
-            """, (json.dumps(report["recording"], ensure_ascii=False, allow_nan=False),))
-            desired_points = {
-                int(point["timestamp"]): json.dumps(point, ensure_ascii=False, allow_nan=False)
-                for point in report["equity_curve"]
-            }
-            existing_points = dict(
-                connection.execute("SELECT timestamp, payload FROM equity_observations").fetchall()
-            )
-            stale_timestamps = [(ts,) for ts in existing_points if ts not in desired_points]
-            if stale_timestamps:
-                connection.executemany(
-                    "DELETE FROM equity_observations WHERE timestamp = ?",
-                    stale_timestamps,
-                )
-            changed_points = [
-                (ts, pt_json)
-                for ts, pt_json in desired_points.items()
-                if existing_points.get(ts) != pt_json
-            ]
-            if changed_points:
-                connection.executemany(
-                    "INSERT INTO equity_observations VALUES (?, ?) "
-                    "ON CONFLICT(timestamp) DO UPDATE SET payload = excluded.payload",
-                    changed_points,
-                )
-        if income:
-            connection.executemany(
-                "INSERT OR IGNORE INTO income_ledger VALUES (?, ?, ?, ?)",
-                [(item["incomeType"], str(item["tranId"]), item["time"],
-                  json.dumps(item, ensure_ascii=False, allow_nan=False)) for item in income],
-            )
-        if fills:
-            connection.executemany(
-                "INSERT OR IGNORE INTO trade_fills VALUES (?, ?, ?, ?)",
-                [(item["symbol"], str(item["id"]), item["time"],
-                  json.dumps(item, ensure_ascii=False, allow_nan=False)) for item in fills],
-            )
-        connection.execute("""
-            INSERT INTO account_snapshot (id, payload) VALUES (1, ?)
-            ON CONFLICT(id) DO UPDATE SET payload = excluded.payload
-        """, (payload,))
-
-
-def load_report(database: Path) -> Optional[dict]:
-    """Load the latest persisted account report from SQLite if available."""
-    if not database.exists():
-        return None
-    with closing(open_sqlite_connection(database, readonly=True)) as connection:
-        table = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'account_snapshot'"
-        ).fetchone()
-        if table is None:
-            return None
-        snapshot = connection.execute("SELECT payload FROM account_snapshot WHERE id = 1").fetchone()
-    return json.loads(snapshot[0]) if snapshot is not None else None
-
-
 def create_handler(database: Path):
     """Build an HTTP request handler serving static HUD shells, /static/* assets, and JSON APIs."""
     web_root = WEB_DIR.resolve()
-    proxy_cache: dict[str, tuple[float, bytes]] = {}
+    proxy_cache: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
     proxy_lock = threading.Lock()
+    static_cache: dict[Path, tuple[bytes, str, str, int]] = {}
+    static_lock = threading.Lock()
+    candidates_cache: Optional[tuple[str, str, bytes, str]] = None
+    candidates_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -186,6 +86,7 @@ def create_handler(database: Path):
             *,
             cache_control: str = "no-store",
             extra_headers: Optional[dict[str, str]] = None,
+            send_body: bool = True,
         ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
@@ -195,14 +96,8 @@ def create_handler(database: Path):
                 for key, value in extra_headers.items():
                     self.send_header(key, value)
             self.end_headers()
-            self.wfile.write(body)
-
-        def _send_redirect(self, location: str) -> None:
-            self.send_response(302)
-            self.send_header("Location", location)
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+            if send_body:
+                self.wfile.write(body)
 
         def _send_not_modified(self, etag: str) -> None:
             self.send_response(304)
@@ -210,7 +105,7 @@ def create_handler(database: Path):
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
 
-        def _send_json_with_etag(self, body: bytes) -> None:
+        def _send_json_with_etag(self, body: bytes, *, send_body: bool = True) -> None:
             etag = _etag_for(body)
             if _matches_etag(self.headers.get("If-None-Match"), etag):
                 self._send_not_modified(etag)
@@ -221,69 +116,139 @@ def create_handler(database: Path):
                 "application/json; charset=utf-8",
                 cache_control="no-cache",
                 extra_headers={"ETag": etag},
+                send_body=send_body,
             )
 
-        def _read_snapshot(self, table: str, columns: str) -> tuple[Optional[tuple], Optional[int]]:
-            if not database.exists():
-                return None, 503
+        def _send_static_file(self, asset: Path, *, send_body: bool = True) -> None:
             try:
-                with closing(open_sqlite_connection(database, readonly=True)) as connection:
-                    exists = connection.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                        (table,),
-                    ).fetchone()
-                    if exists is None:
-                        return None, 503
-                    row = connection.execute(
-                        f"SELECT {columns} FROM {table} WHERE id = 1"
-                    ).fetchone()
-                    if row is None:
-                        return None, 503
-                    return row, None
-            except sqlite3.Error as exc:
-                self.log_error("SQLite error reading %s: %s", table, exc)
-                return None, 500
+                st = asset.stat()
+            except FileNotFoundError:
+                self.send_error(404)
+                return
+            if not stat.S_ISREG(st.st_mode):
+                self.send_error(404)
+                return
+            mtime_ns = st.st_mtime_ns
 
-        def _send_static_file(self, asset: Path) -> None:
-            body = asset.read_bytes()
-            etag = _etag_for(body)
+            body: Optional[bytes] = None
+            content_type = ""
+            etag = ""
+            with static_lock:
+                cached = static_cache.get(asset)
+                if cached is not None and cached[3] == mtime_ns:
+                    body, content_type, etag, _ = cached
+
+            if body is None:
+                try:
+                    body = asset.read_bytes()
+                    fresh_mtime_ns = asset.stat().st_mtime_ns
+                except FileNotFoundError:
+                    self.send_error(404)
+                    return
+                content_type = _content_type_for(asset)
+                etag = _etag_for(body)
+                with static_lock:
+                    static_cache[asset] = (body, content_type, etag, fresh_mtime_ns)
+
             if _matches_etag(self.headers.get("If-None-Match"), etag):
                 self._send_not_modified(etag)
                 return
             self._send_bytes(
                 200,
                 body,
-                _content_type_for(asset),
+                content_type,
                 cache_control="no-cache",
                 extra_headers={"ETag": etag},
+                send_body=send_body,
             )
 
-        def _send_binance_proxy(self, cache_key: Optional[str], url: str) -> None:
+        def _send_binance_proxy(
+            self,
+            cache_key: Optional[str],
+            url: str,
+            *,
+            ttl_sec: float = _BINANCE_PROXY_TTL_SEC,
+            send_body: bool = True,
+        ) -> None:
             now = time.monotonic()
             if cache_key is not None:
                 with proxy_lock:
                     cached = proxy_cache.get(cache_key)
-                    if cached is not None and (now - cached[0]) < _BINANCE_PROXY_TTL_SEC:
-                        self._send_bytes(
-                            200,
-                            cached[1],
-                            "application/json; charset=utf-8",
-                            cache_control="no-store",
-                        )
-                        return
+                    if cached is not None:
+                        expires_at, cached_body = cached
+                        if now < expires_at:
+                            proxy_cache.move_to_end(cache_key)
+                            self._send_bytes(
+                                200,
+                                cached_body,
+                                "application/json; charset=utf-8",
+                                cache_control="no-store",
+                                send_body=send_body,
+                            )
+                            return
+                        del proxy_cache[cache_key]
             try:
-                body = _fetch_binance_public(url)
-            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                body = http_client.request_bytes(
+                    url,
+                    timeout=_BINANCE_PROXY_TIMEOUT_SEC,
+                    max_retries=1,
+                )
+            except http_client.HttpError as exc:
+                if exc.status_code is not None and 400 <= exc.status_code < 500:
+                    err_body = (
+                        exc.body.encode("utf-8")
+                        if exc.body
+                        else json.dumps({"error": str(exc)}).encode("utf-8")
+                    )
+                    self._send_bytes(
+                        exc.status_code,
+                        err_body,
+                        "application/json; charset=utf-8",
+                        cache_control="no-store",
+                        send_body=send_body,
+                    )
+                    return
                 self.log_error("Binance proxy error for %s: %s", url, exc)
                 err_body = json.dumps({"error": f"Binance upstream error: {exc}"}).encode("utf-8")
-                self._send_bytes(502, err_body, "application/json; charset=utf-8", cache_control="no-store")
+                self._send_bytes(
+                    502,
+                    err_body,
+                    "application/json; charset=utf-8",
+                    cache_control="no-store",
+                    send_body=send_body,
+                )
+                return
+            except (http.client.HTTPException, TimeoutError, OSError) as exc:
+                self.log_error("Binance proxy error for %s: %s", url, exc)
+                err_body = json.dumps({"error": f"Binance upstream error: {exc}"}).encode("utf-8")
+                self._send_bytes(
+                    502,
+                    err_body,
+                    "application/json; charset=utf-8",
+                    cache_control="no-store",
+                    send_body=send_body,
+                )
                 return
             if cache_key is not None:
+                store_now = time.monotonic()
                 with proxy_lock:
-                    proxy_cache[cache_key] = (time.monotonic(), body)
-            self._send_bytes(200, body, "application/json; charset=utf-8", cache_control="no-store")
+                    expired_keys = [k for k, (exp, _) in proxy_cache.items() if store_now >= exp]
+                    for k in expired_keys:
+                        del proxy_cache[k]
+                    proxy_cache[cache_key] = (store_now + ttl_sec, body)
+                    proxy_cache.move_to_end(cache_key)
+                    while len(proxy_cache) > _BINANCE_PROXY_CACHE_MAX_ENTRIES:
+                        proxy_cache.popitem(last=False)
+            self._send_bytes(
+                200,
+                body,
+                "application/json; charset=utf-8",
+                cache_control="no-store",
+                send_body=send_body,
+            )
 
-        def do_GET(self) -> None:
+        def _handle_get(self, *, send_body: bool) -> None:
+            nonlocal candidates_cache
             parsed = urlsplit(self.path)
             path = parsed.path
 
@@ -294,86 +259,118 @@ def create_handler(database: Path):
                     not rel_name
                     or rel_name.startswith("/")
                     or not static_file.is_relative_to(web_root)
-                    or not static_file.is_file()
                 ):
                     self.send_error(404)
                     return
-                self._send_static_file(static_file)
+                self._send_static_file(static_file, send_body=send_body)
                 return
 
-            if path == "/account/":
-                self._send_redirect("../account.html")
-                return
-
-            if path in ("/strategy/", "/reports/strategy_second_leg_playbook.html"):
-                self._send_redirect("../playbook.html")
-                return
-
-            if path in ("/", "/candidates", "/index.html"):
-                self._send_static_file(web_root / "index.html")
+            if path in ("/", "/index.html"):
+                self._send_static_file(web_root / "index.html", send_body=send_body)
                 return
 
             if path == "/account.html":
-                self._send_static_file(web_root / "account.html")
+                self._send_static_file(web_root / "account.html", send_body=send_body)
                 return
 
-            if path in ("/playbook.html", "/strategy"):
-                self._send_static_file(web_root / "playbook.html")
+            if path == "/playbook.html":
+                self._send_static_file(web_root / "playbook.html", send_body=send_body)
                 return
 
-            if path in ("/account", "/api/account"):
-                row, err_status = self._read_snapshot("account_snapshot", "payload")
-                if err_status is not None:
-                    self.send_error(
-                        err_status,
-                        "Snapshot unavailable" if err_status == 503 else "Database error",
-                    )
+            if path == "/api/account":
+                try:
+                    report = db_store.load_report(database)
+                except sqlite3.Error as exc:
+                    self.log_error("SQLite error reading account_snapshot: %s", exc)
+                    self.send_error(500, "Database error")
                     return
-                self._send_json_with_etag(row[0].encode("utf-8"))
+                if report is None:
+                    self.send_error(503, "Snapshot unavailable")
+                    return
+                body = json.dumps(report, ensure_ascii=False, allow_nan=False).encode("utf-8")
+                self._send_json_with_etag(body, send_body=send_body)
                 return
 
-            if path in ("/candidate-version", "/api/candidate-version"):
-                row, err_status = self._read_snapshot("candidate_snapshot", "updated_at")
-                if err_status is not None:
-                    self.send_error(
-                        err_status,
-                        "Snapshot unavailable" if err_status == 503 else "Database error",
-                    )
+            if path == "/api/candidate-version":
+                try:
+                    updated_at = db_store.load_candidate_version(database)
+                except sqlite3.Error as exc:
+                    self.log_error("SQLite error reading candidate_snapshot version: %s", exc)
+                    self.send_error(500, "Database error")
                     return
-                body = json.dumps({"updated_at": row[0]}, ensure_ascii=False).encode("utf-8")
-                self._send_bytes(200, body, "application/json; charset=utf-8", cache_control="no-store")
+                if updated_at is None:
+                    self.send_error(503, "Snapshot unavailable")
+                    return
+                body = json.dumps({"updated_at": updated_at}, ensure_ascii=False).encode("utf-8")
+                self._send_bytes(
+                    200,
+                    body,
+                    "application/json; charset=utf-8",
+                    cache_control="no-store",
+                    send_body=send_body,
+                )
                 return
 
             if path == "/api/candidates":
-                row, err_status = self._read_snapshot("candidate_snapshot", "payload, updated_at")
-                if err_status is not None:
-                    self.send_error(
-                        err_status,
-                        "Snapshot unavailable" if err_status == 503 else "Database error",
-                    )
+                try:
+                    row = db_store.load_candidates(database)
+                except sqlite3.Error as exc:
+                    self.log_error("SQLite error reading candidate_snapshot: %s", exc)
+                    self.send_error(500, "Database error")
                     return
-                updated_at = row[1]
-                etag = _etag_for(f"{updated_at}:{len(row[0])}".encode("utf-8"))
+                if row is None:
+                    self.send_error(503, "Snapshot unavailable")
+                    return
+                updated_at, payload_json = row
+                with candidates_lock:
+                    if (
+                        candidates_cache is not None
+                        and candidates_cache[0] == updated_at
+                        and candidates_cache[1] == payload_json
+                    ):
+                        body = candidates_cache[2]
+                        etag = candidates_cache[3]
+                    else:
+                        updated_json = json.dumps(updated_at, ensure_ascii=False).encode("utf-8")
+                        body = (
+                            b'{"updated_at":'
+                            + updated_json
+                            + b',"candidates":'
+                            + payload_json.encode("utf-8")
+                            + b"}"
+                        )
+                        etag = _etag_for(body)
+                        candidates_cache = (updated_at, payload_json, body, etag)
+
                 if _matches_etag(self.headers.get("If-None-Match"), etag):
                     self._send_not_modified(etag)
                     return
-                updated_json = json.dumps(updated_at, ensure_ascii=False).encode("utf-8")
-                body = b'{"updated_at":' + updated_json + b',"candidates":' + row[0].encode("utf-8") + b"}"
                 self._send_bytes(
                     200,
                     body,
                     "application/json; charset=utf-8",
                     cache_control="no-cache",
                     extra_headers={"ETag": etag},
+                    send_body=send_body,
                 )
                 return
 
             if path == "/api/binance/ticker24hr":
-                self._send_binance_proxy("ticker24hr", f"{_BINANCE_FAPI_BASE}/fapi/v1/ticker/24hr")
+                self._send_binance_proxy(
+                    "ticker24hr",
+                    f"{_BINANCE_FAPI_BASE}/fapi/v1/ticker/24hr",
+                    ttl_sec=_BINANCE_PROXY_TTL_SEC,
+                    send_body=send_body,
+                )
                 return
 
             if path == "/api/binance/premiumIndex":
-                self._send_binance_proxy("premiumIndex", f"{_BINANCE_FAPI_BASE}/fapi/v1/premiumIndex")
+                self._send_binance_proxy(
+                    "premiumIndex",
+                    f"{_BINANCE_FAPI_BASE}/fapi/v1/premiumIndex",
+                    ttl_sec=_BINANCE_PROXY_TTL_SEC,
+                    send_body=send_body,
+                )
                 return
 
             if path == "/api/binance/klines":
@@ -385,18 +382,39 @@ def create_handler(database: Path):
                     limit = int(raw_limit)
                 except ValueError:
                     limit = -1
-                if not _is_valid_symbol(symbol) or interval not in _BINANCE_ALLOWED_INTERVALS or not (1 <= limit <= 500):
+                if (
+                    not _is_valid_symbol(symbol)
+                    or interval not in _BINANCE_ALLOWED_INTERVALS
+                    or not (1 <= limit <= 500)
+                ):
                     err_body = json.dumps({"error": "Invalid klines parameters"}).encode("utf-8")
-                    self._send_bytes(400, err_body, "application/json; charset=utf-8", cache_control="no-store")
+                    self._send_bytes(
+                        400,
+                        err_body,
+                        "application/json; charset=utf-8",
+                        cache_control="no-store",
+                        send_body=send_body,
+                    )
                     return
                 upstream = (
                     f"{_BINANCE_FAPI_BASE}/fapi/v1/klines"
                     f"?symbol={quote(symbol, safe='')}&interval={interval}&limit={limit}"
                 )
-                self._send_binance_proxy(None, upstream)
+                self._send_binance_proxy(
+                    f"klines:{symbol}:{interval}:{limit}",
+                    upstream,
+                    ttl_sec=_BINANCE_KLINES_TTL_SEC,
+                    send_body=send_body,
+                )
                 return
 
             self.send_error(404)
+
+        def do_GET(self) -> None:
+            self._handle_get(send_body=True)
+
+        def do_HEAD(self) -> None:
+            self._handle_get(send_body=False)
 
     return Handler
 
