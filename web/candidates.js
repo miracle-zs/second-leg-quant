@@ -14,12 +14,15 @@
     '牛来USDT': 'BINANCE:NIULAIUSDT.P',
   };
   const ZONE_NAMES = {
-    resonance: '👑 顺势高换手共振区',
-    neg_fr: '⚠️ 负费率贴水区(空头主导)',
-    high_tr: '⚡ 巨量高换手区',
-    ema_bull: '📈 1h EMA顺势区',
-    all: '🌐 全量候选底池',
+    resonance: '顺势高换手共振区',
+    neg_fr: '负费率贴水区',
+    high_tr: '巨量高换手区',
+    ema_bull: '1h EMA顺势区',
+    all: '全量候选底池',
   };
+  const UI_STATE_KEY = 'slq_candidates_ui_state';
+  const VALID_SORT_COLS = new Set(['price', 'chg', 'mc', 'vol', 'tr', 'fr', 'ema', 'duration']);
+  const VALID_BAR_COUNTS = new Set([60, 120, 168]);
 
   let candidatesState = [];
   const candidateBySym = new Map();
@@ -42,12 +45,53 @@
   let modalCurrentSymbol = '';
   let modalCurrentTvSymbol = '';
   let modalCurrentInterval = '15m';
+  let modalVisibleBars = 120;
   let modalActiveEngine = 'native';
   let modalCandles = [];
   let modalHoverIndex = -1;
   let modalFetchController = null;
+  let modalRenderRafId = null;
+
+  function saveUiState() {
+    try {
+      sessionStorage.setItem(
+        UI_STATE_KEY,
+        JSON.stringify({
+          currentZone,
+          searchQuery,
+          sortColumn,
+          sortAsc,
+          modalVisibleBars,
+        })
+      );
+    } catch (_) {}
+  }
+
+  function restoreUiState() {
+    try {
+      const raw = sessionStorage.getItem(UI_STATE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (saved && typeof saved === 'object') {
+        if (typeof saved.currentZone === 'string' && Object.hasOwn(ZONE_NAMES, saved.currentZone)) {
+          currentZone = saved.currentZone;
+        }
+        if (typeof saved.searchQuery === 'string') {
+          searchQuery = saved.searchQuery;
+        }
+        if (typeof saved.sortColumn === 'string' && VALID_SORT_COLS.has(saved.sortColumn)) {
+          sortColumn = saved.sortColumn;
+          sortAsc = Boolean(saved.sortAsc);
+        }
+        if (VALID_BAR_COUNTS.has(Number(saved.modalVisibleBars))) {
+          modalVisibleBars = Number(saved.modalVisibleBars);
+        }
+      }
+    } catch (_) {}
+  }
 
   const syncBtn = document.getElementById('btn-manual-sync');
+  const syncStatusBadge = document.getElementById('sync-status-badge');
   const poolUpdatedEl = document.getElementById('pool-updated-time');
   const countBadge = document.getElementById('pool-count-badge');
   const activeZonePill = document.getElementById('active-zone-pill');
@@ -93,6 +137,8 @@
   const modalRetryBtn = document.getElementById('modal-chart-retry-btn');
   const btnEngineNative = document.getElementById('btn-chart-engine-native');
   const btnEngineTv = document.getElementById('btn-chart-engine-tv');
+  const modalBarsGroup = document.getElementById('modal-bars-group');
+  const modalBarsBtns = document.querySelectorAll('.modal-bars-btn');
   const modalHudEma5 = document.getElementById('modal-hud-ema5');
   const modalHudEma10 = document.getElementById('modal-hud-ema10');
 
@@ -474,7 +520,7 @@
 
       return `<tr class="${getRowClass(c)}" data-sym="${safeSym}" data-tv-sym="${safeTvSym}">
         <td class="py-1.5 px-1.5 text-center text-slate-500 font-sans text-xs sym-rank">${idx + 1}</td>
-        <th scope="row" class="py-1.5 px-2 font-normal whitespace-nowrap">
+        <th scope="row" class="py-1.5 px-2 font-normal whitespace-nowrap sticky-col">
           <div class="flex items-center gap-1">
             <span class="text-white font-bold font-sans text-sm tracking-tight">${safeSym}</span>
             <button type="button" class="btn-copy-sym px-1 py-0.2 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 text-[10px] transition-all" data-copy="${safeTvSym}" title="复制 TV 代码 (${safeTvSym})">📋</button>
@@ -594,6 +640,7 @@
       card.classList.toggle('active', card.getAttribute('data-zone') === zone);
     });
     currentZone = zone;
+    saveUiState();
     applyFilter();
   }
 
@@ -646,30 +693,48 @@
     return res;
   }
 
+  function formatAxisTime(tsMs, interval) {
+    const d = new Date(tsMs);
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    if (interval === '1d') return `${mm}/${dd}`;
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    return `${mm}/${dd} ${hh}:${mi}`;
+  }
+
   function renderModalChart() {
     if (!modalCanvas || !modalNativeView || !modalCandles.length) return;
     const ctx = modalCanvas.getContext('2d');
     if (!ctx) return;
+
+    const visibleCandles = modalCandles.slice(-modalVisibleBars);
+    if (!visibleCandles.length) return;
 
     const dpr = window.devicePixelRatio || 1;
     const w = modalNativeView.clientWidth;
     const h = modalNativeView.clientHeight;
     if (w <= 0 || h <= 0) return;
 
-    modalCanvas.width = w * dpr;
-    modalCanvas.height = h * dpr;
-    ctx.resetTransform();
-    ctx.scale(dpr, dpr);
+    const targetW = Math.round(w * dpr);
+    const targetH = Math.round(h * dpr);
+    if (modalCanvas.width !== targetW || modalCanvas.height !== targetH) {
+      modalCanvas.width = targetW;
+      modalCanvas.height = targetH;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    const priceH = h * 0.78;
-    const volH = h * 0.18;
+    const bottomAxisH = 20;
+    const plotH = Math.max(80, h - bottomAxisH);
+    const priceH = plotH * 0.78;
+    const volH = plotH * 0.18;
     const rightPadding = 68;
     const chartW = w - rightPadding;
 
     let minP = Infinity;
     let maxP = -Infinity;
     let maxVol = 0;
-    modalCandles.forEach((c) => {
+    visibleCandles.forEach((c) => {
       if (c.low < minP) minP = c.low;
       if (c.high > maxP) maxP = c.high;
       if (c.volume > maxVol) maxVol = c.volume;
@@ -680,7 +745,7 @@
     const fullSpan = maxP - minP;
 
     const getY = (p) => priceH - ((p - minP) / fullSpan) * priceH;
-    const getVolY = (v) => h - 4 - (v / (maxVol || 1)) * volH;
+    const getVolY = (v) => plotH - 3 - (v / (maxVol || 1)) * volH;
 
     ctx.fillStyle = '#0b0f19';
     ctx.fillRect(0, 0, w, h);
@@ -702,11 +767,33 @@
       ctx.fillText(formatPrice(p), chartW + 6, y + 3);
     }
 
-    const n = modalCandles.length;
+    const n = visibleCandles.length;
     const slot = chartW / n;
     const barW = Math.max(slot * 0.68, 2);
 
-    modalCandles.forEach((c, i) => {
+    // Bottom X-axis separator and time ticks
+    ctx.beginPath();
+    ctx.moveTo(0, plotH);
+    ctx.lineTo(chartW, plotH);
+    ctx.stroke();
+
+    const tickTarget = Math.max(2, Math.min(6, Math.floor(chartW / 120)));
+    const tickStep = Math.max(1, Math.floor((n - 1) / tickTarget));
+    ctx.fillStyle = '#64748b';
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    for (let i = 0; i < n; i += tickStep) {
+      const x = i * slot + slot / 2;
+      if (x < 36 || x > chartW - 36) continue;
+      ctx.beginPath();
+      ctx.moveTo(x, plotH);
+      ctx.lineTo(x, plotH + 4);
+      ctx.stroke();
+      ctx.fillText(formatAxisTime(visibleCandles[i].time, modalCurrentInterval), x, plotH + 14);
+    }
+    ctx.textAlign = 'left';
+
+    visibleCandles.forEach((c, i) => {
       const x = i * slot + slot / 2;
       const isBull = c.close >= c.open;
       const col = isBull ? '#10b981' : '#f43f5e';
@@ -724,7 +811,7 @@
 
       const vY = getVolY(c.volume);
       ctx.fillStyle = isBull ? 'rgba(16, 185, 129, 0.35)' : 'rgba(244, 63, 94, 0.35)';
-      ctx.fillRect(x - barW / 2, vY, barW, h - 4 - vY);
+      ctx.fillRect(x - barW / 2, vY, barW, plotH - 3 - vY);
     });
 
     const drawEmaLine = (field, color) => {
@@ -732,7 +819,7 @@
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.6;
       let started = false;
-      modalCandles.forEach((c, i) => {
+      visibleCandles.forEach((c, i) => {
         if (!isFiniteNum(c[field])) return;
         const x = i * slot + slot / 2;
         const y = getY(c[field]);
@@ -749,7 +836,7 @@
     drawEmaLine('ema5', '#f59e0b');
     drawEmaLine('ema10', '#a855f7');
 
-    const last = modalCandles[modalCandles.length - 1];
+    const last = visibleCandles[visibleCandles.length - 1];
     if (last) {
       const lastY = getY(last.close);
       const isBull = last.close >= last.open;
@@ -769,7 +856,7 @@
     }
 
     if (modalHoverIndex >= 0 && modalHoverIndex < n && modalTooltip) {
-      const c = modalCandles[modalHoverIndex];
+      const c = visibleCandles[modalHoverIndex];
       const hx = modalHoverIndex * slot + slot / 2;
       const hy = getY(c.close);
 
@@ -777,7 +864,7 @@
       ctx.setLineDash([2, 2]);
       ctx.beginPath();
       ctx.moveTo(hx, 0);
-      ctx.lineTo(hx, h);
+      ctx.lineTo(hx, plotH);
       ctx.moveTo(0, hy);
       ctx.lineTo(chartW, hy);
       ctx.stroke();
@@ -821,7 +908,7 @@
     if (modalError) modalError.classList.add('hidden');
 
     try {
-      const url = `https://www.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&limit=168`;
+      const url = `api/binance/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&limit=168`;
       const res = await fetch(url, { signal: modalFetchController.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const raw = await res.json();
@@ -924,8 +1011,8 @@
 
     try {
       const [tickerRes, premiumRes] = await Promise.all([
-        fetch('https://www.binance.com/fapi/v1/ticker/24hr', { signal }),
-        fetch('https://www.binance.com/fapi/v1/premiumIndex', { signal }),
+        fetch('api/binance/ticker24hr', { signal }),
+        fetch('api/binance/premiumIndex', { signal }),
       ]);
       if (!tickerRes.ok || !premiumRes.ok) {
         throw new Error(`Binance HTTP ${tickerRes.status}/${premiumRes.status}`);
@@ -1034,11 +1121,32 @@
           }
         }
 
+        const prevRes = c.is_resonance;
+        const prevHighTr = c.is_high_turnover;
+        const prevNegFr = c.is_neg_funding;
+        const prevTrText = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) : '';
         classifyCandidate(c);
-        if (refs && refs.rowEl) refs.rowEl.className = getRowClass(c);
-        if (refs && refs.zonesEl) refs.zonesEl.innerHTML = buildZonesHtml(c);
-        if (refs && refs.durationEl) refs.durationEl.innerHTML = buildDurationHtml(c);
+        const currTrText = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) : '';
+        const classChanged = (
+          prevRes !== c.is_resonance ||
+          prevHighTr !== c.is_high_turnover ||
+          prevNegFr !== c.is_neg_funding
+        );
+        if (refs && refs.rowEl && (prevRes !== c.is_resonance || prevNegFr !== c.is_neg_funding)) {
+          refs.rowEl.className = getRowClass(c);
+        }
+        if (refs && refs.zonesEl && (classChanged || (c.is_high_turnover && prevTrText !== currTrText))) {
+          refs.zonesEl.innerHTML = buildZonesHtml(c);
+        }
+        if (refs && refs.durationEl && prevRes !== c.is_resonance) {
+          refs.durationEl.innerHTML = buildDurationHtml(c);
+        }
       });
+
+      if (syncStatusBadge) {
+        syncStatusBadge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1.5';
+        syncStatusBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" aria-hidden="true"></span><span>币安 60 秒轮询</span>';
+      }
 
       updateKpiCards(candidatesState);
       if (sortColumn) applySortOrder();
@@ -1046,6 +1154,10 @@
     } catch (e) {
       if (e.name !== 'AbortError') {
         console.warn('Binance pool sync error:', e);
+        if (syncStatusBadge) {
+          syncStatusBadge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1.5';
+          syncStatusBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>币安轮询异常</span>';
+        }
       }
     } finally {
       if (fetchId === activeFetchId && syncBtn) {
@@ -1074,7 +1186,7 @@
 
       currentVersion = payload.updated_at || null;
       if (poolUpdatedEl) {
-        poolUpdatedEl.textContent = `候选池更新: ${formatUpdatedAtBeijing(currentVersion)}`;
+        poolUpdatedEl.textContent = `更新: ${formatUpdatedAtBeijing(currentVersion)}`;
         poolUpdatedEl.className = 'px-2 py-0.5 text-[11px] font-mono text-slate-400 bg-slate-800/80 rounded-md border border-slate-700/60';
       }
 
@@ -1145,6 +1257,12 @@
     resetBtn.addEventListener('click', () => {
       if (searchInput) searchInput.value = '';
       searchQuery = '';
+      sortColumn = null;
+      sortAsc = true;
+      sortHeaders.forEach((h) => {
+        const icon = h.querySelector('.sort-icon');
+        if (icon) icon.textContent = '↕';
+      });
       switchZone('all');
     });
   }
@@ -1152,6 +1270,7 @@
   if (searchInput) {
     searchInput.addEventListener('input', (e) => {
       searchQuery = e.target.value;
+      saveUiState();
       applyFilter();
     });
   }
@@ -1199,6 +1318,7 @@
       });
       const activeIcon = th.querySelector('.sort-icon');
       if (activeIcon) activeIcon.textContent = sortAsc ? '▲' : '▼';
+      saveUiState();
       applySortOrder();
     });
   });
@@ -1229,22 +1349,59 @@
     });
   }
 
+  function scheduleModalRender() {
+    if (modalRenderRafId !== null) return;
+    modalRenderRafId = requestAnimationFrame(() => {
+      modalRenderRafId = null;
+      renderModalChart();
+    });
+  }
+
   if (modalNativeView) {
     modalNativeView.addEventListener('mousemove', (e) => {
       const rect = modalNativeView.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const chartW = modalNativeView.clientWidth - 68;
-      if (x >= 0 && x <= chartW && modalCandles.length) {
-        const slot = chartW / modalCandles.length;
-        modalHoverIndex = Math.min(Math.floor(x / slot), modalCandles.length - 1);
-        renderModalChart();
+      const visibleCount = Math.min(modalVisibleBars, modalCandles.length);
+      if (x >= 0 && x <= chartW && visibleCount > 0) {
+        const slot = chartW / visibleCount;
+        const nextIdx = Math.min(Math.floor(x / slot), visibleCount - 1);
+        if (nextIdx !== modalHoverIndex) {
+          modalHoverIndex = nextIdx;
+          scheduleModalRender();
+        }
       }
     });
     modalNativeView.addEventListener('mouseleave', () => {
-      modalHoverIndex = -1;
-      renderModalChart();
+      if (modalHoverIndex !== -1) {
+        modalHoverIndex = -1;
+        scheduleModalRender();
+      }
     });
   }
+
+  function updateModalBarsUi() {
+    modalBarsBtns.forEach((b) => {
+      const active = Number(b.getAttribute('data-bars')) === modalVisibleBars;
+      b.classList.toggle('bg-emerald-500/20', active);
+      b.classList.toggle('text-emerald-300', active);
+      b.classList.toggle('font-bold', active);
+      b.classList.toggle('hover:bg-slate-800', !active);
+      b.classList.toggle('text-slate-400', !active);
+    });
+  }
+
+  modalBarsBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const bars = Number(btn.getAttribute('data-bars'));
+      if (!VALID_BAR_COUNTS.has(bars)) return;
+      modalVisibleBars = bars;
+      modalHoverIndex = -1;
+      updateModalBarsUi();
+      saveUiState();
+      renderModalChart();
+    });
+  });
 
   document.querySelectorAll('.modal-interval-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -1273,6 +1430,7 @@
       modalActiveEngine = 'native';
       btnEngineNative.className = 'px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold';
       btnEngineTv.className = 'px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400';
+      if (modalBarsGroup) modalBarsGroup.classList.remove('hidden');
       if (modalTvView) modalTvView.classList.add('hidden');
       if (modalNativeView) modalNativeView.classList.remove('hidden');
       fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
@@ -1281,6 +1439,7 @@
       modalActiveEngine = 'tv';
       btnEngineTv.className = 'px-2 py-0.5 rounded bg-[#2962FF]/20 text-[#38bdf8] font-semibold';
       btnEngineNative.className = 'px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400';
+      if (modalBarsGroup) modalBarsGroup.classList.add('hidden');
       if (modalNativeView) modalNativeView.classList.add('hidden');
       if (modalTvView) modalTvView.classList.remove('hidden');
       if (modalTvIframe && modalCurrentTvSymbol) {
@@ -1325,6 +1484,7 @@
         searchInput.value = '';
         searchQuery = '';
         searchInput.blur();
+        saveUiState();
         applyFilter();
       } else if (currentZone !== 'all') {
         switchZone('all');
@@ -1358,6 +1518,20 @@
       syncBinancePool();
     });
   }
+
+  restoreUiState();
+  kpiCards.forEach((card) => {
+    card.classList.toggle('active', card.getAttribute('data-zone') === currentZone);
+  });
+  if (searchInput && searchQuery) searchInput.value = searchQuery;
+  if (sortColumn) {
+    sortHeaders.forEach((h) => {
+      const icon = h.querySelector('.sort-icon');
+      if (!icon) return;
+      icon.textContent = h.getAttribute('data-sort') === sortColumn ? (sortAsc ? '▲' : '▼') : '↕';
+    });
+  }
+  updateModalBarsUi();
 
   setInterval(updateSettleCountdown, 1000);
   updateSettleCountdown();

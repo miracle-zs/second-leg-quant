@@ -110,6 +110,29 @@ th.sortable:hover .sort-icon {
   z-index: 10;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  background-color: rgba(11, 15, 25, 0.95);
+  background-color: rgba(11, 15, 25, 0.96);
   box-shadow: 0 1px 0 rgba(51, 65, 85, 0.8);
+}
+
+#candidates-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+#candidates-table .sticky-col {
+  position: sticky;
+  inset-inline-start: 0;
+  z-index: 5;
+  background-color: #0f172a;
+  box-shadow: inset -1px 0 0 rgba(51, 65, 85, 0.7);
+}
+
+#candidates-table thead th.sticky-col {
+  z-index: 20;
+  background-color: #0b0f19;
+  box-shadow: inset -1px 0 0 rgba(51, 65, 85, 0.8), 0 1px 0 rgba(51, 65, 85, 0.8);
+}
+
+#candidates-table tbody tr:hover th.sticky-col {
+  background-color: #162033;
 }

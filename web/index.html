@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark">
+  <title>突破追多与移动保本系统 —— 策略监控</title>
+  <link rel="stylesheet" href="static/tailwind.css">
+  <link rel="stylesheet" href="static/styles.css">
+  <script src="static/candidates.js" defer></script>
+</head>
+<body class="p-2 md:p-3 antialiased custom-scrollbar">
+  <main id="main-content" class="w-full max-w-[1600px] mx-auto space-y-2">
+
+    <!-- Compact HUD Header -->
+    <header class="bg-slate-900/95 border border-slate-800 rounded-xl px-3.5 py-2 shadow-lg backdrop-blur-sm">
+      <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
+        <div class="flex flex-wrap items-center gap-2">
+          <h1 class="text-base md:text-lg font-black tracking-tight text-white mr-1">突破追多与移动保本系统</h1>
+          <span id="pool-updated-time" class="px-2 py-0.5 text-[11px] font-mono text-slate-400 bg-slate-800/80 rounded-md border border-slate-700/60">更新: --</span>
+          <span id="sync-status-badge" class="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1.5" role="status" aria-live="polite"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" aria-hidden="true"></span><span>币安 60 秒轮询</span></span>
+          <span id="settle-timer-badge" class="px-2 py-0.5 text-[11px] font-mono font-semibold rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/20 flex items-center gap-1" title="距离下个整点资费结算窗口倒计时"><span>结算</span><span id="settle-countdown">--:--</span></span>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2 shrink-0">
+          <nav aria-label="全系统核心视图导航" class="flex flex-wrap items-center p-1 bg-slate-950/80 border border-slate-800 rounded-xl gap-1 shrink-0"><a href="index.html" aria-current="page" class="px-2.5 sm:px-3 py-1 text-xs font-bold rounded-lg border shadow-sm bg-sky-500/20 text-sky-400 border-sky-500/40 shadow-sky-500/10 flex items-center gap-1.5 transition-all"><span class="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse" aria-hidden="true"></span><span>策略监控看板</span></a><a href="account.html" class="px-2.5 sm:px-3 py-1 text-xs font-semibold rounded-lg text-slate-300 hover:text-white hover:bg-slate-800/80 border border-transparent hover:border-slate-700/60 flex items-center gap-1.5 transition-all"><span class="w-1.5 h-1.5 rounded-full bg-slate-600" aria-hidden="true"></span><span>账户数据分析</span></a><a href="playbook.html" class="px-2.5 sm:px-3 py-1 text-xs font-semibold rounded-lg text-slate-300 hover:text-white hover:bg-slate-800/80 border border-transparent hover:border-slate-700/60 flex items-center gap-1.5 transition-all"><span class="w-1.5 h-1.5 rounded-full bg-slate-600" aria-hidden="true"></span><span>二段爆发战法</span></a></nav>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button id="btn-manual-sync" type="button" class="px-2.5 py-1 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 transition-all focus-visible:outline-2 focus-visible:outline-sky-400" title="立即刷新全池价格与资金费率">刷新</button>
+            <button id="btn-toggle-drawer" type="button" class="px-2.5 py-1 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all" title="展开/收起 TV 趋势线战法与风控速查">画线速查</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Collapsible TV Trendline & Risk Management Quick Reference -->
+    <div id="tv-drawer" class="hidden bg-slate-900/90 border border-amber-500/30 rounded-xl p-3 text-xs space-y-2.5 transition-all">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-1.5">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-amber-400 font-bold text-xs">实战四步法与执行纪律</span>
+          <span class="text-slate-400 font-mono text-[11px]">TV 快捷键: 对数 <kbd class="px-1 py-0.5 bg-slate-800 rounded border border-slate-700">Alt+L</kbd> · 趋势线 <kbd class="px-1 py-0.5 bg-slate-800 rounded border border-slate-700">Alt+T</kbd> · 周期 <kbd class="px-1 py-0.5 bg-slate-800 rounded border border-slate-700">15</kbd>/<kbd class="px-1 py-0.5 bg-slate-800 rounded border border-slate-700">60</kbd></span>
+        </div>
+        <button id="btn-close-drawer" type="button" class="text-slate-400 hover:text-white text-sm" aria-label="关闭速查">✕</button>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-4 gap-2 text-[11px] leading-relaxed">
+        <div class="p-2.5 bg-slate-950/60 rounded-lg border border-slate-800 space-y-0.5">
+          <span class="text-sky-400 font-bold block">1. 双核初选</span>
+          <span class="text-slate-400 block">CMC 流通市值 &lt; $30M + 1h EMA(5&gt;10) + 24h 换手 ≥ 1.5x，负费率逼空优先。</span>
+        </div>
+        <div class="p-2.5 bg-slate-950/60 rounded-lg border border-slate-800 space-y-0.5">
+          <span class="text-emerald-400 font-bold block">2. TV 对数画线</span>
+          <span class="text-slate-400 block">在 TV 布局 ig0LuDL8 开启对数坐标，连接回踩高点绘制 15m 下降趋势线。</span>
+        </div>
+        <div class="p-2.5 bg-slate-950/60 rounded-lg border border-slate-800 space-y-0.5">
+          <span class="text-indigo-400 font-bold block">3. 15m 实体突破</span>
+          <span class="text-slate-400 block">15m K 线收盘站上对数趋势线上方确认入场，Server 酱即时推送信号。</span>
+        </div>
+        <div class="p-2.5 bg-slate-950/60 rounded-lg border border-slate-800 space-y-0.5">
+          <span class="text-amber-400 font-bold block">4. 破线止损与锁利</span>
+          <span class="text-slate-400 block">15m 收盘跌回趋势线下方清仓止损；浮盈 ≥ +6% 设立 +1% 锁利提醒线。</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Compact Interactive KPI Strip: 5 Clickable Zone Filters -->
+    <section aria-label="交易机会区筛选" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2 text-xs">
+      <div data-zone="resonance" class="kpi-card card-resonance active px-3 py-2 rounded-xl bg-slate-900 border border-amber-500/40 flex flex-col justify-between space-y-1">
+        <div class="flex items-center justify-between gap-1">
+          <span class="font-bold text-amber-300 text-xs truncate">顺势高换手共振区</span>
+          <span class="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">破线开多</span>
+        </div>
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="text-xl font-black font-mono text-white tabular-nums"><span id="kpi-resonance-count">--</span></div>
+          <div id="kpi-resonance-sub" class="text-[10px] text-amber-400/90 font-mono truncate">--</div>
+        </div>
+        <div id="kpi-resonance-sample" class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">代表: --</div>
+      </div>
+
+      <div data-zone="neg_fr" class="kpi-card card-neg-fr px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-rose-500/40 flex flex-col justify-between space-y-1">
+        <div class="flex items-center justify-between gap-1">
+          <span class="font-semibold text-rose-400 text-xs truncate">负费率贴水区</span>
+          <span class="px-1.5 py-0.2 rounded text-[9px] font-mono text-rose-300/80 bg-rose-500/10 border border-rose-500/20 shrink-0">4h&lt;0</span>
+        </div>
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="text-xl font-black font-mono text-white tabular-nums"><span id="kpi-neg-fr-count">--</span></div>
+          <div id="kpi-neg-fr-sub" class="text-[10px] text-rose-400/90 font-mono truncate">空头拥挤</div>
+        </div>
+        <div id="kpi-neg-fr-sample" class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">贴水深: --</div>
+      </div>
+
+      <div data-zone="high_tr" class="kpi-card card-high-tr px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-purple-500/40 flex flex-col justify-between space-y-1">
+        <div class="flex items-center justify-between gap-1">
+          <span class="font-semibold text-purple-400 text-xs truncate">巨量高换手区</span>
+          <span class="px-1.5 py-0.2 rounded text-[9px] font-mono text-purple-300/80 bg-purple-500/10 border border-purple-500/20 shrink-0">≥1.5x</span>
+        </div>
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="text-xl font-black font-mono text-white tabular-nums"><span id="kpi-high-tr-count">--</span></div>
+          <div id="kpi-high-tr-sub" class="text-[10px] text-purple-400/90 font-mono truncate">筹码洗刷</div>
+        </div>
+        <div id="kpi-high-tr-sample" class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">最高: --</div>
+      </div>
+
+      <div data-zone="ema_bull" class="kpi-card card-ema-bull px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-emerald-500/40 flex flex-col justify-between space-y-1">
+        <div class="flex items-center justify-between gap-1">
+          <span class="font-semibold text-emerald-400 text-xs truncate">1h EMA顺势区</span>
+          <span class="px-1.5 py-0.2 rounded text-[9px] font-mono text-emerald-300/80 bg-emerald-500/10 border border-emerald-500/20 shrink-0">5&gt;10</span>
+        </div>
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="text-xl font-black font-mono text-white tabular-nums"><span id="kpi-ema-bull-count">--</span></div>
+          <div id="kpi-ema-bull-sub" class="text-[10px] text-emerald-400/90 font-mono truncate">多头动能</div>
+        </div>
+        <div id="kpi-ema-bull-sample" class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">多头: --</div>
+      </div>
+
+      <div data-zone="all" class="kpi-card card-all px-3 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-sky-500/40 flex flex-col justify-between space-y-1 col-span-2 md:col-span-1">
+        <div class="flex items-center justify-between gap-1">
+          <span class="font-semibold text-sky-400 text-xs truncate">全量候选底池</span>
+          <span class="px-1.5 py-0.2 rounded text-[9px] font-mono text-sky-300/80 bg-sky-500/10 border border-sky-500/20 shrink-0">&lt;$30M</span>
+        </div>
+        <div class="flex items-baseline justify-between gap-2">
+          <div class="text-xl font-black font-mono text-white tabular-nums"><span id="kpi-all-count">--</span></div>
+          <div id="kpi-all-sub" class="text-[10px] text-sky-400/90 font-mono truncate">--</div>
+        </div>
+        <div id="kpi-all-sample" class="text-[10px] text-slate-400 border-t border-slate-800/80 pt-1 truncate">&lt;$30M 底池 + 7d 溢出跟踪</div>
+      </div>
+    </section>
+
+    <!-- Candidate Pool & TV Launchpad Table Section -->
+    <section aria-labelledby="pool-table-heading" class="bg-slate-900 border border-slate-800 rounded-xl p-2.5 shadow-sm space-y-2">
+      <h2 id="pool-table-heading" class="sr-only">候选币池实时行情表格</h2>
+
+      <!-- Search, TV Batch Export & Filter Controls -->
+      <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2 bg-slate-950/70 px-2.5 py-1.5 rounded-xl border border-slate-800">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span id="active-zone-pill" class="px-2 py-0.5 rounded-md text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">当前筛选: 顺势高换手共振区</span>
+          <span id="pool-count-badge" class="text-xs font-mono px-2 py-0.5 rounded-md bg-slate-900 text-slate-300 border border-slate-800">-- / -- 标的</span>
+
+          <div class="flex items-center gap-1.5 border-l border-slate-800 pl-2">
+            <button id="btn-batch-copy-tv" type="button" class="px-2 py-0.5 text-xs font-semibold rounded-md bg-sky-500/15 hover:bg-sky-500/25 text-sky-300 border border-sky-500/30 transition-all shadow-sm" title="复制后在 TradingView 自选列表直接粘贴即可批量添加">复制 TV 自选</button>
+            <button id="btn-batch-export-tv" type="button" class="px-2 py-0.5 text-xs font-semibold rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all" title="导出 .txt 文件以导入 TradingView 自选列表">导出 .txt</button>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1.5">
+          <div class="relative shrink-0 w-full sm:w-56">
+            <input id="symbol-search-input" type="search" placeholder="搜代号 [/] (如 PIPPIN, ZKC)..." class="w-full px-2.5 py-1 text-xs bg-slate-900 border border-slate-700 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500">
+          </div>
+          <button id="btn-reset-filter" type="button" class="px-2.5 py-1 text-xs text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-all shrink-0" title="重置为全量底池">重置</button>
+        </div>
+      </div>
+
+      <!-- Main Candidates Table with Sticky Header, Sticky Symbol Column & Interactive Sorter -->
+      <div tabindex="0" role="region" aria-label="候选币池实时行情表格" class="overflow-x-auto max-h-[calc(100vh-195px)] min-h-[420px] rounded-xl border border-slate-800 focus-visible:outline-2 focus-visible:outline-sky-400 custom-scrollbar">
+        <table id="candidates-table" class="w-full text-left text-xs font-mono relative">
+          <thead class="sticky-header select-none text-[11px]">
+            <tr>
+              <th scope="col" class="py-1.5 px-1.5 w-7 text-center text-slate-500 font-sans">#</th>
+              <th scope="col" class="py-1.5 px-2 min-w-[128px] sticky-col">合约代号</th>
+              <th scope="col" class="py-1.5 px-2 sortable min-w-[95px]" data-sort="price">最新价 &amp; 24h<span class="sort-icon">↕</span></th>
+              <th scope="col" class="py-1.5 px-2 sortable min-w-[65px]" data-sort="chg">24h 涨跌<span class="sort-icon">↕</span></th>
+              <th scope="col" class="py-1.5 px-2 sortable min-w-[70px]" data-sort="mc">流通市值<span class="sort-icon">↕</span></th>
+              <th scope="col" class="py-1.5 px-2 sortable min-w-[70px]" data-sort="vol">24h 成交额<span class="sort-icon">↕</span></th>
+              <th scope="col" class="py-1.5 px-2 sortable min-w-[60px]" data-sort="tr">换手倍数<span class="sort-icon">↕</span></th>
+              <th scope="col" class="py-1.5 px-2 sortable min-w-[95px]" data-sort="fr">4h 换算资费<span class="sort-icon">↕</span></th>
+              <th scope="col" class="py-1.5 px-2 font-sans sortable min-w-[110px]" data-sort="ema">1h EMA趋势<span class="sort-icon">↕</span></th>
+              <th scope="col" class="py-1.5 px-2 font-sans sortable min-w-[105px]" data-sort="duration">共振时长<span class="sort-icon">↕</span></th>
+              <th scope="col" class="py-1.5 px-2 font-sans min-w-[120px]">机会区形态</th>
+            </tr>
+          </thead>
+          <tbody id="candidate-table-body" class="divide-y divide-slate-800/60 text-slate-300">
+            <tr id="pool-status-row">
+              <td colspan="11" class="py-12 text-center text-slate-400 font-sans">正在加载候选币池数据...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="flex flex-col sm:flex-row items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-800/60 gap-1">
+        <span>快捷键: <kbd class="px-1 bg-slate-800 rounded border border-slate-700 font-mono">/</kbd> 搜代号 · <kbd class="px-1 bg-slate-800 rounded border border-slate-700 font-mono">1-5</kbd> 切分区 · <kbd class="px-1 bg-slate-800 rounded border border-slate-700 font-mono">Esc</kbd> 清空/退出</span>
+        <span>CMC Pro 流通市值 &lt; $30M · 币安 USDⓈ-M 永续</span>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- In-Page Interactive 15m/1h Candlestick & TV Chart Modal -->
+  <div id="chart-modal" class="fixed inset-0 z-50 hidden bg-black/80 backdrop-blur-sm flex items-center justify-center p-2 md:p-5 transition-all">
+    <div class="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-5xl h-[85vh] max-h-[720px] shadow-2xl flex flex-col overflow-hidden relative">
+      <div class="px-4 py-2.5 bg-slate-950 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>
+          <span id="modal-chart-title" class="font-bold text-white text-base font-sans"></span>
+          <span id="modal-chart-price" class="font-mono text-emerald-400 font-bold text-sm">--</span>
+          <div class="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-xs font-mono ml-1">
+            <button type="button" class="modal-interval-btn px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold" data-interval="15m">15m</button>
+            <button type="button" class="modal-interval-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-interval="1h">1h</button>
+            <button type="button" class="modal-interval-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-interval="4h">4h</button>
+            <button type="button" class="modal-interval-btn px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-interval="1d">日线</button>
+          </div>
+          <div id="modal-bars-group" class="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px] font-mono" title="显示K线根数">
+            <button type="button" class="modal-bars-btn px-1.5 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-bars="60">60</button>
+            <button type="button" class="modal-bars-btn px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold" data-bars="120">120</button>
+            <button type="button" class="modal-bars-btn px-1.5 py-0.5 rounded hover:bg-slate-800 text-slate-400" data-bars="168">168</button>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <div id="modal-ema-hud" class="hidden sm:flex items-center gap-2 text-xs font-mono">
+            <span class="flex items-center gap-1 text-amber-400"><span class="w-2 h-0.5 bg-amber-400 inline-block"></span>EMA5: <span id="modal-hud-ema5">--</span></span>
+            <span class="flex items-center gap-1 text-purple-400"><span class="w-2 h-0.5 bg-purple-400 inline-block"></span>EMA10: <span id="modal-hud-ema10">--</span></span>
+          </div>
+          <div class="flex items-center bg-slate-900 p-0.5 rounded-lg border border-slate-800 text-[11px] font-sans">
+            <button type="button" id="btn-chart-engine-native" class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold">极速K线</button>
+            <button type="button" id="btn-chart-engine-tv" class="px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400">TV内嵌</button>
+          </div>
+          <a id="modal-external-link" href="#" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1 rounded-lg bg-[#2962FF] hover:bg-blue-600 text-white text-xs font-semibold flex items-center gap-1 transition-all" title="在 TradingView 打开专属画线布局 (ig0LuDL8)">
+            <span>TV画线</span>
+            <span aria-hidden="true">↗</span>
+          </a>
+          <button id="modal-close-btn" type="button" class="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center text-xs transition-all" title="关闭 (Esc)" aria-label="关闭弹窗">✕</button>
+        </div>
+      </div>
+      <div class="flex-1 w-full h-full bg-[#0b0f19] relative overflow-hidden">
+        <div id="modal-native-chart-view" class="w-full h-full relative select-none">
+          <canvas id="modal-kline-canvas" class="w-full h-full block"></canvas>
+          <div id="modal-chart-tooltip" class="absolute top-2 left-3 bg-slate-900/90 border border-slate-700/80 px-2.5 py-1.5 rounded text-[11px] font-mono text-slate-300 hidden pointer-events-none shadow-xl z-20"></div>
+          <div id="modal-chart-loading" class="absolute inset-0 bg-slate-950/70 flex flex-col items-center justify-center gap-2 text-sky-400 text-sm font-semibold z-30">
+            <span>正在获取实时 K 线...</span>
+          </div>
+          <div id="modal-chart-error" class="absolute inset-0 bg-slate-950/80 hidden flex-col items-center justify-center gap-3 text-rose-400 text-sm font-semibold z-30">
+            <span>K线数据加载失败，请检查网络连接</span>
+            <button type="button" id="modal-chart-retry-btn" class="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded border border-slate-700 text-xs">重新加载</button>
+          </div>
+        </div>
+        <div id="modal-tv-view" class="w-full h-full hidden relative bg-black">
+          <iframe id="modal-tv-iframe" class="w-full h-full border-0" allowtransparency="true" scrolling="no" allowfullscreen></iframe>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating Toast Notification -->
+  <div id="toast-container">
+    <div id="toast" class="fixed bottom-6 right-6 z-50 hidden px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-xs shadow-2xl flex items-center gap-2">
+      <span class="text-emerald-400 font-bold">✓</span>
+      <span id="toast-text">已复制</span>
+    </div>
+  </div>
+</body>
+</html>

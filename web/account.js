@@ -56,6 +56,11 @@
     return num.toFixed(8);
   }
 
+  function formatDollarPrice(val) {
+    const formatted = formatCryptoPrice(val);
+    return formatted === '--' ? '--' : ('$' + formatted);
+  }
+
   function formatRatio(val, decimals) {
     if (!isFiniteNumber(val)) return '--';
     return Number(val).toFixed(decimals !== undefined ? decimals : 2);
@@ -293,10 +298,10 @@
             '</div>' +
           '</td>' +
           '<td class="px-3 py-2.5 tabular-nums text-slate-300">' + escapeHtml(levStr) + ' · ' + escapeHtml(notionalStr) + '<div class="text-[10px] text-slate-500">' + escapeHtml(amtStr) + '</div></td>' +
-          '<td class="px-3 py-2.5 tabular-nums text-slate-300">$' + escapeHtml(formatCryptoPrice(p.entry_price)) + '</td>' +
-          '<td class="px-3 py-2.5 tabular-nums text-white font-bold">$' + escapeHtml(formatCryptoPrice(p.mark_price)) + '</td>' +
+          '<td class="px-3 py-2.5 tabular-nums text-slate-300">' + escapeHtml(formatDollarPrice(p.entry_price)) + '</td>' +
+          '<td class="px-3 py-2.5 tabular-nums text-white font-bold">' + escapeHtml(formatDollarPrice(p.mark_price)) + '</td>' +
           '<td class="px-3 py-2.5 tabular-nums font-bold ' + pnlCls + '"><div>' + escapeHtml(pnlStr) + '</div><div class="text-[10px]">' + escapeHtml(roeStr) + '</div></td>' +
-          '<td class="px-3 py-2.5 tabular-nums text-rose-400">$' + escapeHtml(formatCryptoPrice(p.liquidation_price)) + '</td>' +
+          '<td class="px-3 py-2.5 tabular-nums text-rose-400">' + escapeHtml(formatDollarPrice(p.liquidation_price)) + '</td>' +
           '<td class="px-3 py-2.5 text-slate-400">' + trailingHtml + '</td>' +
           '<td class="px-3 py-2.5 text-slate-400">' + slHtml + '</td>' +
           '<td class="px-3 py-2.5 text-slate-400">' + (riskMonitored ? safeTlId : '--') + '</td>' +
@@ -448,7 +453,6 @@
     if (!canvas || typeof Chart === 'undefined') return;
     if (chartInstances[key]) {
       chartInstances[key].data = config.data;
-      chartInstances[key].options = config.options;
       chartInstances[key].update('none');
       return;
     }
@@ -591,7 +595,8 @@
               ...tooltipConfig,
               callbacks: {
                 label: c => {
-                  const item = dailyPnl[c.dataIndex];
+                  const list = (currentAccountData && currentAccountData.daily_pnl) || [];
+                  const item = list[c.dataIndex];
                   const cnt = item && isFiniteNumber(item.trades_count) ? item.trades_count : '--';
                   return ['当日净盈亏: ' + formatMoney(c.raw, { signed: true }), '成交笔数: ' + cnt + ' 笔'];
                 }
@@ -661,7 +666,8 @@
               ...tooltipConfig,
               callbacks: {
                 label: c => {
-                  const bin = bins[c.dataIndex];
+                  const curBins = (currentAccountData && currentAccountData.pnl_distribution && currentAccountData.pnl_distribution.bins) || [];
+                  const bin = curBins[c.dataIndex];
                   const syms = bin && Array.isArray(bin.trades) && bin.trades.length > 0
                     ? ' (' + bin.trades.slice(0, 5).join(', ') + (bin.trades.length > 5 ? '…' : '') + ')'
                     : '';

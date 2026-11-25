@@ -45,7 +45,6 @@ if str(ROOT_DIR) not in sys.path:
 
 import account_analytics_engine as aae  # noqa: E402
 import binance_client as bc  # noqa: E402
-import build_account_analytics as baa  # noqa: E402
 
 
 class TestDataEnrichment(unittest.TestCase):
@@ -556,7 +555,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             self.assertEqual(report["summary"]["total_fee"], 0.2)
             self.assertEqual(report["daily_pnl"][0]["net_pnl"], 9.8)
             self.assertEqual(report["summary"]["net_external_transfers"], 100)
-            self.assertEqual(report["summary"]["total_return_pct"], 1)
+            self.assertAlmostEqual(report["summary"]["total_return_pct"], 0.91, places=2)
             self.assertEqual(report["equity_curve"][0]["equity"], 1000)
             self.assertEqual(report["equity_curve"][-1]["cash"], 1110)
             self.assertEqual(report["equity_curve"][-1]["cumulative_pnl"], 10)
@@ -752,20 +751,17 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
 
 
 class TestAccountHTMLGenerationAndIntegrity(unittest.TestCase):
-    """5. 测试纯静态 account.html 外壳与 DOM 契约完整性"""
+    """5. 测试纯静态 web/account.html 外壳与 DOM 契约完整性"""
 
     def setUp(self):
-        self.html = baa.render_account_html()
+        self.html_path = ROOT_DIR / "web" / "account.html"
+        self.html = self.html_path.read_text(encoding="utf-8")
 
-    def test_build_account_analytics_execution_and_size(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            temp_out = Path(tmp_dir) / "account.html"
-            out = baa.build_account_analytics(output_path=temp_out)
-            self.assertEqual(out, temp_out)
-            self.assertTrue(temp_out.exists())
-            size = temp_out.stat().st_size
-            self.assertGreater(size, 5000)
-            self.assertLess(size, 35000)
+    def test_static_account_html_exists_and_compact_size(self):
+        self.assertTrue(self.html_path.exists())
+        size = self.html_path.stat().st_size
+        self.assertGreater(size, 5000)
+        self.assertLess(size, 35000)
 
     def test_html_is_pure_static_shell_without_inline_assets_or_data(self):
         self.assertIn('href="static/styles.css"', self.html)
@@ -856,7 +852,7 @@ class TestAccountHTMLGenerationAndIntegrity(unittest.TestCase):
     def test_html_global_nav_header_links(self):
         self.assertIn('href="index.html"', self.html)
         self.assertIn('href="account.html"', self.html)
-        self.assertIn("strategy_second_leg_playbook.html", self.html)
+        self.assertIn('href="playbook.html"', self.html)
         self.assertIn("账户数据分析", self.html)
 
 

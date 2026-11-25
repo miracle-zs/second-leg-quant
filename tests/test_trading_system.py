@@ -880,6 +880,8 @@ class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
             daemon.run_iteration(now=bucket_ts + 15)
             self.assertEqual(daemon.last_evaluated_15m_bucket, 0)
             daemon.run_iteration(now=bucket_ts + 25)
+            self.assertEqual(f2_mock.call_count, 1)  # 60s 退避内不重复刷屏
+            daemon.run_iteration(now=bucket_ts + 80)
             self.assertEqual(f2_mock.call_count, 2)
 
         with patch.object(tad, "check_feature_1_resonance", return_value=[]), patch.object(
@@ -887,9 +889,9 @@ class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
         ) as f2_ok, patch.object(tad, "check_feature_3_stop_loss", return_value=[]), patch.object(
             tad, "check_feature_4_trailing_stops", return_value=[]
         ):
-            daemon.run_iteration(now=bucket_ts + 35)
+            daemon.run_iteration(now=bucket_ts + 145)
             self.assertEqual(daemon.last_evaluated_15m_bucket, bucket_ts)
-            daemon.run_iteration(now=bucket_ts + 45)
+            daemon.run_iteration(now=bucket_ts + 155)
             self.assertEqual(f2_ok.call_count, 1)
 
     def test_dotenv_inline_comments_and_quoted_hash(self):

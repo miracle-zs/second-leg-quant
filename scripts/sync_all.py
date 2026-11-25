@@ -3,9 +3,8 @@
 突破追多与移动保本系统全量同步流水线 (Master Sync Pipeline)
 -------------------------------------------------------
 1. 扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与机会区排序)
-2. 若未启用 SQLite 存储，编译静态 HTML Shell (index.html, playbook, account.html)
-3. 更新账户数据分析引擎与量化风控指标 (runs/account_analytics.json 或 SQLite)
-4. 执行交易风控与四重预警评测 (新共振/突破/止损/移动锁利)
+2. 更新账户数据分析引擎与量化风控指标 (runs/account_analytics.json 或 SQLite)
+3. 执行交易风控与四重预警评测 (新共振/突破/止损/移动锁利)
 """
 
 import argparse
@@ -84,21 +83,11 @@ def main() -> None:
             True,  # critical: abort downstream steps on failure
         ),
     ]
-    if db_path is None:
-        steps.extend(
-            [
-                ("编译总控制台首页静态 Shell (index.html)", [sys.executable, "scripts/build_index.py"], False),
-                ("编译突破追多与移动保本战法手册", [sys.executable, "scripts/build_second_leg_playbook.py"], False),
-            ]
-        )
 
     account_command = [sys.executable, "scripts/account_analytics_engine.py"]
     if db_path is not None:
         account_command.extend(["--database", str(db_path)])
     steps.append(("更新账户数据分析与量化风控指标", account_command, False))
-
-    if db_path is None:
-        steps.append(("编译生成账户数据分析看板静态 Shell", [sys.executable, "scripts/build_account_analytics.py"], False))
 
     if not args.refresh_only:
         steps.append(

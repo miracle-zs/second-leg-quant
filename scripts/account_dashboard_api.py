@@ -5,11 +5,15 @@ import json
 import mimetypes
 import sqlite3
 import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Optional, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
@@ -23,6 +27,22 @@ if str(PROJECT_ROOT) not in sys.path:
 from config import open_sqlite_connection  # noqa: E402
 
 _TEXT_CONTENT_TYPES = {"application/javascript", "application/json"}
+_BINANCE_FAPI_BASE = "https://fapi.binance.com"
+_BINANCE_ALLOWED_INTERVALS = frozenset({"15m", "1h", "4h", "1d"})
+_BINANCE_PROXY_TTL_SEC = 15.0
+_BINANCE_PROXY_TIMEOUT_SEC = 10.0
+
+
+def _fetch_binance_public(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "second-leg-quant/3.5"})
+    with urllib.request.urlopen(req, timeout=_BINANCE_PROXY_TIMEOUT_SEC) as resp:
+        return resp.read()
+
+
+def _is_valid_symbol(symbol: str) -> bool:
+    if not symbol or len(symbol) > 32:
+        return False
+    return not any(ch.isspace() or ord(ch) < 32 or ch in "/?&#%\\" for ch in symbol)
 
 
 def _content_type_for(asset: Path) -> str:
@@ -151,6 +171,8 @@ def load_report(database: Path) -> Optional[dict]:
 def create_handler(database: Path):
     """Build an HTTP request handler serving static HUD shells, /static/* assets, and JSON APIs."""
     web_root = WEB_DIR.resolve()
+    proxy_cache: dict[str, tuple[float, bytes]] = {}
+    proxy_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -222,8 +244,48 @@ def create_handler(database: Path):
                 self.log_error("SQLite error reading %s: %s", table, exc)
                 return None, 500
 
+        def _send_static_file(self, asset: Path) -> None:
+            body = asset.read_bytes()
+            etag = _etag_for(body)
+            if _matches_etag(self.headers.get("If-None-Match"), etag):
+                self._send_not_modified(etag)
+                return
+            self._send_bytes(
+                200,
+                body,
+                _content_type_for(asset),
+                cache_control="no-cache",
+                extra_headers={"ETag": etag},
+            )
+
+        def _send_binance_proxy(self, cache_key: Optional[str], url: str) -> None:
+            now = time.monotonic()
+            if cache_key is not None:
+                with proxy_lock:
+                    cached = proxy_cache.get(cache_key)
+                    if cached is not None and (now - cached[0]) < _BINANCE_PROXY_TTL_SEC:
+                        self._send_bytes(
+                            200,
+                            cached[1],
+                            "application/json; charset=utf-8",
+                            cache_control="no-store",
+                        )
+                        return
+            try:
+                body = _fetch_binance_public(url)
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                self.log_error("Binance proxy error for %s: %s", url, exc)
+                err_body = json.dumps({"error": f"Binance upstream error: {exc}"}).encode("utf-8")
+                self._send_bytes(502, err_body, "application/json; charset=utf-8", cache_control="no-store")
+                return
+            if cache_key is not None:
+                with proxy_lock:
+                    proxy_cache[cache_key] = (time.monotonic(), body)
+            self._send_bytes(200, body, "application/json; charset=utf-8", cache_control="no-store")
+
         def do_GET(self) -> None:
-            path = urlsplit(self.path).path
+            parsed = urlsplit(self.path)
+            path = parsed.path
 
             if path.startswith("/static/"):
                 rel_name = path[len("/static/"):]
@@ -236,53 +298,27 @@ def create_handler(database: Path):
                 ):
                     self.send_error(404)
                     return
-                self._send_bytes(
-                    200,
-                    static_file.read_bytes(),
-                    _content_type_for(static_file),
-                    cache_control="no-cache",
-                )
+                self._send_static_file(static_file)
                 return
 
             if path == "/account/":
                 self._send_redirect("../account.html")
                 return
 
-            if path == "/strategy/":
-                self._send_redirect("../reports/strategy_second_leg_playbook.html")
+            if path in ("/strategy/", "/reports/strategy_second_leg_playbook.html"):
+                self._send_redirect("../playbook.html")
                 return
 
             if path in ("/", "/candidates", "/index.html"):
-                from hud_common import render_index_shell_html
-
-                self._send_bytes(
-                    200,
-                    render_index_shell_html().encode("utf-8"),
-                    "text/html; charset=utf-8",
-                    cache_control="no-cache",
-                )
+                self._send_static_file(web_root / "index.html")
                 return
 
             if path == "/account.html":
-                from build_account_analytics import render_account_html
-
-                self._send_bytes(
-                    200,
-                    render_account_html().encode("utf-8"),
-                    "text/html; charset=utf-8",
-                    cache_control="no-cache",
-                )
+                self._send_static_file(web_root / "account.html")
                 return
 
-            if path == "/reports/strategy_second_leg_playbook.html":
-                from hud_common import render_playbook_html
-
-                self._send_bytes(
-                    200,
-                    render_playbook_html().encode("utf-8"),
-                    "text/html; charset=utf-8",
-                    cache_control="no-cache",
-                )
+            if path in ("/playbook.html", "/strategy"):
+                self._send_static_file(web_root / "playbook.html")
                 return
 
             if path in ("/account", "/api/account"):
@@ -316,12 +352,48 @@ def create_handler(database: Path):
                         "Snapshot unavailable" if err_status == 503 else "Database error",
                     )
                     return
-                body = json.dumps(
-                    {"updated_at": row[1], "candidates": json.loads(row[0])},
-                    ensure_ascii=False,
-                    allow_nan=False,
-                ).encode("utf-8")
-                self._send_json_with_etag(body)
+                updated_at = row[1]
+                etag = _etag_for(f"{updated_at}:{len(row[0])}".encode("utf-8"))
+                if _matches_etag(self.headers.get("If-None-Match"), etag):
+                    self._send_not_modified(etag)
+                    return
+                updated_json = json.dumps(updated_at, ensure_ascii=False).encode("utf-8")
+                body = b'{"updated_at":' + updated_json + b',"candidates":' + row[0].encode("utf-8") + b"}"
+                self._send_bytes(
+                    200,
+                    body,
+                    "application/json; charset=utf-8",
+                    cache_control="no-cache",
+                    extra_headers={"ETag": etag},
+                )
+                return
+
+            if path == "/api/binance/ticker24hr":
+                self._send_binance_proxy("ticker24hr", f"{_BINANCE_FAPI_BASE}/fapi/v1/ticker/24hr")
+                return
+
+            if path == "/api/binance/premiumIndex":
+                self._send_binance_proxy("premiumIndex", f"{_BINANCE_FAPI_BASE}/fapi/v1/premiumIndex")
+                return
+
+            if path == "/api/binance/klines":
+                qs = parse_qs(parsed.query)
+                symbol = (qs.get("symbol") or [""])[0].strip()
+                interval = (qs.get("interval") or [""])[0].strip()
+                raw_limit = (qs.get("limit") or ["168"])[0].strip()
+                try:
+                    limit = int(raw_limit)
+                except ValueError:
+                    limit = -1
+                if not _is_valid_symbol(symbol) or interval not in _BINANCE_ALLOWED_INTERVALS or not (1 <= limit <= 500):
+                    err_body = json.dumps({"error": "Invalid klines parameters"}).encode("utf-8")
+                    self._send_bytes(400, err_body, "application/json; charset=utf-8", cache_control="no-store")
+                    return
+                upstream = (
+                    f"{_BINANCE_FAPI_BASE}/fapi/v1/klines"
+                    f"?symbol={quote(symbol, safe='')}&interval={interval}&limit={limit}"
+                )
+                self._send_binance_proxy(None, upstream)
                 return
 
             self.send_error(404)

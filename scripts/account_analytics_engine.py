@@ -1157,6 +1157,7 @@ class AccountAnalyticsEngine:
         total_funding_fee: float = 0.0,
         daily_pnl_override: Optional[List[dict]] = None,
         equity_curve_override: Optional[List[dict]] = None,
+        initial_capital_override: Optional[float] = None,
     ) -> Tuple[dict, List[dict], List[dict]]:
         """
         基于统一净盈亏 (net_pnl) 口径计算全部账户绩效、风控比值、净值曲线与逐日盈亏。
@@ -1205,14 +1206,16 @@ class AccountAnalyticsEngine:
             available_margin = (
                 float(raw_avail) if raw_avail is not None else max(0.0, total_equity - total_position_margin)
             )
-            if self.custom_initial_capital is not None:
+            if initial_capital_override is not None:
+                initial_capital = float(initial_capital_override)
+            elif self.custom_initial_capital is not None:
                 initial_capital = self.custom_initial_capital
             elif net_transfers is not None and net_transfers > 0:
                 initial_capital = round(net_transfers, 2)
             else:
                 initial_capital = self.initial_capital
         else:
-            initial_capital = self.initial_capital
+            initial_capital = float(initial_capital_override) if initial_capital_override is not None else self.initial_capital
             wallet_balance = round(initial_capital + net_realized_pnl + total_funding_fee, 4)
             total_equity = round(wallet_balance + total_unrealized_pnl, 4)
             available_margin = round(max(0.0, total_equity - total_position_margin), 4)
@@ -1696,8 +1699,10 @@ class AccountAnalyticsEngine:
 
         new_fills: List[dict] = []
         for symbol in sorted(s for s in symbols_to_sync if s):
-            sym_last = int(fills_cursor.get(symbol, query_start))
-            sym_start = max(start_ms, min(query_start, sym_last - 86400 * 1000))
+            if symbol in fills_cursor:
+                sym_start = max(start_ms, min(query_start, int(fills_cursor[symbol]) - 86400 * 1000))
+            else:
+                sym_start = start_ms
             window_start = sym_start
             while window_start <= end_ms:
                 window_end = min(window_start + 7 * 86400 * 1000 - 1, end_ms)
@@ -1855,12 +1860,14 @@ class AccountAnalyticsEngine:
                 total_funding_fee=funding_fee_usdt,
                 daily_pnl_override=daily_pnl_db,
                 equity_curve_override=equity_curve_db,
+                initial_capital_override=initial_equity,
             )
             equity_now = float(account_info["totalMarginBalance"])
+            capital_base = initial_equity + max(0.0, net_flow)
             summary["initial_capital"] = round(initial_equity, 2)
             summary["total_return_pct"] = (
-                round((equity_now - initial_equity - net_flow) / initial_equity * 100.0, 2)
-                if initial_equity > 0
+                round((equity_now - initial_equity - net_flow) / capital_base * 100.0, 2)
+                if capital_base > 0
                 else 0.0
             )
             summary["net_external_transfers"] = round(net_flow, 4)
@@ -1946,7 +1953,9 @@ class AccountAnalyticsEngine:
                     placed = True
                     break
             if not placed:
-                bins_def[-1]["count"] += 1
+                target_bin = bins_def[0] if pct < bins_def[0]["min"] else bins_def[-1]
+                target_bin["count"] += 1
+                target_bin["trades"].append(t["symbol"])
 
             scatter_points.append({
                 "trade_id": t["trade_id"],

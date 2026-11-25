@@ -138,6 +138,11 @@ class _KlineConnectionPool:
                 conn.close()
             except Exception:
                 pass
+            with self._lock:
+                try:
+                    self._conns.remove(conn)
+                except ValueError:
+                    pass
             self._local.conn = None
 
     def fetch_1h_klines(self, symbol: str, limit: int = 168, max_retries: int = 3) -> list[list[Any]]:
@@ -146,6 +151,7 @@ class _KlineConnectionPool:
         last_err: Exception | None = None
         for attempt in range(max_retries):
             conn = self._get_conn()
+            retry_after_sec: float | None = None
             try:
                 conn.request("GET", path, headers=headers)
                 resp = conn.getresponse()
@@ -158,12 +164,22 @@ class _KlineConnectionPool:
                 err_text = body.decode("utf-8", errors="replace")
                 if resp.status not in (429, 500, 502, 503, 504):
                     raise BinanceAPIError(f"HTTP {resp.status} for {symbol}: {err_text}", code=resp.status, endpoint="/fapi/v1/klines")
+                if resp.status == 429:
+                    raw_ra = resp.getheader("Retry-After")
+                    if raw_ra is not None:
+                        try:
+                            retry_after_sec = min(float(raw_ra), 10.0)
+                        except ValueError:
+                            retry_after_sec = None
                 last_err = BinanceAPIError(f"HTTP {resp.status} for {symbol}: {err_text}", code=resp.status, endpoint="/fapi/v1/klines")
             except (http.client.HTTPException, OSError, TimeoutError, json.JSONDecodeError) as exc:
                 last_err = exc
                 self._reset_conn()
             if attempt < max_retries - 1:
-                time.sleep(0.5 * (2 ** attempt))
+                delay = 0.5 * (2 ** attempt)
+                if retry_after_sec is not None:
+                    delay = max(delay, retry_after_sec)
+                time.sleep(delay)
         raise RuntimeError(f"1h kline fetch failed for {symbol} after {max_retries} attempts: {last_err}") from last_err
 
     def close(self) -> None:

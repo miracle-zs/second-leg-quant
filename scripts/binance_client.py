@@ -295,7 +295,10 @@ class BinanceFuturesClient:
                     code = int(data["code"])
                     if code == -1021 and _retry_time_sync:
                         logger.info("检测到币安 -1021 时间偏移，重新同步服务器时间后重试 [%s]", endpoint)
-                        self.get_server_time(force_sync=True)
+                        try:
+                            self.get_server_time(force_sync=True)
+                        except BinanceAPIError as ts_err:
+                            return None, {"code": ts_err.code or "TIME_SYNC_ERROR", "msg": str(ts_err)}
                         return self._send_signed_request(
                             endpoint,
                             params,
@@ -500,18 +503,14 @@ class BinanceFuturesClient:
         klines_data = self.fetch_klines(clean_sym, interval=interval, limit=limit)
 
         closed_candles = [c for c in klines_data if int(c[6]) <= server_time_ms]
-        if closed_candles:
-            target_candle = closed_candles[-1]
-            prev_candle_raw = closed_candles[-2] if len(closed_candles) >= 2 else None
-        elif len(klines_data) >= 2:
-            target_candle = klines_data[-2]
-            prev_candle_raw = klines_data[-3] if len(klines_data) >= 3 else None
-        else:
+        if not closed_candles:
             raise BinanceAPIError(
                 f"No confirmed closed candle for {clean_sym} ({interval})",
                 code="UNCLOSED_CANDLE",
                 endpoint="/fapi/v1/klines",
             )
+        target_candle = closed_candles[-1]
+        prev_candle_raw = closed_candles[-2] if len(closed_candles) >= 2 else None
 
         candle = _parse_candle_row(clean_sym, interval, target_candle)
         candle["prev_candle"] = (

@@ -64,12 +64,21 @@ def _parse_dotenv_value(raw_val: str) -> str:
     return re.split(r"\s+#", val, maxsplit=1)[0].strip()
 
 
+_DOTENV_CACHE: dict[Path, tuple[int, int, dict[str, str]]] = {}
+
+
 def load_dotenv(env_path: Optional[Path] = None) -> dict[str, str]:
-    """解析 .env 文件为字典（跳过空行与注释，剥离引号与无引号行内注释）。"""
-    target = Path(env_path) if env_path is not None else DEFAULT_ENV_PATH
-    result: dict[str, str] = {}
+    """解析 .env 文件为字典（跳过空行与注释，剥离引号与无引号行内注释；按 mtime/size 缓存）。"""
+    target = Path(env_path).resolve() if env_path is not None else DEFAULT_ENV_PATH.resolve()
     if not target.exists():
-        return result
+        _DOTENV_CACHE.pop(target, None)
+        return {}
+    st = target.stat()
+    cached = _DOTENV_CACHE.get(target)
+    if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+        return dict(cached[2])
+
+    result: dict[str, str] = {}
     with open(target, "r", encoding="utf-8") as f:
         for line in f:
             stripped = line.strip()
@@ -83,7 +92,8 @@ def load_dotenv(env_path: Optional[Path] = None) -> dict[str, str]:
             key = k.strip()
             if key:
                 result[key] = _parse_dotenv_value(v)
-    return result
+    _DOTENV_CACHE[target] = (st.st_mtime_ns, st.st_size, result)
+    return dict(result)
 
 
 def get_env_setting(key: str, default: str = "", env_path: Optional[Path] = None) -> str:

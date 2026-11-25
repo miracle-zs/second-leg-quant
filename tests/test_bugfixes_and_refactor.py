@@ -137,9 +137,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
         self.assertGreater(enriched["liquidation_price"], 3000.0)
 
         # 验证纯静态壳 + account.js 明确提示空单未纳入自动风控
-        import build_account_analytics as baa
-        self.assertFalse(hasattr(baa, "normalize_account_data"))
-        html_out = baa.render_account_html()
+        html_out = (ROOT_DIR / "web" / "account.html").read_text(encoding="utf-8")
         self.assertIn("static/styles.css", html_out)
         self.assertIn("static/account.js", html_out)
         self.assertNotIn('<script id="account-data"', html_out)
@@ -325,20 +323,21 @@ class TestDashboardAPIRoutes(unittest.TestCase):
             self.assertIn("static/account.js", account_html)
             self.assertNotIn('<script id="account-data"', account_html)
 
-            code, headers, body = self._invoke_get(handler_cls, "/reports/strategy_second_leg_playbook.html")
+            code, headers, body = self._invoke_get(handler_cls, "/playbook.html")
             self.assertEqual(code, 200)
-            self.assertIn("../static/styles.css", body.decode("utf-8"))
+            self.assertIn("static/styles.css", body.decode("utf-8"))
 
-            # 2. Trailing-slash redirects
+            # 2. Trailing-slash & legacy playbook redirects
             code, headers, body = self._invoke_get(handler_cls, "/account/")
             self.assertEqual(code, 302)
             self.assertEqual(headers["location"], "../account.html")
             self.assertEqual(body, b"")
 
-            code, headers, body = self._invoke_get(handler_cls, "/strategy/")
-            self.assertEqual(code, 302)
-            self.assertEqual(headers["location"], "../reports/strategy_second_leg_playbook.html")
-            self.assertEqual(body, b"")
+            for old_pb in ("/strategy/", "/reports/strategy_second_leg_playbook.html"):
+                code, headers, body = self._invoke_get(handler_cls, old_pb)
+                self.assertEqual(code, 302)
+                self.assertEqual(headers["location"], "../playbook.html")
+                self.assertEqual(body, b"")
 
             # 3. JSON APIs & ETag / 304 Not Modified
             for route in ("/account?t=123", "/api/account?t=123"):
@@ -453,6 +452,217 @@ class TestDashboardAPIRoutes(unittest.TestCase):
                 finally:
                     conn.close()
                     server.shutdown()
+
+    def test_binance_public_proxy_validation_caching_and_errors(self):
+        import urllib.error
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "empty.sqlite3"
+            handler_cls = api.create_handler(db_path)
+
+            calls = []
+
+            def fake_fetch(url: str) -> bytes:
+                calls.append(url)
+                if "ticker/24hr" in url:
+                    return b'[{"symbol":"YBUSDT","lastPrice":"0.5"}]'
+                if "premiumIndex" in url:
+                    return b'[{"symbol":"YBUSDT","lastFundingRate":"0.0001"}]'
+                if "klines" in url:
+                    return b'[[1700000000000,"0.5","0.6","0.4","0.55","1000"]]'
+                raise AssertionError(f"Unexpected URL: {url}")
+
+            with patch.object(api, "_fetch_binance_public", side_effect=fake_fetch):
+                # ticker24hr is cached within TTL
+                code1, _, body1 = self._invoke_get(handler_cls, "/api/binance/ticker24hr")
+                code2, _, body2 = self._invoke_get(handler_cls, "/api/binance/ticker24hr")
+                self.assertEqual(code1, 200)
+                self.assertEqual(code2, 200)
+                self.assertEqual(body1, body2)
+                self.assertEqual(len(calls), 1)
+
+                # premiumIndex works
+                code, _, body = self._invoke_get(handler_cls, "/api/binance/premiumIndex")
+                self.assertEqual(code, 200)
+                self.assertEqual(json.loads(body)[0]["symbol"], "YBUSDT")
+
+                # klines valid request
+                code, _, body = self._invoke_get(
+                    handler_cls, "/api/binance/klines?symbol=YBUSDT&interval=15m&limit=168"
+                )
+                self.assertEqual(code, 200)
+                self.assertEqual(len(json.loads(body)), 1)
+
+                # klines invalid parameters -> 400
+                for bad_route in (
+                    "/api/binance/klines?symbol=&interval=15m&limit=168",
+                    "/api/binance/klines?symbol=YB/USDT&interval=15m&limit=168",
+                    "/api/binance/klines?symbol=YBUSDT&interval=5m&limit=168",
+                    "/api/binance/klines?symbol=YBUSDT&interval=15m&limit=999",
+                    "/api/binance/klines?symbol=YBUSDT&interval=15m&limit=abc",
+                ):
+                    code, _, _ = self._invoke_get(handler_cls, bad_route)
+                    self.assertEqual(code, 400, f"Expected 400 for {bad_route}")
+
+            # Upstream failure -> 502
+            with patch.object(
+                api, "_fetch_binance_public", side_effect=urllib.error.URLError("timeout")
+            ):
+                code, _, body = self._invoke_get(
+                    handler_cls, "/api/binance/klines?symbol=YBUSDT&interval=15m&limit=60"
+                )
+                self.assertEqual(code, 502)
+                self.assertIn("error", json.loads(body))
+
+    def test_static_assets_include_compiled_tailwind_and_vendored_chartjs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handler_cls = api.create_handler(Path(tmp) / "empty.sqlite3")
+            for asset in ("/static/tailwind.css", "/static/vendor/chart.js"):
+                code, headers, body = self._invoke_get(handler_cls, asset)
+                self.assertEqual(code, 200)
+                self.assertGreater(len(body), 1000)
+                self.assertIn("charset=utf-8", headers["content-type"])
+
+            for name in ("index.html", "account.html", "playbook.html"):
+                html = (ROOT_DIR / "web" / name).read_text(encoding="utf-8")
+                self.assertIn('href="static/tailwind.css"', html)
+                self.assertNotIn("gstatic.com/antigravity/web/dev/tailwindcss", html)
+
+
+class TestSecondPassRegressions(unittest.TestCase):
+    """验证二次审查修复：daemon datetime/退避、DB Sharpe 本金、scanner 工具与连接池"""
+
+    def test_feature1_legacy_first_detected_does_not_raise_name_error(self):
+        import trade_alert_daemon as tad
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            pool_file = tmp_path / "pool.json"
+            state_file = tmp_path / "state.json"
+            pool_file.write_text(
+                json.dumps([{"symbol": "YBUSDT", "is_resonance": True, "resonance_score": 2, "funding_rate_4h_pct": 0.01}]),
+                encoding="utf-8",
+            )
+            state_file.write_text(
+                json.dumps({
+                    "initialized": True,
+                    "active_resonance_symbols": [],
+                    "history": {
+                        "YBUSDT": {"symbol": "YBUSDT", "first_detected": cfg.get_beijing_time_str()}
+                    },
+                }),
+                encoding="utf-8",
+            )
+            store = tad.ResonanceStateStore(state_file)
+            notifier = MagicMock()
+            notifier.send_alert.return_value = True
+            with patch.object(tad, "resolve_database_path", return_value=None):
+                alerts = tad.check_feature_1_resonance(notifier, store, pool_file=pool_file, debounce_hours=24.0)
+            self.assertEqual(alerts, [])
+            notifier.send_alert.assert_not_called()
+
+    def test_daemon_f2_retry_respects_cooldown_and_cap(self):
+        import trade_alert_daemon as tad
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            d = tad.TradeAlertDaemon(
+                {
+                    "resonance_pool_file": str(tmp_path / "pool.json"),
+                    "resonance_state_file": str(tmp_path / "state.json"),
+                    "positions_file": str(tmp_path / "pos.json"),
+                },
+                dry_run=True,
+            )
+            f2_calls = []
+
+            def failing_f2(*args, **kwargs):
+                f2_calls.append(1)
+                if kwargs.get("status") is not None:
+                    kwargs["status"]["had_error"] = True
+                return []
+
+            base_bucket = 1800000000
+            with patch.object(tad, "check_feature_1_resonance", return_value=[]) as mock_f1, patch.object(
+                tad, "check_feature_2_breakout", side_effect=failing_f2
+            ), patch.object(tad, "check_feature_3_stop_loss", return_value=[]), patch.object(
+                tad, "check_feature_4_trailing_stops", return_value=[]
+            ):
+                d.run_iteration(now=base_bucket + 15)   # 1st attempt
+                d.run_iteration(now=base_bucket + 25)   # within 60s cooldown -> skipped
+                d.run_iteration(now=base_bucket + 80)   # 2nd attempt
+                d.run_iteration(now=base_bucket + 145)  # 3rd attempt -> hits cap
+                d.run_iteration(now=base_bucket + 210)  # bucket closed -> skipped
+
+            self.assertEqual(mock_f1.call_count, 1)
+            self.assertEqual(len(f2_calls), 3)
+            self.assertEqual(d.last_evaluated_15m_bucket, base_bucket)
+
+    def test_db_mode_sharpe_uses_recording_initial_equity(self):
+        client = bpc.BinanceFuturesClient("demo", "demo")
+        engine = aae.AccountAnalyticsEngine(client=client)  # default 10000.0
+        start = 1795200000000
+        previous = {
+            "recording": {"start_ms": start, "started_at": "2026-11-21 00:00:00", "initial_equity": 100.0},
+            "equity_curve": [{"timestamp": start, "equity": 100.0, "drawdown_usd": 0.0, "drawdown_pct": 0.0}],
+        }
+        income = [
+            {"incomeType": "REALIZED_PNL", "tranId": 1, "tradeId": "1", "time": start + 1000, "income": "20", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "REALIZED_PNL", "tranId": 2, "tradeId": "2", "time": start + 86400 * 1000 + 1000, "income": "-5", "asset": "USDT", "symbol": "BTCUSDT"},
+        ]
+        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "account.sqlite3"
+            api.publish_report(db_path, previous)
+            with patch.object(
+                engine,
+                "fetch_binance_data",
+                return_value=({"totalWalletBalance": "115", "totalMarginBalance": "115"}, [], [], status),
+            ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
+                client,
+                "_send_signed_request",
+                side_effect=lambda endpoint, params: (income if endpoint == "/fapi/v1/income" else [], None),
+            ):
+                report = engine.run(database=db_path)
+
+        # Verify daily returns were computed against 100.0 (+20%, -4.17%), not 10000.0
+        expected_sharpe, expected_sortino, _ = engine._compute_risk_ratios(
+            report["daily_pnl"], report["trade_history"], 100.0
+        )
+        self.assertEqual(report["summary"]["sharpe_ratio"], expected_sharpe)
+        self.assertEqual(report["summary"]["sortino_ratio"], expected_sortino)
+
+    def test_scanner_helpers_and_connection_pool_reset(self):
+        import scan_second_leg_pool as ssp
+
+        self.assertEqual(ssp.extract_base_and_multiplier("1000PEPEUSDT"), ("PEPE", 1000.0))
+        self.assertEqual(ssp.extract_base_and_multiplier("1MBABYDOGEUSDT"), ("BABYDOGE", 1_000_000.0))
+        self.assertEqual(ssp.extract_base_and_multiplier("BTCUSDT"), ("BTC", 1.0))
+
+        ema = ssp.calc_ema_series([1.0, 2.0, 3.0, 4.0, 5.0], 3)
+        self.assertEqual(ema[:2], [None, None])
+        self.assertAlmostEqual(ema[2], 2.0)
+        self.assertAlmostEqual(ema[3], 3.0)
+        self.assertAlmostEqual(ema[4], 4.0)
+
+        # CMC HTTP 400 bisection skips invalid symbol while keeping valid symbols
+        def fake_fetch(url, **kwargs):
+            if "BAD" in url:
+                raise bc.BinanceAPIError("HTTP 400", code=400, endpoint=url)
+            return {"data": {"GOOD": {"symbol": "GOOD"}}}
+
+        with patch.object(ssp, "fetch_json_with_retry", side_effect=fake_fetch):
+            res = ssp._fetch_cmc_batch(["GOOD", "BAD"], "demo-key")
+        self.assertIn("GOOD", res)
+        self.assertNotIn("BAD", res)
+
+        # _reset_conn removes closed connection from pool tracking list
+        pool = ssp._KlineConnectionPool(host="example.com")
+        conn = pool._get_conn()
+        self.assertIn(conn, pool._conns)
+        pool._reset_conn()
+        self.assertEqual(pool._conns, [])
+        pool.close()
 
 
 if __name__ == "__main__":

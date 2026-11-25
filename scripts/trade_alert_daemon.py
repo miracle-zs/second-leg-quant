@@ -32,6 +32,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import closing, contextmanager
+from datetime import datetime
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -1018,8 +1019,12 @@ def check_feature_3_stop_loss(
         if support_price <= 0 or close_price >= support_price:
             continue
 
+        if entry_price <= 0:
+            logger.error(f"持仓 {sym} entry_price={entry_price} 非法，跳过破线止损计算")
+            continue
+
         drop_pct = (support_price - close_price) / support_price * 100.0
-        pnl_pct = ((close_price - entry_price) / entry_price * 100.0) if entry_price > 0 else 0.0
+        pnl_pct = (close_price - entry_price) / entry_price * 100.0
         tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym_clean}.P&interval=15"
 
         title = f"🚨 【破线止损预警】{sym} 15m 跌破趋势线，请立即平多止损！"
@@ -1282,6 +1287,9 @@ class TradeAlertDaemon:
         self.pos_store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
         self.running = True
         self.last_evaluated_15m_bucket = 0
+        self._f2_retry_bucket = 0
+        self._f2_retry_count = 0
+        self._f2_last_retry_ts = 0.0
         self.binance_client = BinanceFuturesClient(
             cfg.get("binance_api_key", ""),
             cfg.get("binance_api_secret", ""),
@@ -1323,25 +1331,44 @@ class TradeAlertDaemon:
         candle_cache: dict[str, dict] = {}
 
         if seconds_into_bucket >= 10 and self.last_evaluated_15m_bucket != current_bucket:
-            logger.info(f"⏰ 进入 15m K线收盘确认窗口 ({get_beijing_time_str(now_ts)})，启动 Feature 1/2/3 联合校验...")
-            check_feature_1_resonance(
-                self.notifier,
-                self.state_store,
-                pool_file,
-                layout_id,
-                database_path=db_path,
-            )
-            f2_status: dict[str, Any] = {}
-            check_feature_2_breakout(
-                self.notifier,
-                self.state_store,
-                layout_id,
-                candle_cache=candle_cache,
-                status=f2_status,
-            )
-            if not f2_status.get("had_error"):
-                self.last_evaluated_15m_bucket = current_bucket
-            evaluate_stop_loss = True
+            is_retry = self._f2_retry_bucket == current_bucket and self._f2_retry_count > 0
+            if is_retry and (now_ts - self._f2_last_retry_ts) < 60.0:
+                evaluate_stop_loss = any(
+                    "pending_stop_loss_candle" in pos for pos in self.pos_store.get_open_positions()
+                )
+            else:
+                if not is_retry:
+                    logger.info(f"⏰ 进入 15m K线收盘确认窗口 ({get_beijing_time_str(now_ts)})，启动 Feature 1/2/3 联合校验...")
+                    check_feature_1_resonance(
+                        self.notifier,
+                        self.state_store,
+                        pool_file,
+                        layout_id,
+                        database_path=db_path,
+                    )
+                    self._f2_retry_bucket = current_bucket
+                    self._f2_retry_count = 0
+                else:
+                    logger.info(f"🔁 重试 15m 突破扫描 (第 {self._f2_retry_count + 1} 次)...")
+
+                f2_status: dict[str, Any] = {}
+                check_feature_2_breakout(
+                    self.notifier,
+                    self.state_store,
+                    layout_id,
+                    candle_cache=candle_cache,
+                    status=f2_status,
+                )
+                if not f2_status.get("had_error"):
+                    self.last_evaluated_15m_bucket = current_bucket
+                    self._f2_retry_count = 0
+                else:
+                    self._f2_retry_count += 1
+                    self._f2_last_retry_ts = now_ts
+                    if self._f2_retry_count >= 3:
+                        logger.warning("Feature 2 本 15m 窗口重试已达上限 (3 次)，等待下个 15m 周期")
+                        self.last_evaluated_15m_bucket = current_bucket
+                evaluate_stop_loss = not is_retry
         else:
             self.state_store.load()
             if self.state_store.data.get("pending_breakouts"):
