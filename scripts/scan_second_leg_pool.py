@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import re
 import sys
 import time
@@ -24,7 +25,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from binance_client import BINANCE_FUTURES_BASE_URL  # noqa: E402
+from binance_client import BINANCE_FUTURES_BASE_URL, get_server_time_ms  # noqa: E402
 from config import (  # noqa: E402
     BEIJING_TZ,
     DEFAULT_DB_PATH,
@@ -80,12 +81,31 @@ def calc_ema(values: Sequence[float], period: int) -> Optional[float]:
     return ema
 
 
+def _is_cmc_invalid_symbol_400(exc: HttpError) -> bool:
+    """Return True only when a CMC HTTP 400 indicates an unrecognized symbol parameter."""
+    body = exc.body.strip()
+    if not body:
+        return True
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return "symbol" in body.lower()
+    if not isinstance(payload, dict):
+        return False
+    status = payload.get("status")
+    if isinstance(status, dict):
+        err_msg = str(status.get("error_message") or "").lower()
+        err_code = status.get("error_code")
+        return "symbol" in err_msg and err_code in (None, 400)
+    return "symbol" in body.lower()
+
+
 def _fetch_cmc_batch(
     chunk: Sequence[str],
     cmc_key: str,
     client: HttpClient,
 ) -> dict[str, dict[str, object]]:
-    """拉取 CMC Pro 批量行情；若因单个未识别符号触发 HTTP 400，则二分定位并跳过无效符号。"""
+    """拉取 CMC Pro 批量行情；仅当确认是无效符号触发的 HTTP 400 时二分定位并跳过无效符号。"""
     if not chunk:
         return {}
     chunk_encoded = ",".join(urllib.parse.quote(s) for s in chunk)
@@ -100,7 +120,7 @@ def _fetch_cmc_batch(
             backoff_base=2.5,
         )
     except HttpError as exc:
-        if exc.status_code == 400:
+        if exc.status_code == 400 and _is_cmc_invalid_symbol_400(exc):
             if len(chunk) == 1:
                 print(f"⚠️ CMC HTTP 400 跳过无法识别的符号: {chunk[0]}")
                 return {}
@@ -321,18 +341,23 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
                 days_left = 7.0
             else:
                 is_overflow_7d = True
-                if is_24h_low_sub_30m and (
-                    not hist_entry or (now_ts - float(str(hist_entry["last_sub_30m_ts"]))) > 86400
-                ):
+                if is_24h_low_sub_30m:
                     prev_min = hist_entry["min_mcap_usd"] if hist_entry else None
-                    sub_30m_history[sym] = {
-                        "symbol": sym,
-                        "base": base,
-                        "last_sub_30m_ts": now_ts,
-                        "last_sub_30m_iso": now_iso,
-                        "min_mcap_usd": min(float(str(prev_min)), mcap_24h_low) if prev_min is not None else mcap_24h_low,
-                    }
-                    days_since_sub_30m = 0.0
+                    new_min = min(float(str(prev_min)), mcap_24h_low) if prev_min is not None else mcap_24h_low
+                    if not hist_entry or (now_ts - float(str(hist_entry["last_sub_30m_ts"]))) > 86400:
+                        sub_30m_history[sym] = {
+                            "symbol": sym,
+                            "base": base,
+                            "last_sub_30m_ts": now_ts,
+                            "last_sub_30m_iso": now_iso,
+                            "min_mcap_usd": new_min,
+                        }
+                        days_since_sub_30m = 0.0
+                    elif prev_min is not None and new_min < float(str(prev_min)):
+                        sub_30m_history[sym] = {
+                            **hist_entry,
+                            "min_mcap_usd": new_min,
+                        }
                 days_left = max(0.1, round(7.0 - days_since_sub_30m, 1))
 
             turnover = vol_usd / mcap_f
@@ -372,6 +397,8 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
         kline_results: dict[str, tuple[Optional[float], Optional[float], bool, Optional[float]]] = {}
         kline_errors: dict[str, str] = {}
         symbols_list = [str(c["symbol"]) for c in verified_candidates]
+        # Pre-warm Binance server time offset cache before fan-out
+        get_server_time_ms()
 
         def _eval_symbol(sym: str) -> tuple[str, Optional[float], Optional[float], bool, Optional[float]]:
             query = urllib.parse.urlencode({"symbol": sym, "interval": "1h", "limit": 168})
@@ -379,7 +406,7 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
             data = client.request_json(url, timeout=10.0, max_retries=2, backoff_base=0.5)
             if not isinstance(data, list):
                 raise RuntimeError(f"Unexpected klines response type for {sym}: {type(data).__name__}")
-            now_ms = int(time.time() * 1000)
+            now_ms = get_server_time_ms()
             closed_bars = list(data)
             while closed_bars and int(closed_bars[-1][6]) > now_ms:
                 closed_bars.pop()
@@ -406,7 +433,10 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
 
         if kline_errors:
             preview = "; ".join(f"{sym}: {msg}" for sym, msg in list(kline_errors.items())[:5])
-            raise RuntimeError(f"❌ 1h K线拉取失败 ({len(kline_errors)} 个标的): {preview}")
+            if not kline_results:
+                raise RuntimeError(f"❌ 1h K线全部拉取失败 ({len(kline_errors)} 个标的): {preview}")
+            print(f"⚠️ 跳过 1h K线拉取失败标的 ({len(kline_errors)} 个): {preview}")
+            verified_candidates = [c for c in verified_candidates if str(c["symbol"]) in kline_results]
 
     res_state = db_store.load_resonance_state(db_path)
     raw_history = res_state.get("history", {})

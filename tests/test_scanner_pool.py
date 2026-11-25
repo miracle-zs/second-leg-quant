@@ -21,6 +21,7 @@ SCRIPTS_DIR = ROOT_DIR / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import binance_client as bc  # noqa: E402
 from config import BEIJING_TZ  # noqa: E402
 import db_store  # noqa: E402
 import scan_second_leg_pool as ssp  # noqa: E402
@@ -55,6 +56,7 @@ def _make_fake_request_json(
     symbols: list[dict[str, object]],
     funding_intervals: dict[str, int] | None = None,
     klines_by_symbol: dict[str, list[list[object]]] | None = None,
+    server_time_ms: int = 1_795_500_000_000,
 ):
     """Build a deterministic HttpClient.request_json stub covering Binance & CMC endpoints."""
     funding_map = funding_intervals or {}
@@ -110,6 +112,8 @@ def _make_fake_request_json(
     }
 
     def _fake_request_json(url: str, **kwargs: object) -> object:
+        if url.endswith("/fapi/v1/time"):
+            return {"serverTime": server_time_ms}
         if url.endswith("/fapi/v1/exchangeInfo"):
             return exchange_info
         if url.endswith("/fapi/v1/ticker/24hr"):
@@ -180,9 +184,12 @@ class TestScannerPool(unittest.TestCase):
             symbols=symbols,
             funding_intervals=funding_intervals,
             klines_by_symbol=klines_by_symbol,
+            server_time_ms=int(now_ts * 1000),
         )
         stdout_buf = io.StringIO()
-        with patch.object(ssp, "get_env_setting", return_value="test-cmc-key"), patch.object(
+        with patch.object(bc, "_PUBLIC_CLIENT", None), patch.object(
+            ssp, "get_env_setting", return_value="test-cmc-key"
+        ), patch.object(
             ssp.time, "time", return_value=now_ts
         ), patch.object(ssp.HttpClient, "request_json", side_effect=fake_req), redirect_stdout(
             stdout_buf

@@ -57,6 +57,7 @@ USER_AGENT = (
 
 _TOKEN_LOCK = threading.Lock()
 _TOKEN_CACHE: dict[str, dict[str, Any]] = {}
+_TOKEN_FETCH_LOCKS: dict[str, threading.Lock] = {}
 _SERVER_TIME_CLIENT = BinanceFuturesClient()
 
 _INTERVAL_SECONDS = {
@@ -101,36 +102,50 @@ def _normalize_server_update_time(raw_val: object) -> Optional[int]:
 
 
 def get_chart_token(layout_id: str = DEFAULT_TV_LAYOUT_ID, force_refresh: bool = False) -> str:
-    """Fetches and caches a TradingView chart JWT token for the given layout."""
+    """Fetches and caches a TradingView chart JWT token for the given layout (single-flight per layout)."""
     now = int(time.time())
     with _TOKEN_LOCK:
         cached = _TOKEN_CACHE.get(layout_id)
+        cached_at = int(cached.get("fetched_at", 0)) if cached else 0
         if not force_refresh and cached and cached["exp"] > now + 60:
             return cached["token"]
+        fetch_lock = _TOKEN_FETCH_LOCKS.setdefault(layout_id, threading.Lock())
 
-    errors: list[str] = []
-    for tmpl in TV_TOKEN_URLS:
-        url = tmpl.format(layout_id=layout_id)
-        try:
-            data = request_json(
-                url,
-                headers={"User-Agent": USER_AGENT},
-                timeout=10.0,
-                max_retries=1,
-            )
-            token = data.get("token") if isinstance(data, dict) else None
-            if token:
-                exp = _extract_jwt_exp(str(token), now + 1800)
-                with _TOKEN_LOCK:
-                    _TOKEN_CACHE[layout_id] = {"token": str(token), "exp": exp}
-                logger.info("Successfully fetched JWT chart token for layout %s", layout_id)
-                return str(token)
-            errors.append(f"{url}: empty token")
-        except HttpError as e:
-            errors.append(f"{url}: {e}")
-            logger.warning("Failed to fetch token from %s: %s", url, e)
+    with fetch_lock:
+        now = int(time.time())
+        with _TOKEN_LOCK:
+            cached = _TOKEN_CACHE.get(layout_id)
+            if cached and cached["exp"] > now + 60:
+                if not force_refresh or int(cached.get("fetched_at", 0)) > cached_at:
+                    return cached["token"]
 
-    raise RuntimeError(f"Unable to obtain chart token for TradingView layout {layout_id}: {'; '.join(errors)}")
+        errors: list[str] = []
+        for tmpl in TV_TOKEN_URLS:
+            url = tmpl.format(layout_id=layout_id)
+            try:
+                data = request_json(
+                    url,
+                    headers={"User-Agent": USER_AGENT},
+                    timeout=10.0,
+                    max_retries=1,
+                )
+                token = data.get("token") if isinstance(data, dict) else None
+                if token:
+                    exp = _extract_jwt_exp(str(token), now + 1800)
+                    with _TOKEN_LOCK:
+                        _TOKEN_CACHE[layout_id] = {
+                            "token": str(token),
+                            "exp": exp,
+                            "fetched_at": now,
+                        }
+                    logger.info("Successfully fetched JWT chart token for layout %s", layout_id)
+                    return str(token)
+                errors.append(f"{url}: empty token")
+            except HttpError as e:
+                errors.append(f"{url}: {e}")
+                logger.warning("Failed to fetch token from %s: %s", url, e)
+
+        raise RuntimeError(f"Unable to obtain chart token for TradingView layout {layout_id}: {'; '.join(errors)}")
 
 
 def get_layout_chart_ids(layout_id: str = DEFAULT_TV_LAYOUT_ID) -> list[str]:
@@ -183,17 +198,43 @@ def _fetch_chart_sources(layout_id: str, chart_id: str, token: str) -> dict[str,
     return sources
 
 
+def _read_cached_drawings(cache_path: Path, max_age_sec: float) -> Optional[dict[str, list[dict[str, Any]]]]:
+    if not cache_path.exists():
+        return None
+    if (time.time() - cache_path.stat().st_mtime) >= max_age_sec:
+        return None
+    try:
+        with open(cache_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to read TV drawings cache %s: %s", cache_path, exc)
+        return None
+    drawings = payload.get("drawings_by_symbol") if isinstance(payload, dict) else None
+    if isinstance(drawings, dict) and drawings:
+        return drawings
+    return None
+
+
 def get_layout_drawings(
     layout_id: str = DEFAULT_TV_LAYOUT_ID,
     force_refresh: bool = False,
     save_cache: bool = True,
+    *,
+    cache_ttl_sec: Optional[float] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """
     Fetches LineToolTrendLine drawings from TradingView cloud storage and normalizes
     them into canonical flat dicts indexed strictly by normalized symbol (e.g. 'YBUSDT').
-    Fails closed if fetching any chart source fails (never overwrites cache with partial/empty data).
+    When `cache_ttl_sec` is set and `force_refresh` is False, returns fresh disk cache.
+    `force_refresh=True` bypasses disk cache and refreshes the JWT token.
+    Fails closed if fetching any chart source fails or all trendlines fail parsing.
     """
     cache_path = RUNS_DIR / f"tradingview_drawings_{layout_id}.json"
+    if not force_refresh and cache_ttl_sec is not None and cache_ttl_sec > 0:
+        cached_drawings = _read_cached_drawings(cache_path, cache_ttl_sec)
+        if cached_drawings is not None:
+            return cached_drawings
+
     token = get_chart_token(layout_id=layout_id, force_refresh=force_refresh)
     chart_ids = get_layout_chart_ids(layout_id=layout_id)
 
@@ -222,6 +263,8 @@ def get_layout_drawings(
         logger.info("Retrieved %d sources from chart_id '%s'", len(sources), chart_id)
 
     symbol_to_trendlines: dict[str, list[dict[str, Any]]] = {}
+    trendline_seen_count = 0
+    trendline_skipped_count = 0
 
     for sid, sdata in raw_sources.items():
         state_obj = sdata.get("state")
@@ -231,31 +274,44 @@ def get_layout_drawings(
         tool_type = state_obj.get("type")
         if tool_type != "LineToolTrendLine":
             continue
+        trendline_seen_count += 1
 
         inner_state = state_obj.get("state") if isinstance(state_obj.get("state"), dict) else {}
         raw_sym = sdata.get("symbol") or inner_state.get("symbol") or ""
         norm_sym = clean_symbol(raw_sym)
         if not norm_sym:
+            trendline_skipped_count += 1
+            logger.warning("Skipping trendline %s with empty/invalid symbol: %r", sid, raw_sym)
             continue
 
         points = state_obj.get("points") or []
-        if len(points) < 2:
+        if not isinstance(points, list) or len(points) < 2:
+            trendline_skipped_count += 1
+            logger.warning("Skipping trendline %s (%s) with invalid points: %r", sid, norm_sym, points)
             continue
 
         pt1, pt2 = points[0], points[1]
         if not isinstance(pt1, dict) or not isinstance(pt2, dict):
+            trendline_skipped_count += 1
+            logger.warning("Skipping trendline %s (%s) with non-dict points", sid, norm_sym)
             continue
         t1, p1 = pt1.get("time_t"), pt1.get("price")
         t2, p2 = pt2.get("time_t"), pt2.get("price")
         if t1 is None or p1 is None or t2 is None or p2 is None:
+            trendline_skipped_count += 1
+            logger.warning("Skipping trendline %s (%s) with missing time_t/price", sid, norm_sym)
             continue
 
+        raw_linewidth = inner_state.get("linewidth")
         try:
             p1_flt = float(p1)
             p2_flt = float(p2)
             t1_int = int(t1)
             t2_int = int(t2)
-        except (ValueError, TypeError):
+            line_width = int(raw_linewidth) if raw_linewidth is not None else 1
+        except (ValueError, TypeError) as exc:
+            trendline_skipped_count += 1
+            logger.warning("Skipping malformed trendline %s (%s): %s", sid, norm_sym, exc)
             continue
 
         dt1_str = get_beijing_time_str(t1_int)[:16]
@@ -266,8 +322,6 @@ def get_layout_drawings(
             or pt1.get("interval")
             or ""
         )
-        raw_linewidth = inner_state.get("linewidth")
-        line_width = int(raw_linewidth) if raw_linewidth is not None else 1
 
         drawing_meta: dict[str, Any] = {
             "id": sid,
@@ -288,7 +342,28 @@ def get_layout_drawings(
         }
         symbol_to_trendlines.setdefault(norm_sym, []).append(drawing_meta)
 
+    if trendline_skipped_count:
+        logger.warning(
+            "Skipped %d/%d malformed LineToolTrendLine drawings in layout %s",
+            trendline_skipped_count,
+            trendline_seen_count,
+            layout_id,
+        )
+    if trendline_seen_count > 0 and not symbol_to_trendlines:
+        raise RuntimeError(
+            f"All {trendline_seen_count} LineToolTrendLine drawings failed parsing for layout {layout_id}; "
+            "refusing to overwrite drawings cache"
+        )
+
     if save_cache:
+        if raw_sources and not symbol_to_trendlines and _read_cached_drawings(cache_path, float("inf")) is not None:
+            logger.warning(
+                "Layout %s returned %d raw sources but 0 LineToolTrendLine drawings; preserving non-empty cache %s",
+                layout_id,
+                len(raw_sources),
+                cache_path,
+            )
+            return symbol_to_trendlines
         cache_payload = {
             "layout_id": layout_id,
             "updated_at": get_beijing_time_str(),
@@ -303,6 +378,20 @@ def get_layout_drawings(
     return symbol_to_trendlines
 
 
+def _is_recent_ts(ts_val: object, now_ts: float, max_age_sec: float) -> bool:
+    if ts_val is None or isinstance(ts_val, bool):
+        return False
+    try:
+        val = float(ts_val)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(val) or val <= 0:
+        return False
+    if val > now_ts + 86400 * 30:
+        return False
+    return (now_ts - val) <= max_age_sec
+
+
 def is_valid_15m_trendline(
     line: dict[str, Any],
     current_time: Optional[float] = None,
@@ -311,7 +400,8 @@ def is_valid_15m_trendline(
     """
     Validates canonical trendline dict:
     1. Interval MUST explicitly be '15' or '15M'.
-    2. Recency (server_update_time in seconds or t2) MUST exist and be within max_age_hours (default 72h).
+    2. Anchor recency (t2 / max(t1, t2)) MUST exist and be within max_age_hours (default 72h),
+       and if server_update_time is present it MUST also be within max_age_hours.
     """
     if not isinstance(line, dict):
         return False
@@ -323,27 +413,27 @@ def is_valid_15m_trendline(
     now_ts = current_time if current_time is not None else time.time()
     max_age_sec = max_age_hours * 3600.0
 
-    recency_sec: Optional[float] = None
     s_time = line.get("server_update_time")
-    if s_time is not None:
+    if s_time is not None and not _is_recent_ts(s_time, now_ts, max_age_sec):
+        return False
+
+    t2 = line.get("t2")
+    t1 = line.get("t1")
+    anchor_ts: Optional[float] = None
+    if t2 is not None and not isinstance(t2, bool):
         try:
-            recency_sec = float(s_time)
+            anchor_ts = float(t2)
         except (TypeError, ValueError):
-            recency_sec = None
+            return False
+    if t1 is not None and not isinstance(t1, bool):
+        try:
+            t1_val = float(t1)
+        except (TypeError, ValueError):
+            return False
+        if anchor_ts is None or t1_val > anchor_ts:
+            anchor_ts = t1_val
 
-    if recency_sec is None or recency_sec <= 0:
-        t2 = line.get("t2")
-        if t2 is not None:
-            try:
-                recency_sec = float(t2)
-            except (TypeError, ValueError):
-                recency_sec = None
-
-    if recency_sec is None or recency_sec <= 0:
-        return False
-    if recency_sec > now_ts + 86400 * 30:
-        return False
-    return (now_ts - recency_sec) <= max_age_sec
+    return _is_recent_ts(anchor_ts, now_ts, max_age_sec)
 
 
 def calculate_log_resistance(
@@ -477,7 +567,15 @@ def check_symbol_breakout(
         prev_close = float(p_candle["close"])
         if target_time is not None:
             eval_t = int(target_time)
-            prev_t = int(p_candle["close_time"]) if at_close else int(p_candle["open_time"])
+            step = (
+                (int(candle["close_time"]) - int(p_candle["close_time"]))
+                if at_close
+                else (candle_ts - int(p_candle["open_time"]))
+            )
+            if step > 0:
+                prev_t = eval_t - step
+            else:
+                prev_t = int(p_candle["close_time"]) if at_close else int(p_candle["open_time"])
         elif at_close:
             eval_t = int(candle["close_time"])
             prev_t = int(p_candle["close_time"])
@@ -489,14 +587,17 @@ def check_symbol_breakout(
 
     candle_time_str = str(candle.get("candle_time") or get_beijing_time_str(candle_ts)[:16])
 
+    def _log_projection(target_ts: int) -> float:
+        return math.log(p1) + ((target_ts - t1) / (t2 - t1)) * math.log(p2 / p1)
+
     try:
         res_price = calculate_log_resistance(p1=p1, t1=t1, p2=p2, t2=t2, target_t=eval_t)
-        prev_res = calculate_log_resistance(p1=p1, t1=t1, p2=p2, t2=t2, target_t=prev_t)
     except ValueError:
+        is_runaway_overflow = _log_projection(eval_t) < -50.0
         return {
             "is_breakout": False,
             "is_crossover": False,
-            "is_runaway": True,
+            "is_runaway": is_runaway_overflow,
             "close_price": close_price,
             "res_price": 0.0,
             "prev_close": prev_close,
@@ -516,7 +617,14 @@ def check_symbol_breakout(
             "t2": t2,
         }
 
-    is_crossover = prev_close <= prev_res and close_price > res_price
+    try:
+        prev_res: Optional[float] = calculate_log_resistance(p1=p1, t1=t1, p2=p2, t2=t2, target_t=prev_t)
+    except ValueError:
+        prev_res = None
+        is_crossover = _log_projection(prev_t) > 50.0 and close_price > res_price
+    else:
+        is_crossover = prev_close <= prev_res and close_price > res_price
+
     is_runaway = close_price > res_price * 1.25
     is_breakout = is_crossover and not is_runaway
     pct = round(((close_price - res_price) / res_price) * 100.0, 4)

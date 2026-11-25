@@ -138,10 +138,25 @@ def open_sqlite_connection(
         target.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(target, timeout=timeout)
     try:
+        busy_ms = max(0, int(timeout * 1000))
         # Set busy_timeout before PRAGMA journal_mode=WAL so initial WAL switch also honors timeout.
-        conn.execute("PRAGMA busy_timeout=15000")
+        conn.execute(f"PRAGMA busy_timeout={busy_ms}")
         if not readonly:
-            conn.execute("PRAGMA journal_mode=WAL")
+            row = conn.execute("PRAGMA journal_mode").fetchone()
+            current_mode = str(row[0]).lower() if row and row[0] is not None else ""
+            if current_mode != "wal":
+                deadline = time.monotonic() + max(timeout, 0.0)
+                delay = 0.01
+                while True:
+                    try:
+                        conn.execute("PRAGMA journal_mode=WAL")
+                        break
+                    except sqlite3.OperationalError as exc:
+                        err_msg = str(exc).lower()
+                        if ("locked" not in err_msg and "busy" not in err_msg) or time.monotonic() >= deadline:
+                            raise
+                        time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
+                        delay = min(delay * 1.5, 0.1)
             conn.execute("PRAGMA synchronous=NORMAL")
         return conn
     except Exception:

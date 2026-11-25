@@ -149,8 +149,26 @@ def fetch_json_with_retry(
 
 
 def _parse_candle_row(symbol: str, interval: str, row: Sequence[Any]) -> dict[str, Any]:
-    open_ms = int(row[0])
-    close_ms = int(row[6])
+    if isinstance(row, (str, bytes)) or not isinstance(row, Sequence):
+        raise BinanceAPIError(
+            f"Malformed kline row for {symbol} ({interval}): {row!r}",
+            code="INVALID_RESPONSE",
+            endpoint="/fapi/v1/klines",
+        )
+    try:
+        open_ms = int(row[0])
+        close_ms = int(row[6])
+        open_p = float(row[1])
+        high_p = float(row[2])
+        low_p = float(row[3])
+        close_p = float(row[4])
+        vol = float(row[5])
+    except (IndexError, TypeError, ValueError) as exc:
+        raise BinanceAPIError(
+            f"Malformed kline row for {symbol} ({interval}): {row!r}",
+            code="INVALID_RESPONSE",
+            endpoint="/fapi/v1/klines",
+        ) from exc
     open_sec = open_ms // 1000
     close_sec = close_ms // 1000
     return {
@@ -160,11 +178,11 @@ def _parse_candle_row(symbol: str, interval: str, row: Sequence[Any]) -> dict[st
         "close_time_ms": close_ms,
         "open_time": open_sec,
         "close_time": close_sec,
-        "open": float(row[1]),
-        "high": float(row[2]),
-        "low": float(row[3]),
-        "close": float(row[4]),
-        "volume": float(row[5]),
+        "open": open_p,
+        "high": high_p,
+        "low": low_p,
+        "close": close_p,
+        "volume": vol,
         "candle_time": get_beijing_time_str(open_sec)[:16],
         "is_closed": True,
     }
@@ -187,7 +205,9 @@ class BinanceFuturesClient:
         self.timeout = timeout
         self.time_sync_ttl = float(time_sync_ttl)
         self._time_lock = threading.Lock()
+        self._time_sync_lock = threading.Lock()
         self._time_offset_ms: Optional[int] = None
+        self._synced_server_ms: Optional[int] = None
         self._time_synced_at: float = 0.0
 
     @classmethod
@@ -210,42 +230,64 @@ class BinanceFuturesClient:
             hashlib.sha256,
         ).hexdigest()
 
+    def _cached_server_time_locked(self, now_mono: float) -> Optional[int]:
+        if (now_mono - self._time_synced_at) >= self.time_sync_ttl:
+            return None
+        if self._synced_server_ms is not None:
+            return self._synced_server_ms + int((now_mono - self._time_synced_at) * 1000)
+        if self._time_offset_ms is not None:
+            return int(time.time() * 1000) + self._time_offset_ms
+        return None
+
     def get_server_time(self, force_sync: bool = False) -> int:
         """
-        获取币安服务器毫秒级时间戳（线程安全实例级 10 分钟偏移缓存）。
-        网络请求在锁外执行；拉取或解析失败时抛出 BinanceAPIError。
+        获取币安服务器毫秒级时间戳（线程安全实例级单调时钟增量缓存，单飞防并发惊群）。
+        拉取或解析失败时抛出 BinanceAPIError。
         """
         with self._time_lock:
-            now_mono = time.monotonic()
-            if (
-                not force_sync
-                and self._time_offset_ms is not None
-                and (now_mono - self._time_synced_at) < self.time_sync_ttl
-            ):
-                return int(time.time() * 1000) + self._time_offset_ms
+            entry_synced_at = self._time_synced_at
+            if not force_sync:
+                cached = self._cached_server_time_locked(time.monotonic())
+                if cached is not None:
+                    return cached
 
-        url = f"{self.base_url}{SERVER_TIME_ENDPOINT}"
-        t0 = int(time.time() * 1000)
-        data = fetch_json_with_retry(url, timeout=5, max_retries=2)
-        t1 = int(time.time() * 1000)
-        if not isinstance(data, dict) or "serverTime" not in data:
-            raise BinanceAPIError(
-                f"Missing serverTime in {SERVER_TIME_ENDPOINT} response: {data}",
-                code="INVALID_RESPONSE",
-                endpoint=SERVER_TIME_ENDPOINT,
-            )
-        try:
-            server_ms = int(data["serverTime"])
-        except (TypeError, ValueError) as e:
-            raise BinanceAPIError(
-                f"Invalid serverTime in {SERVER_TIME_ENDPOINT}: {data['serverTime']}",
-                code="INVALID_RESPONSE",
-                endpoint=SERVER_TIME_ENDPOINT,
-            ) from e
-        with self._time_lock:
-            self._time_offset_ms = server_ms - (t0 + t1) // 2
-            self._time_synced_at = time.monotonic()
-        return server_ms
+        with self._time_sync_lock:
+            with self._time_lock:
+                now_mono = time.monotonic()
+                if not force_sync:
+                    cached = self._cached_server_time_locked(now_mono)
+                    if cached is not None:
+                        return cached
+                elif self._time_synced_at > entry_synced_at:
+                    cached = self._cached_server_time_locked(now_mono)
+                    if cached is not None:
+                        return cached
+
+            url = f"{self.base_url}{SERVER_TIME_ENDPOINT}"
+            m0 = time.monotonic()
+            t0 = int(time.time() * 1000)
+            data = fetch_json_with_retry(url, timeout=5, max_retries=2)
+            m1 = time.monotonic()
+            t1 = int(time.time() * 1000)
+            if not isinstance(data, dict) or "serverTime" not in data:
+                raise BinanceAPIError(
+                    f"Missing serverTime in {SERVER_TIME_ENDPOINT} response: {data}",
+                    code="INVALID_RESPONSE",
+                    endpoint=SERVER_TIME_ENDPOINT,
+                )
+            try:
+                server_ms = int(data["serverTime"])
+            except (TypeError, ValueError) as e:
+                raise BinanceAPIError(
+                    f"Invalid serverTime in {SERVER_TIME_ENDPOINT}: {data['serverTime']}",
+                    code="INVALID_RESPONSE",
+                    endpoint=SERVER_TIME_ENDPOINT,
+                ) from e
+            with self._time_lock:
+                self._synced_server_ms = server_ms
+                self._time_offset_ms = server_ms - (t0 + t1) // 2
+                self._time_synced_at = (m0 + m1) / 2.0
+            return server_ms
 
     def _send_signed_request(
         self,
@@ -308,10 +350,21 @@ class BinanceFuturesClient:
                 raise api_err from e
 
             if isinstance(data, dict) and data.get("code") is not None:
+                raw_code = data["code"]
+                if isinstance(raw_code, bool):
+                    raise BinanceAPIError(
+                        f"{endpoint} returned malformed error code {raw_code!r}: {data.get('msg') or ''}",
+                        code="INVALID_RESPONSE",
+                        endpoint=endpoint,
+                    )
                 try:
-                    b_code = int(data["code"])
-                except (TypeError, ValueError):
-                    b_code = 0
+                    b_code = int(raw_code)
+                except (TypeError, ValueError) as exc:
+                    raise BinanceAPIError(
+                        f"{endpoint} returned malformed error code {raw_code!r}: {data.get('msg') or ''}",
+                        code="INVALID_RESPONSE",
+                        endpoint=endpoint,
+                    ) from exc
                 if b_code < 0:
                     if b_code == -1021 and not time_resynced and attempt < max_retries:
                         time_resynced = True
@@ -492,7 +545,14 @@ class BinanceFuturesClient:
                 endpoint="/fapi/v1/klines",
             )
 
-        closed_candles = [c for c in klines_data if int(c[6]) <= server_time_ms]
+        try:
+            closed_candles = [c for c in klines_data if int(c[6]) <= server_time_ms]
+        except (IndexError, TypeError, ValueError) as exc:
+            raise BinanceAPIError(
+                f"Malformed kline row for {clean_sym} ({interval}): {klines_data!r}",
+                code="INVALID_RESPONSE",
+                endpoint="/fapi/v1/klines",
+            ) from exc
         if not closed_candles:
             raise BinanceAPIError(
                 f"No confirmed closed candle for {clean_sym} ({interval})",
@@ -600,3 +660,8 @@ def get_closed_15m_candle(
 def fetch_ticker_prices(symbols: Optional[Sequence[str]] = None) -> Dict[str, float]:
     """共享公共批量最新成交价拉取辅助函数。"""
     return _get_public_client().get_ticker_prices(symbols=symbols)
+
+
+def get_server_time_ms(force_sync: bool = False) -> int:
+    """共享公共币安服务器毫秒级时间戳获取函数。"""
+    return _get_public_client().get_server_time(force_sync=force_sync)

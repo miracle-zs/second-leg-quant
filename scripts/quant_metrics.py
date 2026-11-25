@@ -39,13 +39,14 @@ def _resolve_trade_beijing_date(trade: Mapping[str, Any]) -> Optional[str]:
     c_at = trade.get("closed_at")
     if c_at and str(c_at).strip() != "--":
         ts = parse_to_timestamp(c_at)
-        if ts is not None:
-            return get_beijing_time_str(ts)[:10]
-        raw_str = str(c_at).strip()
-        if len(raw_str) >= 10 and raw_str[4] == "-" and raw_str[7] == "-":
-            return raw_str[:10]
-    ts = parse_to_timestamp(trade.get("closed_ts"))
-    if ts is not None:
+        if ts is None:
+            raise ValueError(f"Invalid trade closed_at timestamp: {c_at!r}")
+        return get_beijing_time_str(ts)[:10]
+    raw_closed_ts = trade.get("closed_ts")
+    if raw_closed_ts is not None and str(raw_closed_ts).strip() not in ("", "--"):
+        ts = parse_to_timestamp(raw_closed_ts)
+        if ts is None:
+            raise ValueError(f"Invalid trade closed_ts timestamp: {raw_closed_ts!r}")
         return get_beijing_time_str(ts)[:10]
     return None
 
@@ -301,6 +302,54 @@ def build_trade_daily_pnl(
     return daily_pnl
 
 
+def _recompute_db_curve_drawdowns(
+    equity_curve: List[dict],
+    initial_equity: float,
+    effective_transfers: Sequence[Tuple[int, float]],
+) -> Tuple[float, float, float, float]:
+    """Recompute transfer-adjusted cumulative PnL and drawdowns across all points."""
+    net_flow = 0.0
+    transfer_idx = 0
+    peak_adjusted = initial_equity
+    peak_capital_base = initial_equity
+    last_dd_usd = 0.0
+    last_dd_pct = 0.0
+
+    for pt in equity_curve:
+        pt_ts = int(pt["timestamp"])
+        while transfer_idx < len(effective_transfers) and effective_transfers[transfer_idx][0] <= pt_ts:
+            net_flow += effective_transfers[transfer_idx][1]
+            transfer_idx += 1
+        adjusted_equity = float(pt["equity"]) - net_flow
+        peak_adjusted = max(peak_adjusted, adjusted_equity)
+        stored_peak = pt.get("peak_adjusted_equity")
+        if stored_peak is not None:
+            peak_adjusted = max(peak_adjusted, float(stored_peak))
+        peak_capital_base = max(peak_capital_base, peak_adjusted, initial_equity + max(0.0, net_flow))
+        stored_cap = pt.get("peak_capital_base")
+        if stored_cap is not None:
+            peak_capital_base = max(peak_capital_base, float(stored_cap))
+
+        drawdown = max(0.0, peak_adjusted - adjusted_equity)
+        dd_usd = round(drawdown, 2)
+        dd_pct = round(drawdown / peak_capital_base * 100.0, 2) if peak_capital_base > 0 else 0.0
+        pt["cumulative_pnl"] = round(adjusted_equity - initial_equity, 2)
+        pt["drawdown_usd"] = dd_usd
+        pt["drawdown_pct"] = dd_pct
+        if "peak_adjusted_equity" in pt:
+            pt["peak_adjusted_equity"] = peak_adjusted
+        if "peak_capital_base" in pt:
+            pt["peak_capital_base"] = peak_capital_base
+        if "bucket_max_dd_usd" in pt:
+            pt["bucket_max_dd_usd"] = max(float(pt["bucket_max_dd_usd"]), dd_usd)
+        if "bucket_max_dd_pct" in pt:
+            pt["bucket_max_dd_pct"] = max(float(pt["bucket_max_dd_pct"]), dd_pct)
+        last_dd_usd = dd_usd
+        last_dd_pct = dd_pct
+
+    return peak_adjusted, peak_capital_base, last_dd_usd, last_dd_pct
+
+
 def build_db_equity_curve(
     recording: Mapping[str, Any],
     recording_start_ms: Optional[int],
@@ -312,6 +361,9 @@ def build_db_equity_curve(
 ) -> Tuple[List[dict], float]:
     """Build compacted, transfer-adjusted equity curve from SQLite observations."""
     initial_equity = float(recording["initial_equity"])
+    start_ms = int(recording["start_ms"])
+    effective_transfers = [(ts, amt) for ts, amt in transfers if ts > start_ms]
+
     raw_mb = account_info.get("totalMarginBalance")
     equity = float(raw_mb) if raw_mb is not None else float(account_info["totalWalletBalance"])
     raw_wb = account_info.get("totalWalletBalance")
@@ -320,7 +372,7 @@ def build_db_equity_curve(
 
     if recording_start_ms is not None:
         equity_curve: List[dict] = [{
-            "timestamp": recording["start_ms"],
+            "timestamp": start_ms,
             "datetime": recording["started_at"],
             "equity": round(initial_equity, 2),
             "cash": round(initial_equity, 2),
@@ -333,7 +385,7 @@ def build_db_equity_curve(
         prev_curve = list((previous_report or {}).get("equity_curve") or [])
         if not prev_curve:
             equity_curve = [{
-                "timestamp": recording["start_ms"],
+                "timestamp": start_ms,
                 "datetime": recording["started_at"],
                 "equity": round(initial_equity, 2),
                 "cash": round(initial_equity, 2),
@@ -345,43 +397,35 @@ def build_db_equity_curve(
         else:
             equity_curve = [dict(pt) for pt in prev_curve]
 
-    new_point = {
+    new_point: dict[str, Any] = {
         "timestamp": current_ms,
         "datetime": get_beijing_time_str(current_ms / 1000.0),
         "equity": round(equity, 2),
         "cash": round(wallet_balance, 2),
         "event": "币安账户快照",
     }
-    if (
+    same_bucket = (
         len(equity_curve) >= 2
         and equity_curve[-1].get("event") == "币安账户快照"
         and (int(equity_curve[-1]["timestamp"]) // EQUITY_COMPACTION_BUCKET_MS)
         == (current_ms // EQUITY_COMPACTION_BUCKET_MS)
-    ):
-        equity_curve[-1] = new_point
-    elif equity_curve and int(equity_curve[-1]["timestamp"]) == current_ms:
+    )
+    same_ts = bool(equity_curve) and int(equity_curve[-1]["timestamp"]) == current_ms
+    if same_bucket or same_ts:
+        prev_pt = equity_curve[-1]
+        prev_peak_adj, prev_peak_cap, prev_dd_usd, prev_dd_pct = _recompute_db_curve_drawdowns(
+            equity_curve, initial_equity, effective_transfers
+        )
+        new_point["peak_adjusted_equity"] = prev_peak_adj
+        new_point["peak_capital_base"] = prev_peak_cap
+        new_point["bucket_max_dd_usd"] = max(prev_dd_usd, float(prev_pt.get("bucket_max_dd_usd") or 0.0))
+        new_point["bucket_max_dd_pct"] = max(prev_dd_pct, float(prev_pt.get("bucket_max_dd_pct") or 0.0))
         equity_curve[-1] = new_point
     else:
         equity_curve.append(new_point)
 
-    net_flow = 0.0
-    transfer_idx = 0
-    peak_adjusted = initial_equity
-    peak_capital_base = initial_equity
-
-    for pt in equity_curve:
-        while transfer_idx < len(transfers) and transfers[transfer_idx][0] <= int(pt["timestamp"]):
-            net_flow += transfers[transfer_idx][1]
-            transfer_idx += 1
-        adjusted_equity = float(pt["equity"]) - net_flow
-        peak_adjusted = max(peak_adjusted, adjusted_equity)
-        peak_capital_base = max(peak_capital_base, peak_adjusted, initial_equity + max(0.0, net_flow))
-        drawdown = max(0.0, peak_adjusted - adjusted_equity)
-        pt["cumulative_pnl"] = round(adjusted_equity - initial_equity, 2)
-        pt["drawdown_usd"] = round(drawdown, 2)
-        pt["drawdown_pct"] = round(drawdown / peak_capital_base * 100.0, 2) if peak_capital_base > 0 else 0.0
-
-    total_net_flow = sum(amt for _, amt in transfers)
+    _recompute_db_curve_drawdowns(equity_curve, initial_equity, effective_transfers)
+    total_net_flow = sum(amt for _, amt in effective_transfers)
     return equity_curve, total_net_flow
 
 
@@ -572,8 +616,9 @@ def calculate_quant_risk_metrics(
     known_durations = [
         int(t["duration_seconds"])
         for t in normalized_trades
-        if t.get("entry_time") != "--"
-        and (t.get("entry_time") not in (None, "") or int(t.get("duration_seconds") or 0) > 0)
+        if t.get("duration_seconds") is not None
+        and t.get("entry_time") != "--"
+        and (t.get("entry_time") not in (None, "") or int(t["duration_seconds"]) > 0)
     ]
     if known_durations:
         avg_hold_sec = int(sum(known_durations) / len(known_durations))
@@ -588,8 +633,14 @@ def calculate_quant_risk_metrics(
 
     if equity_curve_override is not None:
         equity_curve = equity_curve_override
-        max_drawdown_usd = max((float(pt.get("drawdown_usd") or 0.0) for pt in equity_curve), default=0.0)
-        max_drawdown_pct = max((float(pt.get("drawdown_pct") or 0.0) for pt in equity_curve), default=0.0)
+        max_drawdown_usd = max(
+            (max(float(pt.get("drawdown_usd") or 0.0), float(pt.get("bucket_max_dd_usd") or 0.0)) for pt in equity_curve),
+            default=0.0,
+        )
+        max_drawdown_pct = max(
+            (max(float(pt.get("drawdown_pct") or 0.0), float(pt.get("bucket_max_dd_pct") or 0.0)) for pt in equity_curve),
+            default=0.0,
+        )
     else:
         equity_curve, max_drawdown_usd, max_drawdown_pct = build_trade_equity_curve(
             priced_trades, initial_capital, total_unrealized_pnl
@@ -664,7 +715,15 @@ def build_pnl_distribution(trade_history: Sequence[Mapping[str, Any]]) -> Dict[s
         pct_val = float(pct)
         placed = False
         for b in bins_def:
-            if b["min"] <= pct_val < b["max"] or (b["max"] == 999999.0 and pct_val >= b["min"]):
+            if b["label"] == "保本 (0%)":
+                in_bin = b["min"] <= pct_val <= b["max"]
+            elif b["label"] == "0% ~ +2%":
+                in_bin = b["min"] < pct_val < b["max"]
+            elif b["max"] == 999999.0:
+                in_bin = pct_val >= b["min"]
+            else:
+                in_bin = b["min"] <= pct_val < b["max"]
+            if in_bin:
                 b["count"] += 1
                 b["trades"].append(t["symbol"])
                 placed = True
