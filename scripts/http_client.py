@@ -10,6 +10,7 @@ import atexit
 from collections import deque
 import http.client
 import json
+import math
 import socket
 import threading
 import time
@@ -56,7 +57,7 @@ def _parse_retry_after(raw: Optional[str]) -> Optional[float]:
         seconds = float(raw.strip())
     except ValueError:
         return None
-    if seconds <= 0.0:
+    if not math.isfinite(seconds) or seconds <= 0.0:
         return None
     return min(seconds, _MAX_RETRY_AFTER_SEC)
 
@@ -194,7 +195,7 @@ class HttpClient:
                 return resp.status, retry_after, raw
             except _RECONNECT_ERRORS:
                 _close_quietly(conn)
-                if from_pool and not reconnected:
+                if from_pool and not reconnected and method in ("GET", "HEAD", "OPTIONS"):
                     reconnected = True
                     from_pool = False
                     scheme, host, port = key
@@ -228,26 +229,19 @@ class HttpClient:
         req_body = body.encode("utf-8") if isinstance(body, str) else body
         retry_set = frozenset(retry_statuses)
 
-        last_err: Optional[Exception] = None
-        last_status: Optional[int] = None
-        last_body = ""
-
         for attempt in range(max_retries + 1):
             try:
                 status, retry_after, raw = self._send_once(
                     key, path, method.upper(), req_headers, req_body, float(timeout)
                 )
             except (http.client.HTTPException, OSError, TimeoutError, socket.timeout) as exc:
-                last_err = exc
-                last_status = None
-                last_body = str(exc)
                 if attempt < max_retries:
                     time.sleep(backoff_base * (2 ** attempt))
                     continue
                 raise HttpError(
                     f"Request failed after {max_retries + 1} attempts ({url}): {exc}",
                     status_code=None,
-                    body=last_body,
+                    body=str(exc),
                     url=url,
                 ) from exc
 
@@ -255,8 +249,6 @@ class HttpClient:
                 return raw
 
             err_body = raw.decode("utf-8", errors="replace")
-            last_status = status
-            last_body = err_body
             if status not in retry_set or attempt == max_retries:
                 raise HttpError(
                     f"HTTP {status} from {url}: {err_body}",
@@ -271,12 +263,7 @@ class HttpClient:
                 delay = max(delay, retry_after)
             time.sleep(delay)
 
-        raise HttpError(
-            f"Request failed after {max_retries + 1} attempts ({url}): {last_err}",
-            status_code=last_status,
-            body=last_body,
-            url=url,
-        )
+        raise AssertionError("unreachable")
 
     def request_json(
         self,

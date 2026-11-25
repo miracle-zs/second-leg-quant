@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import math
 import re
 import sys
 import time
@@ -25,7 +26,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from binance_client import BINANCE_FUTURES_BASE_URL, get_server_time_ms  # noqa: E402
+from binance_client import BINANCE_FUTURES_BASE_URL, BinanceAPIError, get_server_time_ms  # noqa: E402
 from config import (  # noqa: E402
     BEIJING_TZ,
     DEFAULT_DB_PATH,
@@ -134,8 +135,11 @@ def _fetch_cmc_batch(
         raise RuntimeError(f"Unexpected CMC response payload for batch {list(chunk[:3])}...: {res}")
     normalized: dict[str, dict[str, object]] = {}
     for sym_key, entry in res["data"].items():
-        if isinstance(entry, dict):
-            normalized[str(sym_key).upper()] = entry
+        if not isinstance(entry, dict):
+            raise RuntimeError(
+                f"Unexpected CMC quote entry for {sym_key!r}: expected dict, got {type(entry).__name__}"
+            )
+        normalized[str(sym_key).upper()] = entry
     return normalized
 
 
@@ -296,8 +300,14 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
             cs = c_obj.get("circulating_supply")
             if (
                 not isinstance(cmc_price, (int, float))
+                or isinstance(cmc_price, bool)
                 or not isinstance(mcap, (int, float))
+                or isinstance(mcap, bool)
                 or not isinstance(cs, (int, float))
+                or isinstance(cs, bool)
+                or not math.isfinite(float(cmc_price))
+                or not math.isfinite(float(mcap))
+                or not math.isfinite(float(cs))
                 or cmc_price <= 0
                 or mcap <= 0
                 or cs <= 0
@@ -407,9 +417,7 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
             if not isinstance(data, list):
                 raise RuntimeError(f"Unexpected klines response type for {sym}: {type(data).__name__}")
             now_ms = get_server_time_ms()
-            closed_bars = list(data)
-            while closed_bars and int(closed_bars[-1][6]) > now_ms:
-                closed_bars.pop()
+            closed_bars = [k for k in data if int(k[6]) <= now_ms]
             if len(closed_bars) < 10:
                 return sym, None, None, False, None
             closes = [float(k[4]) for k in closed_bars]
@@ -417,8 +425,10 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
             ema10 = calc_ema(closes, 10)
             if ema5 is None or ema10 is None:
                 return sym, None, None, False, None
+            if ema10 <= 0:
+                raise ValueError(f"Non-positive EMA10 for {sym}: {ema10}")
             is_bull = ema5 > ema10
-            spread = ((ema5 - ema10) / ema10) * 100 if ema10 > 0 else 0.0
+            spread = ((ema5 - ema10) / ema10) * 100
             return sym, round(ema5, 8), round(ema10, 8), is_bull, round(spread, 3)
 
         with ThreadPoolExecutor(max_workers=16) as executor:
@@ -428,7 +438,7 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
                 try:
                     res = fut.result()
                     kline_results[sym] = res[1:]
-                except Exception as exc:
+                except (HttpError, BinanceAPIError, RuntimeError, ValueError, TypeError, KeyError, IndexError) as exc:
                     kline_errors[sym] = str(exc)
 
         if kline_errors:

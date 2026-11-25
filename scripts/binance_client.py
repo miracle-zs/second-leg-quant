@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import sys
 import threading
 import time
@@ -62,13 +63,28 @@ class BinanceAPIError(RuntimeError):
         self.binance_code = binance_code
 
 
+def _strict_int(val: Any) -> int:
+    if isinstance(val, bool) or val is None:
+        raise TypeError(f"Expected integer, got {val!r}")
+    return int(val)
+
+
+def _finite_float(val: Any) -> float:
+    if isinstance(val, bool) or val is None:
+        raise TypeError(f"Expected float, got {val!r}")
+    num = float(val)
+    if not math.isfinite(num):
+        raise ValueError(f"Expected finite float, got {val!r}")
+    return num
+
+
 def _parse_binance_error_payload(body: str) -> tuple[Optional[int], str]:
     """Parse Binance JSON error payload `{"code": int, "msg": str}` when available."""
     try:
         parsed = json.loads(body)
     except ValueError:
         return None, ""
-    if not isinstance(parsed, dict) or parsed.get("code") is None:
+    if not isinstance(parsed, dict) or parsed.get("code") is None or isinstance(parsed.get("code"), bool):
         return None, ""
     try:
         return int(parsed["code"]), str(parsed.get("msg") or "")
@@ -156,13 +172,13 @@ def _parse_candle_row(symbol: str, interval: str, row: Sequence[Any]) -> dict[st
             endpoint="/fapi/v1/klines",
         )
     try:
-        open_ms = int(row[0])
-        close_ms = int(row[6])
-        open_p = float(row[1])
-        high_p = float(row[2])
-        low_p = float(row[3])
-        close_p = float(row[4])
-        vol = float(row[5])
+        open_ms = _strict_int(row[0])
+        close_ms = _strict_int(row[6])
+        open_p = _finite_float(row[1])
+        high_p = _finite_float(row[2])
+        low_p = _finite_float(row[3])
+        close_p = _finite_float(row[4])
+        vol = _finite_float(row[5])
     except (IndexError, TypeError, ValueError) as exc:
         raise BinanceAPIError(
             f"Malformed kline row for {symbol} ({interval}): {row!r}",
@@ -276,7 +292,9 @@ class BinanceFuturesClient:
                     endpoint=SERVER_TIME_ENDPOINT,
                 )
             try:
-                server_ms = int(data["serverTime"])
+                server_ms = _strict_int(data["serverTime"])
+                if server_ms <= 0:
+                    raise ValueError(f"Non-positive serverTime: {server_ms}")
             except (TypeError, ValueError) as e:
                 raise BinanceAPIError(
                     f"Invalid serverTime in {SERVER_TIME_ENDPOINT}: {data['serverTime']}",
@@ -484,9 +502,15 @@ class BinanceFuturesClient:
                     endpoint="/fapi/v1/ticker/price",
                 )
             sym = clean_symbol(item["symbol"])
+            if not sym:
+                raise BinanceAPIError(
+                    f"Empty symbol in /fapi/v1/ticker/price: {item}",
+                    code="INVALID_RESPONSE",
+                    endpoint="/fapi/v1/ticker/price",
+                )
             if wanted is None or sym in wanted:
                 try:
-                    prices[sym] = float(item["price"])
+                    prices[sym] = _finite_float(item["price"])
                 except (TypeError, ValueError) as e:
                     raise BinanceAPIError(
                         f"Invalid ticker price for {sym}: {item['price']}",
@@ -546,7 +570,7 @@ class BinanceFuturesClient:
             )
 
         try:
-            closed_candles = [c for c in klines_data if int(c[6]) <= server_time_ms]
+            closed_candles = [c for c in klines_data if _strict_int(c[6]) <= server_time_ms]
         except (IndexError, TypeError, ValueError) as exc:
             raise BinanceAPIError(
                 f"Malformed kline row for {clean_sym} ({interval}): {klines_data!r}",
@@ -580,20 +604,38 @@ class BinanceFuturesClient:
         active: List[dict] = []
         for p in raw_list:
             try:
-                amt = float(p["positionAmt"])
+                sym = clean_symbol(p["symbol"])
+                if not sym:
+                    raise ValueError(f"Empty position symbol: {p!r}")
+                amt = _finite_float(p["positionAmt"])
                 if amt == 0.0:
                     continue
                 if not include_short and amt < 0:
                     continue
-                sym = clean_symbol(p["symbol"])
-                entry_p = float(p["entryPrice"])
-                mark_p = float(p["markPrice"])
-                pnl = float(p["unRealizedProfit"])
-                leverage = int(p["leverage"])
-                raw_side = str(p.get("positionSide", "BOTH")).upper()
+                entry_p = _finite_float(p["entryPrice"])
+                mark_p = _finite_float(p["markPrice"])
+                pnl = _finite_float(p["unRealizedProfit"])
+                leverage = _strict_int(p["leverage"])
+                if "positionSide" in p:
+                    raw_ps = p["positionSide"]
+                    if not isinstance(raw_ps, str) or not raw_ps.strip():
+                        raise ValueError(f"Invalid positionSide: {raw_ps!r}")
+                    raw_side = raw_ps.strip().upper()
+                    if raw_side not in ("BOTH", "LONG", "SHORT"):
+                        raise ValueError(f"Unexpected positionSide: {raw_ps!r}")
+                else:
+                    raw_side = "BOTH"
                 side = raw_side if raw_side in ("LONG", "SHORT") else ("LONG" if amt > 0 else "SHORT")
-                update_time = int(p["updateTime"]) if p.get("updateTime") is not None else 0
-                notional = abs(float(p["notional"])) if p.get("notional") is not None else abs(amt * mark_p)
+                if "updateTime" in p:
+                    update_time: Optional[int] = _strict_int(p["updateTime"])
+                    if update_time < 0:
+                        raise ValueError(f"Negative updateTime: {update_time}")
+                else:
+                    update_time = None
+                if "notional" in p:
+                    notional = abs(_finite_float(p["notional"]))
+                else:
+                    notional = abs(amt * mark_p)
             except (KeyError, TypeError, ValueError) as e:
                 raise BinanceAPIError(
                     f"Malformed position payload in {POSITION_RISK_ENDPOINT}: {p}",

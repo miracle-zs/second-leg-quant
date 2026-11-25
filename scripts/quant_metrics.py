@@ -80,7 +80,12 @@ def compute_risk_ratios(
     if len(daily_pnl) < 2:
         return None, None, "NONE"
 
-    by_date = {str(d["date"]): d for d in daily_pnl if d.get("date")}
+    by_date: Dict[str, Mapping[str, Any]] = {}
+    for d in daily_pnl:
+        raw_date = d["date"]
+        if not isinstance(raw_date, str) or not raw_date.strip():
+            raise ValueError(f"Invalid daily_pnl date entry: {d!r}")
+        by_date[raw_date] = d
     sorted_dates = sorted(by_date.keys())
     if len(sorted_dates) < 2:
         return None, None, "NONE"
@@ -95,7 +100,8 @@ def compute_risk_ratios(
         entry = by_date.get(d_str)
         if entry is not None:
             day_net = float(entry["net_pnl"])
-            day_transfer = float(entry.get("net_transfer") or 0.0)
+            raw_transfer = entry.get("net_transfer")
+            day_transfer = float(raw_transfer) if raw_transfer is not None else 0.0
             raw_base = entry.get("capital_base")
             base_eq = float(raw_base) if raw_base is not None else (running_eq + max(0.0, day_transfer))
             ret = (day_net / base_eq) if base_eq > 0 else 0.0
@@ -129,15 +135,23 @@ def aggregate_income_ledger(income_list: Sequence[Mapping[str, Any]]) -> Dict[st
     transfers_by_date: Dict[str, float] = {}
 
     for item in income_list:
-        raw_time = item.get("time")
-        ts_ms = int(raw_time) if raw_time is not None else None
-        if ts_ms is not None:
-            min_ts_ms = ts_ms if min_ts_ms is None else min(min_ts_ms, ts_ms)
-            max_ts_ms = ts_ms if max_ts_ms is None else max(max_ts_ms, ts_ms)
+        raw_time = item["time"]
+        if isinstance(raw_time, bool) or raw_time is None:
+            raise ValueError(f"Invalid income time in record: {item!r}")
+        ts_ms = int(raw_time)
+        min_ts_ms = ts_ms if min_ts_ms is None else min(min_ts_ms, ts_ms)
+        max_ts_ms = ts_ms if max_ts_ms is None else max(max_ts_ms, ts_ms)
 
-        itype = item.get("incomeType")
+        itype = item["incomeType"]
+        if not isinstance(itype, str) or not itype:
+            raise ValueError(f"Invalid incomeType in record: {item!r}")
         asset = income_asset(item)
-        amount = float(item.get("income") or 0.0)
+        raw_income = item["income"]
+        if isinstance(raw_income, bool) or raw_income is None:
+            raise ValueError(f"Invalid income amount in record: {item!r}")
+        amount = float(raw_income)
+        if not math.isfinite(amount):
+            raise ValueError(f"Non-finite income amount in record: {item!r}")
 
         if asset != "USDT":
             if itype == "COMMISSION":
@@ -145,10 +159,9 @@ def aggregate_income_ledger(income_list: Sequence[Mapping[str, Any]]) -> Dict[st
             continue
 
         if itype == "TRANSFER":
-            t_ms = int(item["time"])
-            transfers.append((t_ms, amount))
+            transfers.append((ts_ms, amount))
             net_transfer_usdt += amount
-            d_str = get_beijing_time_str(t_ms / 1000.0)[:10]
+            d_str = get_beijing_time_str(ts_ms / 1000.0)[:10]
             transfers_by_date[d_str] = transfers_by_date.get(d_str, 0.0) + amount
         elif itype == "FUNDING_FEE":
             funding_fee_usdt += amount
@@ -156,8 +169,7 @@ def aggregate_income_ledger(income_list: Sequence[Mapping[str, Any]]) -> Dict[st
             ledger_fee_usdt += -amount
 
         if itype in ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE"):
-            t_ms = int(item["time"])
-            d_str = get_beijing_time_str(t_ms / 1000.0)[:10]
+            d_str = get_beijing_time_str(ts_ms / 1000.0)[:10]
             bucket = daily_income.setdefault(
                 d_str, {"realized_pnl": 0.0, "fee": 0.0, "funding_fee": 0.0}
             )
@@ -198,10 +210,19 @@ def build_trade_equity_curve(
     max_dd_pct = 0.0
 
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    first_ts = None
+    first_ts: Optional[int] = None
     if sorted_trades:
-        first_ts = sorted_trades[0].get("entry_ts") or sorted_trades[0].get("closed_ts")
-    base_ts = int(first_ts if first_ts is not None else current_ms) - 3600 * 1000
+        first_t = sorted_trades[0]
+        raw_entry_ts = first_t.get("entry_ts")
+        if raw_entry_ts is not None:
+            first_ts = int(raw_entry_ts)
+        elif first_t.get("closed_ts") is not None:
+            first_ts = int(first_t["closed_ts"])
+        elif first_t.get("closed_at") not in (None, "--", ""):
+            parsed_first = parse_to_timestamp(first_t["closed_at"])
+            if parsed_first is not None:
+                first_ts = int(parsed_first * 1000)
+    base_ts = (first_ts if first_ts is not None else current_ms) - 3600 * 1000
     equity_curve.append({
         "timestamp": base_ts,
         "datetime": get_beijing_time_str(base_ts / 1000.0),
@@ -224,8 +245,26 @@ def build_trade_equity_curve(
         max_dd_pct = max(max_dd_pct, dd_pct)
 
         sign = "+" if net_pnl >= 0 else ""
-        c_ts = int(t["closed_ts"]) if t.get("closed_ts") is not None else current_ms
-        c_at = t.get("closed_at") if t.get("closed_at") not in (None, "--") else get_beijing_time_str(c_ts / 1000.0)
+        raw_c_ts = t.get("closed_ts")
+        if raw_c_ts is not None:
+            if isinstance(raw_c_ts, bool):
+                raise ValueError(f"Invalid boolean closed_ts in trade: {t!r}")
+            c_ts = int(raw_c_ts)
+        else:
+            c_at_raw = t.get("closed_at")
+            parsed_c = parse_to_timestamp(c_at_raw) if c_at_raw not in (None, "--", "") else None
+            if parsed_c is None:
+                raise ValueError(f"Trade missing valid closed_ts/closed_at for equity curve: {t!r}")
+            c_ts = int(parsed_c * 1000)
+        c_at = (
+            str(t["closed_at"])
+            if t.get("closed_at") not in (None, "--", "")
+            else get_beijing_time_str(c_ts / 1000.0)
+        )
+        sym = str(t["symbol"]).strip()
+        close_reason = str(t["close_reason"]).strip()
+        if not sym or not close_reason:
+            raise ValueError(f"Trade missing symbol or close_reason for equity curve: {t!r}")
         equity_curve.append({
             "timestamp": c_ts,
             "datetime": c_at,
@@ -234,7 +273,7 @@ def build_trade_equity_curve(
             "cumulative_pnl": round(running_cash - initial_capital, 2),
             "drawdown_usd": dd_usd,
             "drawdown_pct": dd_pct,
-            "event": f"平仓 {t.get('symbol', 'UNKNOWN')} ({sign}{net_pnl:.2f} USDT, {t.get('close_reason', '平仓')})",
+            "event": f"平仓 {sym} ({sign}{net_pnl:.2f} USDT, {close_reason})",
         })
 
     current_eq = running_cash + total_unrealized_pnl
@@ -364,10 +403,8 @@ def build_db_equity_curve(
     start_ms = int(recording["start_ms"])
     effective_transfers = [(ts, amt) for ts, amt in transfers if ts > start_ms]
 
-    raw_mb = account_info.get("totalMarginBalance")
-    equity = float(raw_mb) if raw_mb is not None else float(account_info["totalWalletBalance"])
-    raw_wb = account_info.get("totalWalletBalance")
-    wallet_balance = float(raw_wb) if raw_wb is not None else equity
+    equity = float(account_info["totalMarginBalance"])
+    wallet_balance = float(account_info["totalWalletBalance"])
     current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
 
     if recording_start_ms is not None:
@@ -527,7 +564,9 @@ def calculate_quant_risk_metrics(
             t_copy["outcome"] = "UNKNOWN"
             normalized_trades.append(t_copy)
             continue
-        net_pnl = float(raw_net) if raw_net is not None else float(raw_realized) - float(t.get("fee") or 0.0)
+        raw_fee = t.get("fee")
+        fee_val = float(raw_fee) if raw_fee is not None else 0.0
+        net_pnl = float(raw_net) if raw_net is not None else float(raw_realized) - fee_val
         t_copy["net_pnl"] = round(net_pnl, 4)
         t_copy["outcome"] = classify_outcome(net_pnl)
         normalized_trades.append(t_copy)
@@ -542,18 +581,22 @@ def calculate_quant_risk_metrics(
     loss_count = len(losing_trades)
     breakeven_count = len(breakeven_trades)
 
-    cumulative_realized_pnl = round(sum(float(t.get("realized_pnl") or 0.0) for t in priced_trades), 4)
-    total_fee = round(sum(float(t.get("fee") or 0.0) for t in priced_trades), 4)
+    cumulative_realized_pnl = round(
+        sum(float(t["realized_pnl"]) if t.get("realized_pnl") is not None else 0.0 for t in priced_trades), 4
+    )
+    total_fee = round(
+        sum(float(t["fee"]) if t.get("fee") is not None else 0.0 for t in priced_trades), 4
+    )
     net_realized_pnl = round(sum(float(t["net_pnl"]) for t in priced_trades), 4)
 
     total_unrealized_pnl = round(sum(float(p["unrealized_pnl"]) for p in active_positions), 4)
     total_position_margin = round(sum(float(p["initial_margin"]) for p in active_positions), 4)
 
-    if account_info and isinstance(account_info, Mapping):
-        raw_wb = account_info.get("totalWalletBalance")
-        wallet_balance = float(raw_wb) if raw_wb is not None else 0.0
-        raw_mb = account_info.get("totalMarginBalance")
-        total_equity = float(raw_mb) if raw_mb is not None else (wallet_balance + total_unrealized_pnl)
+    if account_info is not None:
+        if not isinstance(account_info, Mapping):
+            raise TypeError(f"account_info must be a Mapping, got {type(account_info).__name__}")
+        wallet_balance = float(account_info["totalWalletBalance"])
+        total_equity = float(account_info["totalMarginBalance"])
         raw_avail = account_info.get("availableBalance")
         available_margin = (
             float(raw_avail) if raw_avail is not None else max(0.0, total_equity - total_position_margin)
@@ -634,11 +677,23 @@ def calculate_quant_risk_metrics(
     if equity_curve_override is not None:
         equity_curve = equity_curve_override
         max_drawdown_usd = max(
-            (max(float(pt.get("drawdown_usd") or 0.0), float(pt.get("bucket_max_dd_usd") or 0.0)) for pt in equity_curve),
+            (
+                max(
+                    float(pt["drawdown_usd"]),
+                    float(pt["bucket_max_dd_usd"]) if pt.get("bucket_max_dd_usd") is not None else 0.0,
+                )
+                for pt in equity_curve
+            ),
             default=0.0,
         )
         max_drawdown_pct = max(
-            (max(float(pt.get("drawdown_pct") or 0.0), float(pt.get("bucket_max_dd_pct") or 0.0)) for pt in equity_curve),
+            (
+                max(
+                    float(pt["drawdown_pct"]),
+                    float(pt["bucket_max_dd_pct"]) if pt.get("bucket_max_dd_pct") is not None else 0.0,
+                )
+                for pt in equity_curve
+            ),
             default=0.0,
         )
     else:

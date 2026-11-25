@@ -79,12 +79,14 @@ def load_dotenv(env_path: Optional[Path] = None) -> dict[str, str]:
         with open(target, "r", encoding="utf-8") as f:
             for lineno, line in enumerate(f, start=1):
                 stripped = line.strip()
-                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                if not stripped or stripped.startswith("#"):
                     continue
                 if stripped.startswith("export "):
                     stripped = stripped[7:].strip()
-                    if "=" not in stripped:
-                        continue
+                if "=" not in stripped:
+                    raise ValueError(
+                        f"Invalid .env line {lineno} in {target}: missing '=' in {line.strip()!r}"
+                    )
                 k, v = stripped.split("=", 1)
                 key = k.strip()
                 if key:

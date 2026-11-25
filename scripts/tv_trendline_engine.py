@@ -73,31 +73,32 @@ def get_server_time_ms() -> int:
     return _SERVER_TIME_CLIENT.get_server_time()
 
 
-def _extract_jwt_exp(token: str, fallback_exp: int) -> int:
+def _extract_jwt_exp(token: str) -> int:
     parts = token.split(".")
     if len(parts) != 3:
-        return fallback_exp
+        raise ValueError(f"Invalid JWT token format: expected 3 segments, got {len(parts)}")
     try:
         padded = parts[1] + "=" * (-len(parts[1]) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-        exp = payload.get("exp") if isinstance(payload, dict) else None
-        if isinstance(exp, (int, float)) and exp > 0:
-            return int(exp)
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
-        pass
-    return fallback_exp
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Corrupt JWT payload: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"JWT payload must be a JSON object, got {type(payload).__name__}")
+    exp = payload.get("exp")
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not math.isfinite(exp) or exp <= 0:
+        raise ValueError(f"JWT missing valid positive numeric exp: {exp!r}")
+    return int(exp)
 
 
 def _normalize_server_update_time(raw_val: object) -> Optional[int]:
     """Normalize TradingView serverUpdateTime (seconds or ms) into integer epoch seconds."""
+    if raw_val is None:
+        return None
     if not isinstance(raw_val, (int, float, str)) or isinstance(raw_val, bool):
-        return None
-    try:
-        val = float(raw_val)
-    except ValueError:
-        return None
-    if val <= 0:
-        return None
+        raise ValueError(f"Invalid serverUpdateTime type: {raw_val!r}")
+    val = float(raw_val)
+    if not math.isfinite(val) or val <= 0:
+        raise ValueError(f"Invalid non-positive serverUpdateTime: {raw_val!r}")
     return int(val // 1000) if val > 1e11 else int(val)
 
 
@@ -129,19 +130,19 @@ def get_chart_token(layout_id: str = DEFAULT_TV_LAYOUT_ID, force_refresh: bool =
                     timeout=10.0,
                     max_retries=1,
                 )
-                token = data.get("token") if isinstance(data, dict) else None
-                if token:
-                    exp = _extract_jwt_exp(str(token), now + 1800)
-                    with _TOKEN_LOCK:
-                        _TOKEN_CACHE[layout_id] = {
-                            "token": str(token),
-                            "exp": exp,
-                            "fetched_at": now,
-                        }
-                    logger.info("Successfully fetched JWT chart token for layout %s", layout_id)
-                    return str(token)
-                errors.append(f"{url}: empty token")
-            except HttpError as e:
+                if not isinstance(data, dict) or not isinstance(data.get("token"), str) or not data["token"].strip():
+                    raise ValueError(f"Missing/invalid token field in response: {data!r}")
+                token = data["token"].strip()
+                exp = _extract_jwt_exp(token)
+                with _TOKEN_LOCK:
+                    _TOKEN_CACHE[layout_id] = {
+                        "token": token,
+                        "exp": exp,
+                        "fetched_at": now,
+                    }
+                logger.info("Successfully fetched JWT chart token for layout %s", layout_id)
+                return token
+            except (HttpError, ValueError) as e:
                 errors.append(f"{url}: {e}")
                 logger.warning("Failed to fetch token from %s: %s", url, e)
 
@@ -162,7 +163,10 @@ def get_layout_chart_ids(layout_id: str = DEFAULT_TV_LAYOUT_ID) -> list[str]:
     except HttpError as e:
         raise RuntimeError(f"Failed to fetch TradingView layout page {layout_id}: {e}") from e
 
-    html = raw.decode("utf-8", errors="ignore")
+    try:
+        html = raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise RuntimeError(f"Invalid UTF-8 in TradingView layout HTML for {layout_id}: {e}") from e
     match = re.search(r"initData\.content\s*=\s*(\{.*?\});\s*initData\.", html, re.S)
     if not match:
         raise RuntimeError(f"Could not locate initData.content in TradingView layout HTML for {layout_id}")
@@ -171,9 +175,13 @@ def get_layout_chart_ids(layout_id: str = DEFAULT_TV_LAYOUT_ID) -> list[str]:
     except json.JSONDecodeError as e:
         raise RuntimeError(f"Invalid initData.content JSON in layout {layout_id}: {e}") from e
 
-    for c in content.get("charts", []):
-        cid = c.get("chartId") if isinstance(c, dict) else None
-        if cid and cid not in chart_ids:
+    if not isinstance(content, dict) or not isinstance(content.get("charts"), list):
+        raise RuntimeError(f"Missing 'charts' list in initData.content for layout {layout_id}")
+    for c in content["charts"]:
+        if not isinstance(c, dict) or not isinstance(c.get("chartId"), str) or not c["chartId"].strip():
+            raise RuntimeError(f"Malformed chart entry in initData.content for layout {layout_id}: {c!r}")
+        cid = c["chartId"].strip()
+        if cid not in chart_ids:
             chart_ids.append(cid)
     return chart_ids
 
@@ -258,7 +266,11 @@ def get_layout_drawings(
                 raise RuntimeError(f"Failed to fetch sources for chart_id '{chart_id}': {e}") from e
 
         for sid, sval in sources.items():
-            if sid not in raw_sources and isinstance(sval, dict):
+            if not isinstance(sval, dict):
+                raise RuntimeError(
+                    f"Malformed source entry {sid!r} in chart_id '{chart_id}': expected dict, got {type(sval).__name__}"
+                )
+            if sid not in raw_sources:
                 raw_sources[sid] = sval
         logger.info("Retrieved %d sources from chart_id '%s'", len(sources), chart_id)
 
@@ -276,7 +288,12 @@ def get_layout_drawings(
             continue
         trendline_seen_count += 1
 
-        inner_state = state_obj.get("state") if isinstance(state_obj.get("state"), dict) else {}
+        raw_inner_state = state_obj.get("state")
+        if raw_inner_state is not None and not isinstance(raw_inner_state, dict):
+            trendline_skipped_count += 1
+            logger.warning("Skipping trendline %s with invalid inner state type %s", sid, type(raw_inner_state).__name__)
+            continue
+        inner_state = raw_inner_state if raw_inner_state is not None else {}
         raw_sym = sdata.get("symbol") or inner_state.get("symbol") or ""
         norm_sym = clean_symbol(raw_sym)
         if not norm_sym:
@@ -309,6 +326,7 @@ def get_layout_drawings(
             t1_int = int(t1)
             t2_int = int(t2)
             line_width = int(raw_linewidth) if raw_linewidth is not None else 1
+            server_update_time = _normalize_server_update_time(sdata.get("serverUpdateTime"))
         except (ValueError, TypeError) as exc:
             trendline_skipped_count += 1
             logger.warning("Skipping malformed trendline %s (%s): %s", sid, norm_sym, exc)
@@ -322,6 +340,8 @@ def get_layout_drawings(
             or pt1.get("interval")
             or ""
         )
+        raw_linecolor = inner_state.get("linecolor")
+        raw_extend_right = inner_state.get("extendRight")
 
         drawing_meta: dict[str, Any] = {
             "id": sid,
@@ -335,9 +355,9 @@ def get_layout_drawings(
             "t2": t2_int,
             "dt1_str": dt1_str,
             "dt2_str": dt2_str,
-            "server_update_time": _normalize_server_update_time(sdata.get("serverUpdateTime")),
-            "extend_right": bool(inner_state.get("extendRight", True)),
-            "line_color": str(inner_state.get("linecolor", "")),
+            "server_update_time": server_update_time,
+            "extend_right": bool(raw_extend_right) if raw_extend_right is not None else True,
+            "line_color": str(raw_linecolor) if raw_linecolor is not None else "",
             "line_width": line_width,
         }
         symbol_to_trendlines.setdefault(norm_sym, []).append(drawing_meta)

@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import base64
 import datetime
+import http.client
 import io
 import json
 import sqlite3
@@ -129,6 +131,7 @@ class TestQuantMetricsFixes(unittest.TestCase):
                 "closed_at": "2026-11-20 11:00:00",
                 "closed_ts": 1_795_172_400_000,
                 "duration_seconds": None,
+                "close_reason": "TP",
             }
         ]
         summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None)
@@ -244,11 +247,14 @@ class TestTVTrendlineEngineFixes(unittest.TestCase):
     def test_get_chart_token_single_flight_and_drawings_cache_and_schema_guard(self) -> None:
         calls = {"tok": 0}
         barrier = threading.Barrier(4)
+        exp_ts = int(time.time()) + 3600
+        jwt_payload = base64.urlsafe_b64encode(json.dumps({"exp": exp_ts}).encode("utf-8")).decode("ascii").rstrip("=")
+        valid_jwt = f"hdr.{jwt_payload}.sig"
 
         def fake_tok_req(url: str, **kwargs: object) -> dict[str, str]:
             calls["tok"] += 1
             time.sleep(0.02)
-            return {"token": "tok-123"}
+            return {"token": valid_jwt}
 
         with patch.dict(tve._TOKEN_CACHE, {}, clear=True), patch.dict(
             tve._TOKEN_FETCH_LOCKS, {}, clear=True
@@ -265,7 +271,7 @@ class TestTVTrendlineEngineFixes(unittest.TestCase):
             for t in threads:
                 t.join()
             self.assertEqual(calls["tok"], 1)
-            self.assertEqual(out, ["tok-123"] * 4)
+            self.assertEqual(out, [valid_jwt] * 4)
 
         with tempfile.TemporaryDirectory() as tmp:
             runs_dir = Path(tmp)
@@ -468,6 +474,197 @@ class TestScannerPoolFixes(unittest.TestCase):
         self.assertAlmostEqual(persisted["ALPHAUSDT"]["min_mcap_usd"], 18_000_000.0, places=2)
         self.assertEqual(persisted["ALPHAUSDT"]["last_sub_30m_ts"], prev_ts)
         self.assertIn("跳过 1h K线拉取失败标的", out.getvalue())
+
+
+class TestCrashEarlyNoFallbackRegressions(unittest.TestCase):
+    """Regression tests ensuring corrupt/missing required inputs fail fast instead of using silent defaults."""
+
+    def test_config_load_dotenv_rejects_malformed_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text("# comment\n\nGOOD=1\nNOT_A_KEY_VALUE_PAIR\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                cfg.load_dotenv(env_path)
+
+    def test_quant_metrics_fail_fast_on_missing_required_fields(self) -> None:
+        # aggregate_income_ledger: missing/null/bool income, time, or incomeType
+        for bad_item in (
+            {"incomeType": "REALIZED_PNL", "income": "10"},
+            {"incomeType": "REALIZED_PNL", "time": 1000},
+            {"incomeType": "REALIZED_PNL", "time": 1000, "income": None},
+            {"incomeType": "REALIZED_PNL", "time": 1000, "income": True},
+            {"incomeType": "REALIZED_PNL", "time": 1000, "income": "nan"},
+            {"time": 1000, "income": "10"},
+        ):
+            with self.subTest(bad_income=bad_item):
+                with self.assertRaises((KeyError, ValueError, TypeError)):
+                    qm.aggregate_income_ledger([bad_item])
+
+        # build_trade_equity_curve: refuses to fabricate current_ms / UNKNOWN / '平仓'
+        with self.assertRaises(ValueError):
+            qm.build_trade_equity_curve(
+                [{"symbol": "BTCUSDT", "close_reason": "TP", "net_pnl": 10.0}],
+                1000.0,
+                0.0,
+            )
+        with self.assertRaises(KeyError):
+            qm.build_trade_equity_curve(
+                [{"close_reason": "TP", "net_pnl": 10.0, "closed_ts": 1000}],
+                1000.0,
+                0.0,
+            )
+        with self.assertRaises(KeyError):
+            qm.build_trade_equity_curve(
+                [{"symbol": "BTCUSDT", "net_pnl": 10.0, "closed_ts": 1000}],
+                1000.0,
+                0.0,
+            )
+        # Valid closed_at without closed_ts resolves exact timestamp instead of current_ms
+        eq, _, _ = qm.build_trade_equity_curve(
+            [{"symbol": "BTCUSDT", "close_reason": "TP", "net_pnl": 10.0, "closed_at": "2026-11-20 10:00:00"}],
+            1000.0,
+            0.0,
+            now_ms=1_900_000_000_000,
+        )
+        self.assertLess(eq[-2]["timestamp"], 1_900_000_000_000)
+
+        # build_db_equity_curve: requires both totalMarginBalance and totalWalletBalance
+        recording = {"start_ms": 1_800_000_000_000, "started_at": "2026-11-20 00:00:00", "initial_equity": 1000.0}
+        with self.assertRaises(KeyError):
+            qm.build_db_equity_curve(recording, 1_800_000_000_000, None, {"totalWalletBalance": "1000"}, [])
+        with self.assertRaises(KeyError):
+            qm.build_db_equity_curve(recording, 1_800_000_000_000, None, {"totalMarginBalance": "1000"}, [])
+
+        # calculate_quant_risk_metrics: empty {} account_info & missing drawdown fields fail fast
+        with self.assertRaises(KeyError):
+            qm.calculate_quant_risk_metrics([], [], {})
+        with self.assertRaises(KeyError):
+            qm.calculate_quant_risk_metrics([], [], {"totalWalletBalance": "1000"})
+        with self.assertRaises(KeyError):
+            qm.calculate_quant_risk_metrics([], [], None, equity_curve_override=[{"equity": 1000.0}])
+
+        # compute_risk_ratios: missing/empty date raises ValueError
+        with self.assertRaises((KeyError, ValueError)):
+            qm.compute_risk_ratios([{"date": "", "net_pnl": 1.0}, {"date": "2026-11-20", "net_pnl": 2.0}], 1000.0)
+
+    def test_tv_trendline_engine_fail_fast_on_corrupt_jwt_html_and_sources(self) -> None:
+        # Corrupt/non-JWT tokens must raise ValueError instead of caching fallback exp
+        for bad_tok in ("opaque-token", "a.b", "a.!!!.c", "a." + base64.urlsafe_b64encode(b"{}").decode().rstrip("=") + ".c"):
+            with self.subTest(bad_tok=bad_tok):
+                with self.assertRaises(ValueError):
+                    tve._extract_jwt_exp(bad_tok)
+
+        with patch.dict(tve._TOKEN_CACHE, {}, clear=True), patch.dict(
+            tve._TOKEN_FETCH_LOCKS, {}, clear=True
+        ), patch.object(tve, "request_json", return_value={"token": "not-a-jwt"}):
+            with self.assertRaises(RuntimeError):
+                tve.get_chart_token("L_BAD_JWT")
+
+        # Invalid UTF-8 or missing 'charts' in initData.content must raise RuntimeError
+        with patch.object(tve, "request_bytes", return_value=b"\xff\xfeinvalid-utf8"):
+            with self.assertRaises(RuntimeError):
+                tve.get_layout_chart_ids("L_BAD_UTF8")
+        with patch.object(
+            tve,
+            "request_bytes",
+            return_value=b"<script>initData.content = {\"not_charts\": []}; initData.end = 1;</script>",
+        ):
+            with self.assertRaises(RuntimeError):
+                tve.get_layout_chart_ids("L_NO_CHARTS")
+
+        # Non-dict source entry raises RuntimeError; corrupt serverUpdateTime skips trendline cleanly
+        with patch.object(tve, "get_chart_token", return_value="tok"), patch.object(
+            tve, "get_layout_chart_ids", return_value=["_shared"]
+        ), patch.object(tve, "request_json", return_value={"payload": {"sources": {"bad_src": "not-a-dict"}}}):
+            with self.assertRaises(RuntimeError):
+                tve.get_layout_drawings("L_BAD_SRC", save_cache=False)
+
+        with patch.object(tve, "get_chart_token", return_value="tok"), patch.object(
+            tve, "get_layout_chart_ids", return_value=["_shared"]
+        ), patch.object(
+            tve,
+            "request_json",
+            return_value={
+                "payload": {
+                    "sources": {
+                        "bad_sut": {
+                            "symbol": "BINANCE:YBUSDT.P",
+                            "serverUpdateTime": "corrupt",
+                            "state": {
+                                "type": "LineToolTrendLine",
+                                "points": [{"time_t": 100, "price": 1.0}, {"time_t": 200, "price": 0.9}],
+                                "state": {"interval": "15"},
+                            },
+                        }
+                    }
+                }
+            },
+        ):
+            with self.assertRaises(RuntimeError):
+                tve.get_layout_drawings("L_BAD_SUT", save_cache=False)
+
+    def test_binance_client_fail_fast_on_malformed_positions_and_primitives(self) -> None:
+        client = bc.BinanceFuturesClient("k", "s")
+        base_pos = {
+            "symbol": "BTCUSDT",
+            "positionAmt": "1.0",
+            "entryPrice": "90000.0",
+            "markPrice": "91000.0",
+            "unRealizedProfit": "1000.0",
+            "leverage": "10",
+        }
+        # Omitted updateTime yields None (not 0)
+        with patch.object(client, "get_account_positions", return_value=[base_pos]):
+            pos = client.get_active_positions()[0]
+            self.assertIsNone(pos["update_time"])
+            self.assertAlmostEqual(pos["notional"], 91000.0)
+
+        # Explicit malformed optional-when-omitted fields or NaN/bool fail fast
+        for overrides in (
+            {"updateTime": None},
+            {"updateTime": "bad"},
+            {"updateTime": True},
+            {"notional": None},
+            {"notional": "nan"},
+            {"positionSide": None},
+            {"positionSide": "UNKNOWN"},
+            {"markPrice": "nan"},
+            {"leverage": True},
+        ):
+            bad_pos = {**base_pos, **overrides}
+            with self.subTest(overrides=overrides):
+                with patch.object(client, "get_account_positions", return_value=[bad_pos]):
+                    with self.assertRaises(bc.BinanceAPIError):
+                        client.get_active_positions()
+
+        with patch.object(bc, "fetch_json_with_retry", return_value={"serverTime": True}):
+            with self.assertRaises(bc.BinanceAPIError):
+                client.get_server_time(force_sync=True)
+        with patch.object(bc, "fetch_json_with_retry", return_value=[{"symbol": "BTCUSDT", "price": "nan"}]):
+            with self.assertRaises(bc.BinanceAPIError):
+                client.get_ticker_prices(["BTCUSDT"])
+
+    def test_cmc_batch_and_http_client_safety_guards(self) -> None:
+        client = http_client.HttpClient(max_per_host=2)
+        try:
+            with patch.object(client, "request_json", return_value={"data": {"BTC": ["unexpected-list"]}}):
+                with self.assertRaises(RuntimeError):
+                    ssp._fetch_cmc_batch(["BTC"], "key", client)
+
+            self.assertIsNone(http_client._parse_retry_after("nan"))
+            self.assertIsNone(http_client._parse_retry_after("inf"))
+
+            # Non-idempotent POST must NOT retry _RECONNECT_ERRORS even on pooled connections
+            key = ("https", "example.com", 443)
+            fake_conn = unittest.mock.MagicMock()
+            fake_conn.sock = None
+            fake_conn.request.side_effect = http.client.RemoteDisconnected("closed")
+            with patch.object(client, "_acquire_conn", return_value=(fake_conn, True)):
+                with self.assertRaises(http.client.RemoteDisconnected):
+                    client._send_once(key, "/submit", "POST", {}, b"{}", 5.0)
+            self.assertEqual(fake_conn.request.call_count, 1)
+        finally:
+            client.close()
 
 
 if __name__ == "__main__":
