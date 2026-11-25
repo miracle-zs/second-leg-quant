@@ -11,6 +11,7 @@ from collections import deque
 import http.client
 import json
 import math
+import random
 import socket
 import threading
 import time
@@ -60,6 +61,20 @@ def _parse_retry_after(raw: Optional[str]) -> Optional[float]:
     if not math.isfinite(seconds) or seconds <= 0.0:
         return None
     return min(seconds, _MAX_RETRY_AFTER_SEC)
+
+
+def retry_delay(
+    backoff_base: float,
+    attempt: int,
+    retry_after: Optional[float] = None,
+) -> float:
+    """Compute exponential backoff delay with Retry-After floor and bounded jitter."""
+    delay = backoff_base * (2 ** attempt)
+    if retry_after is not None:
+        delay = max(delay, retry_after)
+    if delay > 0.0:
+        delay += random.uniform(0.0, min(0.5, delay * 0.25))
+    return delay
 
 
 def _close_quietly(conn: http.client.HTTPConnection) -> None:
@@ -230,38 +245,34 @@ class HttpClient:
         retry_set = frozenset(retry_statuses)
 
         for attempt in range(max_retries + 1):
+            retry_after: Optional[float] = None
             try:
                 status, retry_after, raw = self._send_once(
                     key, path, method.upper(), req_headers, req_body, float(timeout)
                 )
             except (http.client.HTTPException, OSError, TimeoutError, socket.timeout) as exc:
-                if attempt < max_retries:
-                    time.sleep(backoff_base * (2 ** attempt))
-                    continue
-                raise HttpError(
-                    f"Request failed after {max_retries + 1} attempts ({url}): {exc}",
-                    status_code=None,
-                    body=str(exc),
-                    url=url,
-                ) from exc
+                if attempt == max_retries:
+                    raise HttpError(
+                        f"Request failed after {max_retries + 1} attempts ({url}): {exc}",
+                        status_code=None,
+                        body=str(exc),
+                        url=url,
+                    ) from exc
+            else:
+                if 200 <= status < 300:
+                    return raw
 
-            if 200 <= status < 300:
-                return raw
+                err_body = raw.decode("utf-8", errors="replace")
+                if status not in retry_set or attempt == max_retries:
+                    raise HttpError(
+                        f"HTTP {status} from {url}: {err_body}",
+                        status_code=status,
+                        body=err_body,
+                        url=url,
+                        retry_after=retry_after,
+                    )
 
-            err_body = raw.decode("utf-8", errors="replace")
-            if status not in retry_set or attempt == max_retries:
-                raise HttpError(
-                    f"HTTP {status} from {url}: {err_body}",
-                    status_code=status,
-                    body=err_body,
-                    url=url,
-                    retry_after=retry_after,
-                )
-
-            delay = backoff_base * (2 ** attempt)
-            if retry_after is not None:
-                delay = max(delay, retry_after)
-            time.sleep(delay)
+            time.sleep(retry_delay(backoff_base, attempt, retry_after))
 
         raise AssertionError("unreachable")
 

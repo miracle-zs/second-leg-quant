@@ -666,6 +666,91 @@ class TestCrashEarlyNoFallbackRegressions(unittest.TestCase):
         finally:
             client.close()
 
+    def test_http_retry_delay_bounded_jitter_and_shared_closed_candles(self) -> None:
+        self.assertEqual(http_client.retry_delay(0.0, 2), 0.0)
+        for _ in range(20):
+            d = http_client.retry_delay(0.5, 1, retry_after=2.0)
+            self.assertGreaterEqual(d, 2.0)
+            self.assertLessEqual(d, 2.5)
+
+        client = http_client.HttpClient(max_per_host=2)
+        try:
+            b_client = bc.BinanceFuturesClient("k", "s")
+            server_ms = 1_800_000_000_000
+            rows = [
+                [server_ms - 7_200_000, "1.0", "1.1", "0.9", "1.05", "10", server_ms - 3_600_001, "10", 1],
+                [server_ms - 3_600_000, "1.05", "1.2", "1.0", "1.15", "20", server_ms + 60_000, "20", 1],
+            ]
+
+            def fake_req(url: str, **kwargs: object) -> object:
+                if "/fapi/v1/klines?" in url:
+                    return rows
+                raise AssertionError(f"Unexpected URL: {url}")
+
+            with patch.object(b_client, "get_server_time", return_value=server_ms), patch.object(
+                client, "request_json", side_effect=fake_req
+            ):
+                closed = b_client.get_closed_candles("BTCUSDT", interval="1h", limit=10, session=client)
+            self.assertEqual(len(closed), 1)
+            self.assertEqual(closed[0]["close"], 1.05)
+
+            bad_rows = [[server_ms - 7_200_000, "1.0", "1.1", "0.9", "nan", "10", server_ms - 3_600_001, "10", 1]]
+            with patch.object(b_client, "get_server_time", return_value=server_ms), patch.object(
+                client, "request_json", return_value=bad_rows
+            ):
+                with self.assertRaises(bc.BinanceAPIError):
+                    b_client.get_closed_candles("BTCUSDT", interval="1h", limit=10, session=client)
+        finally:
+            client.close()
+
+    def test_tv_concurrent_chart_fetch_with_single_auth_refresh_and_deterministic_order(self) -> None:
+        tok_calls: list[bool] = []
+
+        def fake_token(layout_id: str = "", force_refresh: bool = False) -> str:
+            tok_calls.append(force_refresh)
+            return "fresh-tok" if force_refresh else "stale-tok"
+
+        def fake_req(url: str, **kwargs: object) -> dict[str, object]:
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            cid = qs["chart_id"][0]
+            jwt = qs["jwt"][0]
+            if cid in ("c1", "c2") and jwt == "stale-tok":
+                raise http_client.HttpError("Unauthorized", status_code=401, url=url)
+            price = 1.1 if cid == "_shared" else (2.2 if cid == "c1" else 3.3)
+            return {
+                "payload": {
+                    "sources": {
+                        f"src_{cid}": {
+                            "symbol": "BINANCE:YBUSDT.P",
+                            "state": {
+                                "type": "LineToolTrendLine",
+                                "points": [{"time_t": 100, "price": price}, {"time_t": 200, "price": price * 0.9}],
+                                "state": {"interval": "15"},
+                            },
+                        },
+                        "dup_id": {
+                            "symbol": "BINANCE:YBUSDT.P",
+                            "state": {
+                                "type": "LineToolTrendLine",
+                                "points": [{"time_t": 100, "price": price}, {"time_t": 200, "price": price * 0.9}],
+                                "state": {"interval": "15"},
+                            },
+                        },
+                    }
+                }
+            }
+
+        with patch.object(tve, "get_chart_token", side_effect=fake_token), patch.object(
+            tve, "get_layout_chart_ids", return_value=["_shared", "c1", "c2"]
+        ), patch.object(tve, "request_json", side_effect=fake_req):
+            drawings = tve.get_layout_drawings("L_MULTI", save_cache=False)
+
+        self.assertEqual(tok_calls, [False, True])
+        by_id = {d["id"]: d for d in drawings["YBUSDT"]}
+        self.assertEqual(sorted(by_id.keys()), ["dup_id", "src__shared", "src_c1", "src_c2"])
+        # Deterministic chart_ids order keeps _shared's copy of dup_id
+        self.assertEqual(by_id["dup_id"]["p1"], 1.1)
+
 
 if __name__ == "__main__":
     unittest.main()

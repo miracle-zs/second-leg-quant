@@ -26,7 +26,12 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from binance_client import BINANCE_FUTURES_BASE_URL, BinanceAPIError, get_server_time_ms  # noqa: E402
+from binance_client import (  # noqa: E402
+    BINANCE_FUTURES_BASE_URL,
+    BinanceAPIError,
+    get_closed_candles,
+    get_server_time_ms,
+)
 from config import (  # noqa: E402
     BEIJING_TZ,
     DEFAULT_DB_PATH,
@@ -334,19 +339,9 @@ def scan_pool(database: Optional[Path] = None) -> list[_CandidateRecord]:
             cmc_price = quote.get("price")
             mcap = quote.get("market_cap")
             cs = c_obj.get("circulating_supply")
-            if (
-                not isinstance(cmc_price, (int, float))
-                or isinstance(cmc_price, bool)
-                or not isinstance(mcap, (int, float))
-                or isinstance(mcap, bool)
-                or not isinstance(cs, (int, float))
-                or isinstance(cs, bool)
-                or not math.isfinite(float(cmc_price))
-                or not math.isfinite(float(mcap))
-                or not math.isfinite(float(cs))
-                or cmc_price <= 0
-                or mcap <= 0
-                or cs <= 0
+            if any(
+                isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(float(v)) or v <= 0
+                for v in (cmc_price, mcap, cs)
             ):
                 continue
 
@@ -447,16 +442,12 @@ def scan_pool(database: Optional[Path] = None) -> list[_CandidateRecord]:
         get_server_time_ms()
 
         def _eval_symbol(sym: str) -> tuple[str, Optional[float], Optional[float], bool, Optional[float]]:
-            query = urllib.parse.urlencode({"symbol": sym, "interval": "1h", "limit": 168})
-            url = f"{BINANCE_FUTURES_BASE_URL}/fapi/v1/klines?{query}"
-            data = client.request_json(url, timeout=10.0, max_retries=2, backoff_base=0.5)
-            if not isinstance(data, list):
-                raise RuntimeError(f"Unexpected klines response type for {sym}: {type(data).__name__}")
-            now_ms = get_server_time_ms()
-            closed_bars = [k for k in data if int(k[6]) <= now_ms]
+            closed_bars = get_closed_candles(
+                sym, interval="1h", limit=168, allow_empty=True, session=client, backoff=0.5
+            )
             if len(closed_bars) < 10:
                 return sym, None, None, False, None
-            closes = [float(k[4]) for k in closed_bars]
+            closes = [float(bar["close"]) for bar in closed_bars]
             ema5 = calc_ema(closes, 5)
             ema10 = calc_ema(closes, 10)
             if ema5 is None or ema10 is None:

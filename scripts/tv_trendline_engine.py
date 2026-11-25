@@ -11,6 +11,7 @@ with Binance Futures candlestick close confirmation.
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import math
@@ -206,6 +207,124 @@ def _read_cached_drawings(cache_path: Path, max_age_sec: float) -> Optional[dict
     return None
 
 
+def _fetch_all_chart_sources(
+    layout_id: str,
+    chart_ids: list[str],
+    token: str,
+) -> dict[str, dict[str, Any]]:
+    """Fetch sources for all chart_ids concurrently (with single forced JWT refresh on 401/403)."""
+    if not chart_ids:
+        return {}
+
+    def _run_batch(cids: list[str], jwt_token: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
+        results: dict[str, dict[str, Any]] = {}
+        auth_failed: list[str] = []
+        if len(cids) == 1:
+            cid = cids[0]
+            try:
+                results[cid] = _fetch_chart_sources(layout_id, cid, jwt_token)
+            except HttpError as e:
+                if e.status_code in (401, 403):
+                    auth_failed.append(cid)
+                else:
+                    raise RuntimeError(f"Failed to fetch sources for chart_id '{cid}': {e}") from e
+            return results, auth_failed
+
+        with ThreadPoolExecutor(max_workers=min(6, len(cids))) as executor:
+            futs = {cid: executor.submit(_fetch_chart_sources, layout_id, cid, jwt_token) for cid in cids}
+            for cid in cids:
+                try:
+                    results[cid] = futs[cid].result()
+                except HttpError as e:
+                    if e.status_code in (401, 403):
+                        auth_failed.append(cid)
+                    else:
+                        raise RuntimeError(f"Failed to fetch sources for chart_id '{cid}': {e}") from e
+        return results, auth_failed
+
+    sources_by_chart, auth_failed = _run_batch(chart_ids, token)
+    if auth_failed:
+        refreshed = get_chart_token(layout_id=layout_id, force_refresh=True)
+        retry_results, retry_auth_failed = _run_batch(auth_failed, refreshed)
+        if retry_auth_failed:
+            raise RuntimeError(
+                f"Unauthorized (401/403) fetching sources for chart_ids {retry_auth_failed} after token refresh"
+            )
+        sources_by_chart.update(retry_results)
+
+    raw_sources: dict[str, dict[str, Any]] = {}
+    for chart_id in chart_ids:
+        sources = sources_by_chart[chart_id]
+        for sid, sval in sources.items():
+            if not isinstance(sval, dict):
+                raise RuntimeError(
+                    f"Malformed source entry {sid!r} in chart_id '{chart_id}': expected dict, got {type(sval).__name__}"
+                )
+            if sid not in raw_sources:
+                raw_sources[sid] = sval
+        logger.info("Retrieved %d sources from chart_id '%s'", len(sources), chart_id)
+    return raw_sources
+
+
+def _parse_trendline_source(
+    sid: str,
+    sdata: dict[str, Any],
+    state_obj: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate and normalize one LineToolTrendLine source entry into a flat canonical dict."""
+    raw_inner_state = state_obj.get("state")
+    if raw_inner_state is not None and not isinstance(raw_inner_state, dict):
+        raise ValueError(f"invalid inner state type {type(raw_inner_state).__name__}")
+    inner_state = raw_inner_state if raw_inner_state is not None else {}
+
+    raw_sym = sdata.get("symbol") or inner_state.get("symbol") or ""
+    norm_sym = clean_symbol(raw_sym)
+    if not norm_sym:
+        raise ValueError(f"empty/invalid symbol: {raw_sym!r}")
+
+    points = state_obj.get("points") or []
+    if not isinstance(points, list) or len(points) < 2:
+        raise ValueError(f"({norm_sym}) invalid points: {points!r}")
+
+    pt1, pt2 = points[0], points[1]
+    if not isinstance(pt1, dict) or not isinstance(pt2, dict):
+        raise ValueError(f"({norm_sym}) non-dict points")
+    t1, p1 = pt1.get("time_t"), pt1.get("price")
+    t2, p2 = pt2.get("time_t"), pt2.get("price")
+    if t1 is None or p1 is None or t2 is None or p2 is None:
+        raise ValueError(f"({norm_sym}) missing time_t/price")
+
+    raw_linewidth = inner_state.get("linewidth")
+    p1_flt = float(p1)
+    p2_flt = float(p2)
+    t1_int = int(t1)
+    t2_int = int(t2)
+    line_width = int(raw_linewidth) if raw_linewidth is not None else 1
+    server_update_time = _normalize_server_update_time(sdata.get("serverUpdateTime"))
+
+    line_iv = inner_state.get("interval") or state_obj.get("interval") or pt1.get("interval") or ""
+    raw_linecolor = inner_state.get("linecolor")
+    raw_extend_right = inner_state.get("extendRight")
+
+    return {
+        "id": sid,
+        "type": "LineToolTrendLine",
+        "symbol": norm_sym,
+        "raw_symbol": raw_sym,
+        "interval": str(line_iv).strip().upper(),
+        "p1": p1_flt,
+        "t1": t1_int,
+        "p2": p2_flt,
+        "t2": t2_int,
+        "dt1_str": get_beijing_time_str(t1_int)[:16],
+        "dt2_str": get_beijing_time_str(t2_int)[:16],
+        "server_update_time": server_update_time,
+        "extend_right": bool(raw_extend_right) if raw_extend_right is not None else True,
+        "line_color": str(raw_linecolor) if raw_linecolor is not None else "",
+        "line_width": line_width,
+    }
+
+
 def get_layout_drawings(
     layout_id: str = DEFAULT_TV_LAYOUT_ID,
     force_refresh: bool = False,
@@ -228,34 +347,7 @@ def get_layout_drawings(
 
     token = get_chart_token(layout_id=layout_id, force_refresh=force_refresh)
     chart_ids = get_layout_chart_ids(layout_id=layout_id)
-
-    raw_sources: dict[str, dict[str, Any]] = {}
-    retried_token = False
-
-    for chart_id in chart_ids:
-        try:
-            sources = _fetch_chart_sources(layout_id, chart_id, token)
-        except HttpError as e:
-            if e.status_code in (401, 403) and not retried_token:
-                retried_token = True
-                token = get_chart_token(layout_id=layout_id, force_refresh=True)
-                try:
-                    sources = _fetch_chart_sources(layout_id, chart_id, token)
-                except HttpError as retry_err:
-                    raise RuntimeError(
-                        f"Failed to fetch sources for chart_id '{chart_id}': {retry_err}"
-                    ) from retry_err
-            else:
-                raise RuntimeError(f"Failed to fetch sources for chart_id '{chart_id}': {e}") from e
-
-        for sid, sval in sources.items():
-            if not isinstance(sval, dict):
-                raise RuntimeError(
-                    f"Malformed source entry {sid!r} in chart_id '{chart_id}': expected dict, got {type(sval).__name__}"
-                )
-            if sid not in raw_sources:
-                raw_sources[sid] = sval
-        logger.info("Retrieved %d sources from chart_id '%s'", len(sources), chart_id)
+    raw_sources = _fetch_all_chart_sources(layout_id, chart_ids, token)
 
     symbol_to_trendlines: dict[str, list[dict[str, Any]]] = {}
     trendline_seen_count = 0
@@ -263,87 +355,16 @@ def get_layout_drawings(
 
     for sid, sdata in raw_sources.items():
         state_obj = sdata.get("state")
-        if not isinstance(state_obj, dict):
-            continue
-
-        tool_type = state_obj.get("type")
-        if tool_type != "LineToolTrendLine":
+        if not isinstance(state_obj, dict) or state_obj.get("type") != "LineToolTrendLine":
             continue
         trendline_seen_count += 1
-
-        raw_inner_state = state_obj.get("state")
-        if raw_inner_state is not None and not isinstance(raw_inner_state, dict):
-            trendline_skipped_count += 1
-            logger.warning("Skipping trendline %s with invalid inner state type %s", sid, type(raw_inner_state).__name__)
-            continue
-        inner_state = raw_inner_state if raw_inner_state is not None else {}
-        raw_sym = sdata.get("symbol") or inner_state.get("symbol") or ""
-        norm_sym = clean_symbol(raw_sym)
-        if not norm_sym:
-            trendline_skipped_count += 1
-            logger.warning("Skipping trendline %s with empty/invalid symbol: %r", sid, raw_sym)
-            continue
-
-        points = state_obj.get("points") or []
-        if not isinstance(points, list) or len(points) < 2:
-            trendline_skipped_count += 1
-            logger.warning("Skipping trendline %s (%s) with invalid points: %r", sid, norm_sym, points)
-            continue
-
-        pt1, pt2 = points[0], points[1]
-        if not isinstance(pt1, dict) or not isinstance(pt2, dict):
-            trendline_skipped_count += 1
-            logger.warning("Skipping trendline %s (%s) with non-dict points", sid, norm_sym)
-            continue
-        t1, p1 = pt1.get("time_t"), pt1.get("price")
-        t2, p2 = pt2.get("time_t"), pt2.get("price")
-        if t1 is None or p1 is None or t2 is None or p2 is None:
-            trendline_skipped_count += 1
-            logger.warning("Skipping trendline %s (%s) with missing time_t/price", sid, norm_sym)
-            continue
-
-        raw_linewidth = inner_state.get("linewidth")
         try:
-            p1_flt = float(p1)
-            p2_flt = float(p2)
-            t1_int = int(t1)
-            t2_int = int(t2)
-            line_width = int(raw_linewidth) if raw_linewidth is not None else 1
-            server_update_time = _normalize_server_update_time(sdata.get("serverUpdateTime"))
+            drawing_meta = _parse_trendline_source(sid, sdata, state_obj)
         except (ValueError, TypeError) as exc:
             trendline_skipped_count += 1
-            logger.warning("Skipping malformed trendline %s (%s): %s", sid, norm_sym, exc)
+            logger.warning("Skipping malformed trendline %s: %s", sid, exc)
             continue
-
-        dt1_str = get_beijing_time_str(t1_int)[:16]
-        dt2_str = get_beijing_time_str(t2_int)[:16]
-        line_iv = (
-            inner_state.get("interval")
-            or state_obj.get("interval")
-            or pt1.get("interval")
-            or ""
-        )
-        raw_linecolor = inner_state.get("linecolor")
-        raw_extend_right = inner_state.get("extendRight")
-
-        drawing_meta: dict[str, Any] = {
-            "id": sid,
-            "type": tool_type,
-            "symbol": norm_sym,
-            "raw_symbol": raw_sym,
-            "interval": str(line_iv).strip().upper(),
-            "p1": p1_flt,
-            "t1": t1_int,
-            "p2": p2_flt,
-            "t2": t2_int,
-            "dt1_str": dt1_str,
-            "dt2_str": dt2_str,
-            "server_update_time": server_update_time,
-            "extend_right": bool(raw_extend_right) if raw_extend_right is not None else True,
-            "line_color": str(raw_linecolor) if raw_linecolor is not None else "",
-            "line_width": line_width,
-        }
-        symbol_to_trendlines.setdefault(norm_sym, []).append(drawing_meta)
+        symbol_to_trendlines.setdefault(drawing_meta["symbol"], []).append(drawing_meta)
 
     if trendline_skipped_count:
         logger.warning(
@@ -420,21 +441,18 @@ def is_valid_15m_trendline(
     if s_time is not None and not _is_recent_ts(s_time, now_ts, max_age_sec):
         return False
 
-    t2 = line.get("t2")
-    t1 = line.get("t1")
     anchor_ts: Optional[float] = None
-    if t2 is not None and not isinstance(t2, bool):
+    for raw_t in (line.get("t2"), line.get("t1")):
+        if raw_t is None:
+            continue
+        if isinstance(raw_t, bool):
+            return False
         try:
-            anchor_ts = float(t2)
+            t_val = float(raw_t)
         except (TypeError, ValueError):
             return False
-    if t1 is not None and not isinstance(t1, bool):
-        try:
-            t1_val = float(t1)
-        except (TypeError, ValueError):
-            return False
-        if anchor_ts is None or t1_val > anchor_ts:
-            anchor_ts = t1_val
+        if anchor_ts is None or t_val > anchor_ts:
+            anchor_ts = t_val
 
     return _is_recent_ts(anchor_ts, now_ts, max_age_sec)
 
@@ -507,23 +525,16 @@ def check_symbol_breakout(
         close_price = float(candle["close"])
         candle_ts = int(candle["open_time"])
         prev_close = float(p_candle["close"])
+        time_key = "close_time" if at_close else "open_time"
+        candle_t = int(candle[time_key])
+        prev_candle_t = int(p_candle[time_key])
         if target_time is not None:
             eval_t = int(target_time)
-            step = (
-                (int(candle["close_time"]) - int(p_candle["close_time"]))
-                if at_close
-                else (candle_ts - int(p_candle["open_time"]))
-            )
-            if step > 0:
-                prev_t = eval_t - step
-            else:
-                prev_t = int(p_candle["close_time"]) if at_close else int(p_candle["open_time"])
-        elif at_close:
-            eval_t = int(candle["close_time"])
-            prev_t = int(p_candle["close_time"])
+            step = candle_t - prev_candle_t
+            prev_t = (eval_t - step) if step > 0 else prev_candle_t
         else:
-            eval_t = candle_ts
-            prev_t = int(p_candle["open_time"])
+            eval_t = candle_t
+            prev_t = prev_candle_t
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError(f"Invalid canonical candle/prev_candle payload for {clean_sym}") from e
 
@@ -532,44 +543,25 @@ def check_symbol_breakout(
     def _log_projection(target_ts: int) -> float:
         return math.log(p1) + ((target_ts - t1) / (t2 - t1)) * math.log(p2 / p1)
 
+    prev_res: Optional[float] = None
     try:
         res_price = calculate_log_resistance(p1=p1, t1=t1, p2=p2, t2=t2, target_t=eval_t)
     except ValueError:
-        is_runaway_overflow = _log_projection(eval_t) < -50.0
-        return {
-            "is_breakout": False,
-            "is_crossover": False,
-            "is_runaway": is_runaway_overflow,
-            "close_price": close_price,
-            "res_price": 0.0,
-            "prev_close": prev_close,
-            "prev_res": None,
-            "pct": 0.0,
-            "candle_time": candle_time_str,
-            "open_time": candle_ts,
-            "target_t": eval_t,
-            "trendline_id": trendline_id,
-            "symbol": clean_sym,
-            "open_price": candle.get("open"),
-            "high_price": candle.get("high"),
-            "low_price": candle.get("low"),
-            "p1": p1,
-            "t1": t1,
-            "p2": p2,
-            "t2": t2,
-        }
-
-    try:
-        prev_res: Optional[float] = calculate_log_resistance(p1=p1, t1=t1, p2=p2, t2=t2, target_t=prev_t)
-    except ValueError:
-        prev_res = None
-        is_crossover = _log_projection(prev_t) > 50.0 and close_price > res_price
+        is_breakout = False
+        is_crossover = False
+        is_runaway = _log_projection(eval_t) < -50.0
+        res_price = 0.0
+        pct = 0.0
     else:
-        is_crossover = prev_close <= prev_res and close_price > res_price
-
-    is_runaway = close_price > res_price * 1.25
-    is_breakout = is_crossover and not is_runaway
-    pct = round(((close_price - res_price) / res_price) * 100.0, 4)
+        try:
+            prev_res = calculate_log_resistance(p1=p1, t1=t1, p2=p2, t2=t2, target_t=prev_t)
+        except ValueError:
+            is_crossover = _log_projection(prev_t) > 50.0 and close_price > res_price
+        else:
+            is_crossover = prev_close <= prev_res and close_price > res_price
+        is_runaway = close_price > res_price * 1.25
+        is_breakout = is_crossover and not is_runaway
+        pct = round(((close_price - res_price) / res_price) * 100.0, 4)
 
     return {
         "is_breakout": is_breakout,

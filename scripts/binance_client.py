@@ -31,7 +31,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from config import DEFAULT_ENV_PATH, clean_symbol, get_beijing_time_str, get_env_setting  # noqa: E402
 import http_client  # noqa: E402
-from http_client import DEFAULT_USER_AGENT, HttpError, RETRYABLE_STATUS_CODES  # noqa: E402
+from http_client import DEFAULT_USER_AGENT, HttpError, RETRYABLE_STATUS_CODES, retry_delay  # noqa: E402
 
 logger = logging.getLogger("binance_client")
 
@@ -328,10 +328,7 @@ class BinanceFuturesClient:
                     continue
                 retryable = e.status_code is None or e.status_code in RETRYABLE_STATUS_CODES
                 if retryable and attempt < max_retries:
-                    delay = backoff * (2 ** attempt)
-                    if e.retry_after is not None:
-                        delay = max(delay, e.retry_after)
-                    time.sleep(delay)
+                    time.sleep(retry_delay(backoff, attempt, e.retry_after))
                     continue
                 logger.warning("币安签名请求失败 [%s] (%s): %s", endpoint, api_err.code, api_err)
                 raise api_err from e
@@ -496,6 +493,9 @@ class BinanceFuturesClient:
         *,
         start_time_ms: Optional[int] = None,
         end_time_ms: Optional[int] = None,
+        session: Optional[http_client.HttpClient] = None,
+        max_retries: int = 3,
+        backoff: float = 0.8,
     ) -> List[list]:
         """请求 /fapi/v1/klines 获取合约 K 线数组（空数组返回 []）。"""
         clean_sym = clean_symbol(symbol)
@@ -509,7 +509,21 @@ class BinanceFuturesClient:
         if end_time_ms is not None:
             query_params["endTime"] = int(end_time_ms)
         url = f"{self.base_url}/fapi/v1/klines?{urllib.parse.urlencode(query_params)}"
-        data = fetch_json_with_retry(url, timeout=max(self.timeout, 10), max_retries=3)
+        req_timeout = max(self.timeout, 10)
+        if session is None:
+            data = fetch_json_with_retry(url, timeout=req_timeout, max_retries=max_retries, backoff=backoff)
+        else:
+            try:
+                data = session.request_json(
+                    url,
+                    method="GET",
+                    timeout=float(req_timeout),
+                    max_retries=max(0, max_retries - 1),
+                    backoff_base=backoff,
+                    retry_statuses=RETRYABLE_STATUS_CODES,
+                )
+            except HttpError as e:
+                raise _http_error_to_binance_error(e, endpoint=url) from e
         if not isinstance(data, list):
             raise BinanceAPIError(
                 f"Expected list from /fapi/v1/klines for {clean_sym} ({interval}), got {type(data).__name__}",
@@ -517,6 +531,67 @@ class BinanceFuturesClient:
                 endpoint="/fapi/v1/klines",
             )
         return data
+
+    def get_closed_candles(
+        self,
+        symbol: str,
+        *,
+        interval: str = "15m",
+        limit: int = 5,
+        allow_empty: bool = False,
+        session: Optional[http_client.HttpClient] = None,
+        max_retries: int = 3,
+        backoff: float = 0.8,
+    ) -> List[dict[str, Any]]:
+        """拉取并严格过滤已收盘 K 线（close_time <= server_time_ms），返回标准化字典列表。"""
+        clean_sym = clean_symbol(symbol)
+        server_time_ms = self.get_server_time()
+        klines_data = self.fetch_klines(
+            clean_sym,
+            interval=interval,
+            limit=limit,
+            session=session,
+            max_retries=max_retries,
+            backoff=backoff,
+        )
+        if not klines_data:
+            if allow_empty:
+                return []
+            raise BinanceAPIError(
+                f"No candlestick data returned for {clean_sym} ({interval})",
+                code="EMPTY_KLINES",
+                endpoint="/fapi/v1/klines",
+            )
+
+        try:
+            closed_rows = [
+                c
+                for c in klines_data
+                if not isinstance(c, (str, bytes))
+                and isinstance(c, Sequence)
+                and _strict_int(c[6]) <= server_time_ms
+            ]
+            if len(closed_rows) < len(klines_data):
+                # Validate sequence structure on unclosed trailing rows too so malformed payloads fail fast.
+                for c in klines_data:
+                    if isinstance(c, (str, bytes)) or not isinstance(c, Sequence):
+                        raise TypeError(f"Non-sequence kline row: {c!r}")
+                    _strict_int(c[6])
+        except (IndexError, TypeError, ValueError) as exc:
+            raise BinanceAPIError(
+                f"Malformed kline row for {clean_sym} ({interval}): {klines_data!r}",
+                code="INVALID_RESPONSE",
+                endpoint="/fapi/v1/klines",
+            ) from exc
+        if not closed_rows:
+            if allow_empty:
+                return []
+            raise BinanceAPIError(
+                f"No confirmed closed candle for {clean_sym} ({interval})",
+                code="UNCLOSED_CANDLE",
+                endpoint="/fapi/v1/klines",
+            )
+        return [_parse_candle_row(clean_sym, interval, row) for row in closed_rows]
 
     def get_closed_15m_candle(
         self,
@@ -528,39 +603,9 @@ class BinanceFuturesClient:
         """
         拉取并严格确认最新已收盘 K 线（close_time <= server_time_ms），同时附带 prev_candle。
         """
-        clean_sym = clean_symbol(symbol)
-        server_time_ms = self.get_server_time()
-        klines_data = self.fetch_klines(clean_sym, interval=interval, limit=limit)
-        if not klines_data:
-            raise BinanceAPIError(
-                f"No candlestick data returned for {clean_sym} ({interval})",
-                code="EMPTY_KLINES",
-                endpoint="/fapi/v1/klines",
-            )
-
-        try:
-            closed_candles = [c for c in klines_data if _strict_int(c[6]) <= server_time_ms]
-        except (IndexError, TypeError, ValueError) as exc:
-            raise BinanceAPIError(
-                f"Malformed kline row for {clean_sym} ({interval}): {klines_data!r}",
-                code="INVALID_RESPONSE",
-                endpoint="/fapi/v1/klines",
-            ) from exc
-        if not closed_candles:
-            raise BinanceAPIError(
-                f"No confirmed closed candle for {clean_sym} ({interval})",
-                code="UNCLOSED_CANDLE",
-                endpoint="/fapi/v1/klines",
-            )
-        target_candle = closed_candles[-1]
-        prev_candle_raw = closed_candles[-2] if len(closed_candles) >= 2 else None
-
-        candle = _parse_candle_row(clean_sym, interval, target_candle)
-        candle["prev_candle"] = (
-            _parse_candle_row(clean_sym, interval, prev_candle_raw)
-            if prev_candle_raw is not None
-            else None
-        )
+        closed_candles = self.get_closed_candles(symbol, interval=interval, limit=limit, allow_empty=False)
+        candle = closed_candles[-1]
+        candle["prev_candle"] = closed_candles[-2] if len(closed_candles) >= 2 else None
         return candle
 
     def get_active_positions(self, include_short: bool = True) -> List[dict]:
@@ -638,6 +683,28 @@ def _get_public_client() -> BinanceFuturesClient:
         if _PUBLIC_CLIENT is None:
             _PUBLIC_CLIENT = BinanceFuturesClient()
         return _PUBLIC_CLIENT
+
+
+def get_closed_candles(
+    symbol: str,
+    *,
+    interval: str = "15m",
+    limit: int = 5,
+    allow_empty: bool = False,
+    session: Optional[http_client.HttpClient] = None,
+    max_retries: int = 3,
+    backoff: float = 0.8,
+) -> List[dict[str, Any]]:
+    """共享公共已收盘 K 线列表拉取辅助函数。"""
+    return _get_public_client().get_closed_candles(
+        symbol,
+        interval=interval,
+        limit=limit,
+        allow_empty=allow_empty,
+        session=session,
+        max_retries=max_retries,
+        backoff=backoff,
+    )
 
 
 def get_closed_15m_candle(
