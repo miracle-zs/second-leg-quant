@@ -190,14 +190,24 @@
       '均亏: ' + (isFiniteNumber(summary.avg_loss) ? formatMoney(-Math.abs(Number(summary.avg_loss))) : '--')
     );
 
-    setText(
+    const ddPctEl = setText(
       'kpi-max-dd-pct',
       isFiniteNumber(summary.max_drawdown_pct) ? ('-' + Math.abs(Number(summary.max_drawdown_pct)).toFixed(2) + '%') : '--'
     );
-    setText(
+    const ddUsdEl = setText(
       'kpi-max-dd-usd',
       isFiniteNumber(summary.max_drawdown_usd) ? formatMoney(-Math.abs(Number(summary.max_drawdown_usd))) : '--'
     );
+    if (ddPctEl) {
+      const hasDd = isFiniteNumber(summary.max_drawdown_pct) && Math.abs(Number(summary.max_drawdown_pct)) > 0;
+      ddPctEl.classList.toggle('text-[#f8717e]', hasDd);
+      ddPctEl.classList.toggle('text-[#f1f5f9]', !hasDd);
+    }
+    if (ddUsdEl) {
+      const hasDdUsd = isFiniteNumber(summary.max_drawdown_usd) && Math.abs(Number(summary.max_drawdown_usd)) > 0;
+      ddUsdEl.classList.toggle('text-[#f8717e]', hasDdUsd);
+      ddUsdEl.classList.toggle('text-[#9fb0c5]', !hasDdUsd);
+    }
 
     setText('kpi-sharpe', formatRatio(summary.sharpe_ratio, 2));
     const sharpeRating = document.getElementById('kpi-sharpe-rating');
@@ -304,7 +314,7 @@
 
       const pnlVal = isFiniteNumber(p.unrealized_pnl) ? Number(p.unrealized_pnl) : null;
       const roeVal = isFiniteNumber(p.roe_pct) ? Number(p.roe_pct) : null;
-      const pnlCls = pnlVal === null ? 'text-[#9fb0c5]' : (pnlVal >= 0 ? 'text-[#38d99f]' : 'text-[#f8717e]');
+      const pnlCls = pnlVal === null ? 'text-[#9fb0c5]' : (pnlVal > 0 ? 'text-[#38d99f]' : (pnlVal < 0 ? 'text-[#f8717e]' : 'text-[#f1f5f9]'));
       const pnlStr = formatMoney(pnlVal, { signed: true });
       const roeStr = roeVal === null ? '--' : (formatPct(roeVal) + ' ROE');
 
@@ -420,9 +430,9 @@
       return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#f25565]/12 text-[#f8717e] border border-[#f25565]/30">' + safeReason + '</span>';
     }
     if (text.includes('实盘') || text.includes('BINANCE')) {
-      return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#3b82f6]/12 text-[#8ab8ff] border border-[#3b82f6]/30">' + safeReason + '</span>';
+      return '<span class="text-[11px] font-sans text-[#9fb0c5]">' + safeReason + '</span>';
     }
-    return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#151c27] text-[#9fb0c5] border border-[#283446]">' + safeReason + '</span>';
+    return '<span class="text-[11px] font-sans text-[#7f91a8]">' + safeReason + '</span>';
   }
 
   function renderHistoryTable() {
@@ -448,16 +458,19 @@
       const safeSym = escapeHtml(sym);
       const side = h.side.trim().toUpperCase();
       const sideCls = side === 'SHORT'
-        ? 'bg-[#f25565]/12 text-[#f8717e] border-[#f25565]/30'
-        : (side === 'LONG'
-          ? 'bg-[#22c58b]/12 text-[#38d99f] border-[#22c58b]/30'
-          : 'bg-[#151c27] text-[#9fb0c5] border-[#283446]');
+        ? 'text-[#f8717e]'
+        : (side === 'LONG' ? 'text-[#38d99f]' : 'text-[#9fb0c5]');
 
       const pnlVal = isFiniteNumber(h.net_pnl) ? Number(h.net_pnl) : null;
-      const pnlCls = pnlVal === null ? 'text-[#9fb0c5]' : (pnlVal >= 0 ? 'text-[#38d99f]' : 'text-[#f8717e]');
+      const pnlCls = pnlVal === null ? 'text-[#7f91a8] font-normal' : (pnlVal > 0 ? 'text-[#38d99f] font-bold' : (pnlVal < 0 ? 'text-[#f8717e] font-bold' : 'text-[#f1f5f9] font-medium'));
+      const pctVal = isFiniteNumber(h.pnl_pct) ? Number(h.pnl_pct) : null;
+      const pctCls = pctVal === null ? 'text-[#7f91a8] font-normal' : (pctVal > 0 ? 'text-[#38d99f] font-bold' : (pctVal < 0 ? 'text-[#f8717e] font-bold' : 'text-[#f1f5f9] font-medium'));
       const pctText = formatPct(h.pnl_pct);
       const cTime = escapeHtml(h.closed_at || '--');
-      const eTime = escapeHtml(h.entry_time || '--');
+      const hasEntryTime = typeof h.entry_time === 'string' && h.entry_time.trim() !== '' && h.entry_time.trim() !== '--';
+      const entryTimeHtml = hasEntryTime
+        ? '<div class="text-[10px] text-[#7f91a8]">开仓: ' + escapeHtml(h.entry_time.trim()) + '</div>'
+        : '';
       const dur = escapeHtml(h.duration_str || '--');
       const tvUrl = getTvUrl(sym);
 
@@ -465,29 +478,32 @@
       const exitStr = isFiniteNumber(h.exit_price) && Number(h.exit_price) > 0 ? ('$' + formatCryptoPrice(h.exit_price)) : '--';
       const amtStr = isFiniteNumber(h.amount) && Number(h.amount) > 0 ? (Number(h.amount).toLocaleString('en-US') + ' 币') : '--';
       const notionalStr = isFiniteNumber(h.entry_notional) && Number(h.entry_notional) > 0 ? formatMoney(h.entry_notional) : '--';
+      const notionalCellHtml = (notionalStr === '--' && amtStr === '--')
+        ? '<span class="text-[#7f91a8]">--</span>'
+        : '<div>' + escapeHtml(notionalStr) + '</div><div class="text-[10px] text-[#7f91a8]">' + escapeHtml(amtStr) + '</div>';
 
       return (
         '<tr class="trade-row hover:bg-[#17202e] transition-colors font-mono tabular-nums text-[11px]">' +
-          '<td class="px-3.5 py-2.5 text-[#9fb0c5]">' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 text-[#9fb0c5] whitespace-nowrap">' +
             '<div class="text-[#f1f5f9] font-medium">' + cTime + '</div>' +
-            '<div class="text-[10px] text-[#7f91a8]">开仓: ' + eTime + '</div>' +
+            entryTimeHtml +
           '</td>' +
-          '<td class="px-3.5 py-2.5 font-sans font-bold text-[#f1f5f9]">' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 font-sans font-bold text-[#f1f5f9] whitespace-nowrap">' +
             '<div class="flex items-center gap-1.5">' +
               '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" class="text-[#f1f5f9] hover:text-[#8ab8ff] hover:underline inline-flex items-center gap-1">' +
                 '<span>' + safeSym + '</span>' + EXT_ARROW_SVG +
               '</a>' +
-              '<span class="px-1.5 py-0.5 rounded-[3px] text-[9px] font-mono font-semibold border ' + sideCls + '">' + escapeHtml(side) + '</span>' +
+              '<span class="text-[10px] font-mono font-semibold ' + sideCls + '">' + escapeHtml(side) + '</span>' +
             '</div>' +
           '</td>' +
-          '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9]"><div>' + escapeHtml(notionalStr) + '</div><div class="text-[10px] text-[#7f91a8]">' + escapeHtml(amtStr) + '</div></td>' +
-          '<td class="px-3.5 py-2.5 text-right text-[#9fb0c5]">' + escapeHtml(entryStr) + '</td>' +
-          '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9] font-semibold">' + escapeHtml(exitStr) + '</td>' +
-          '<td class="px-3.5 py-2.5 text-right font-bold ' + pnlCls + '">' + escapeHtml(formatMoney(pnlVal, { signed: true })) + '</td>' +
-          '<td class="px-3.5 py-2.5 text-right font-bold ' + pnlCls + '">' + escapeHtml(pctText) + '</td>' +
-          '<td class="px-3.5 py-2.5 text-right text-[#9fb0c5]">' + dur + '</td>' +
-          '<td class="px-3.5 py-2.5">' + renderCloseReasonBadge(h.close_reason) + '</td>' +
-          '<td class="px-3.5 py-2.5 text-[#9fb0c5]">' + escapeHtml(h.trendline_label || '--') + '</td>' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 text-right text-[#f1f5f9] whitespace-nowrap">' + notionalCellHtml + '</td>' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 text-right ' + (entryStr === '--' ? 'text-[#7f91a8]' : 'text-[#9fb0c5]') + ' whitespace-nowrap">' + escapeHtml(entryStr) + '</td>' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 text-right ' + (exitStr === '--' ? 'text-[#7f91a8]' : 'text-[#f1f5f9] font-semibold') + ' whitespace-nowrap">' + escapeHtml(exitStr) + '</td>' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 text-right whitespace-nowrap ' + pnlCls + '">' + escapeHtml(formatMoney(pnlVal, { signed: true })) + '</td>' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 text-right whitespace-nowrap ' + pctCls + '">' + escapeHtml(pctText) + '</td>' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 text-right ' + (dur === '--' ? 'text-[#7f91a8]' : 'text-[#9fb0c5]') + ' whitespace-nowrap">' + dur + '</td>' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 whitespace-nowrap">' + renderCloseReasonBadge(h.close_reason) + '</td>' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 ' + (h.trendline_label ? 'text-[#9fb0c5]' : 'text-[#7f91a8]') + ' whitespace-nowrap">' + escapeHtml(h.trendline_label || '--') + '</td>' +
         '</tr>'
       );
     }).join('');
@@ -500,7 +516,11 @@
       const ctx = chart.ctx;
       const meta = chart.getDatasetMeta(0);
       const data = chart.data && chart.data.datasets && chart.data.datasets[0] ? chart.data.datasets[0].data : [];
-      if (!meta || !Array.isArray(meta.data) || !ctx) return;
+      if (!meta || !Array.isArray(meta.data) || !meta.data.length || !ctx) return;
+      if (pluginOpts.signed) {
+        const plotW = chart.chartArea ? (chart.chartArea.right - chart.chartArea.left) : 400;
+        if (meta.data.length > 14 || (plotW / meta.data.length) < 38) return;
+      }
       ctx.save();
       ctx.font = '600 10px "JetBrains Mono", "SF Mono", monospace';
       ctx.textAlign = 'center';
@@ -706,7 +726,17 @@
           },
           scales: {
             x: { grid: { display: false }, ticks: { maxTicksLimit: 7, font: { size: 10 } } },
-            y: { grid: { color: 'rgba(34, 43, 56, 0.6)' }, ticks: { font: { size: 10 }, callback: v => '$' + Number(v).toLocaleString('en-US') } }
+            y: {
+              grid: { color: 'rgba(34, 43, 56, 0.6)' },
+              ticks: {
+                font: { size: 10 },
+                callback: v => {
+                  const num = Number(v);
+                  if (!Number.isFinite(num)) return '';
+                  return (num < 0 ? '-$' : '$') + Math.abs(num).toLocaleString('en-US');
+                }
+              }
+            }
           }
         }
       });
@@ -777,7 +807,14 @@
                 color: (ctx) => (ctx && ctx.tick && ctx.tick.value === 0 ? '#3d4e66' : 'rgba(34, 43, 56, 0.55)'),
                 lineWidth: (ctx) => (ctx && ctx.tick && ctx.tick.value === 0 ? 1.5 : 1)
               },
-              ticks: { font: { size: 10 }, callback: v => '$' + v }
+              ticks: {
+                font: { size: 10 },
+                callback: v => {
+                  const num = Number(v);
+                  if (!Number.isFinite(num)) return '';
+                  return (num < 0 ? '-$' : '$') + Math.abs(num).toLocaleString('en-US');
+                }
+              }
             }
           }
         }

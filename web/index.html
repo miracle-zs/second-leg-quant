@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <title>突破追多与移动保本系统 — 策略监控</title>
   <link rel="stylesheet" href="static/tailwind.css">
@@ -314,45 +314,54 @@
 
   <!-- Native Top-Layer Interactive 15m/1h Candlestick & TV Chart Dialog -->
   <dialog id="chart-modal" closedby="any" aria-labelledby="modal-chart-title" class="chart-modal-dialog bg-[#10151d] border border-[#324055] rounded-[6px] w-[calc(100vw-1rem)] max-w-5xl h-[85vh] max-h-[740px] flex-col overflow-hidden">
-    <div class="px-4 py-2.5 bg-[#0d1219] border-b border-[#222b38] flex flex-wrap items-center justify-between gap-2 shrink-0">
-      <div class="flex items-center gap-2.5 flex-wrap">
+    <div class="px-3 py-2 bg-[#0d1219] border-b border-[#222b38] flex flex-wrap items-center justify-between gap-1.5 shrink-0">
+      <div class="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+        <span id="modal-nav-group" hidden class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13]">
+          <button type="button" id="modal-prev-btn" class="w-6 h-6 hover:bg-[#192231] text-[#9fb0c5] hover:text-[#f1f5f9] inline-flex items-center justify-center transition-colors" title="上一个标的 (←)" aria-label="上一个标的">
+            <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M7.5 2.5L4 6L7.5 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <span id="modal-nav-pos" class="px-1.5 text-[10px] font-mono tabular-nums text-[#7f91a8]">--</span>
+          <button type="button" id="modal-next-btn" class="w-6 h-6 hover:bg-[#192231] text-[#9fb0c5] hover:text-[#f1f5f9] inline-flex items-center justify-center transition-colors" title="下一个标的 (→)" aria-label="下一个标的">
+            <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 2.5L8 6L4.5 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </span>
         <span class="w-2 h-2 rounded-full bg-[#22c58b]" aria-hidden="true"></span>
-        <h2 id="modal-chart-title" class="font-bold text-[#f1f5f9] text-base font-sans tracking-tight"></h2>
-        <span id="modal-chart-price" class="font-mono tabular-nums text-[#38d99f] font-bold text-sm">--</span>
+        <h2 id="modal-chart-title" class="font-bold text-[#f1f5f9] text-sm sm:text-[15px] font-sans tracking-tight"></h2>
+        <span id="modal-chart-price" class="font-mono tabular-nums text-[#38d99f] font-bold text-xs sm:text-[13px]">--</span>
 
-        <span role="group" aria-label="K线时间周期" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-xs font-mono">
-          <button type="button" class="modal-interval-btn px-2 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-interval="15m">15m</button>
-          <button type="button" class="modal-interval-btn px-2 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1h">1h</button>
-          <button type="button" class="modal-interval-btn px-2 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="4h">4h</button>
-          <button type="button" class="modal-interval-btn px-2 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1d">1D</button>
+        <span role="group" aria-label="K线时间周期" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-mono">
+          <button type="button" class="modal-interval-btn px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-interval="15m">15m</button>
+          <button type="button" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1h">1h</button>
+          <button type="button" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="4h">4h</button>
+          <button type="button" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1d">1D</button>
         </span>
 
-        <span id="modal-bars-group" role="group" aria-label="显示K线根数" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-mono" title="显示 K 线根数">
-          <button type="button" class="modal-bars-btn px-2 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="60">60根</button>
-          <button type="button" class="modal-bars-btn px-2 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-bars="120">120根</button>
-          <button type="button" class="modal-bars-btn px-2 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="168">168根</button>
+        <span id="modal-bars-group" role="group" aria-label="显示K线根数" class="hidden sm:inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-mono" title="显示 K 线根数">
+          <button type="button" class="modal-bars-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="60">60根</button>
+          <button type="button" class="modal-bars-btn px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-bars="120">120根</button>
+          <button type="button" class="modal-bars-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="168">168根</button>
         </span>
       </div>
 
-      <div class="flex items-center gap-2">
-        <div class="hidden sm:flex items-center gap-3 text-xs font-mono tabular-nums mr-1">
-          <span class="inline-flex items-center gap-1.5 text-[#f5c451]"><span class="w-2.5 h-0.5 bg-[#f0b429] inline-block"></span>EMA5 <span id="modal-hud-ema5">--</span></span>
-          <span class="inline-flex items-center gap-1.5 text-[#8ab8ff]"><span class="w-2.5 h-0.5 bg-[#60a5fa] inline-block"></span>EMA10 <span id="modal-hud-ema10">--</span></span>
+      <div class="flex items-center gap-1.5 ml-auto">
+        <div class="hidden lg:flex items-center gap-2 text-[11px] font-mono tabular-nums mr-0.5">
+          <span class="inline-flex items-center gap-1 text-[#f5c451]"><span class="w-2 h-0.5 bg-[#f0b429] inline-block"></span>EMA5 <span id="modal-hud-ema5">--</span></span>
+          <span class="inline-flex items-center gap-1 text-[#8ab8ff]"><span class="w-2 h-0.5 bg-[#60a5fa] inline-block"></span>EMA10 <span id="modal-hud-ema10">--</span></span>
         </div>
 
         <span role="group" aria-label="图表引擎切换" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-sans">
-          <button type="button" id="btn-chart-engine-native" class="px-2 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold">极速K线</button>
-          <button type="button" id="btn-chart-engine-tv" class="px-2 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]">TV内嵌</button>
+          <button type="button" id="btn-chart-engine-native" class="px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold">极速K线</button>
+          <button type="button" id="btn-chart-engine-tv" class="px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]">TV内嵌</button>
         </span>
 
-        <a id="modal-external-link" href="#" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1 rounded-[4px] bg-[#2563eb] hover:bg-[#1d4ed8] text-white text-xs font-semibold inline-flex items-center gap-1 transition-colors" title="在 TradingView 打开专属画线布局 (ig0LuDL8)">
+        <a id="modal-external-link" href="#" target="_blank" rel="noopener noreferrer" class="px-2 py-0.5 rounded-[4px] bg-[#3b82f6]/12 hover:bg-[#3b82f6]/22 text-[#8ab8ff] hover:text-white border border-[#3b82f6]/35 text-[11px] font-medium inline-flex items-center gap-1 transition-colors" title="在 TradingView 打开专属画线布局 (ig0LuDL8)">
           <span>TV画线</span>
           <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true">
             <path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </a>
 
-        <button id="modal-close-btn" type="button" autofocus class="w-7 h-7 rounded-[4px] bg-[#151c27] hover:bg-[#222b38] text-[#9fb0c5] hover:text-[#f1f5f9] border border-[#283446] inline-flex items-center justify-center transition-colors" title="关闭 (Esc)" aria-label="关闭弹窗">
+        <button id="modal-close-btn" type="button" autofocus class="w-6 h-6 rounded-[4px] bg-[#151c27] hover:bg-[#222b38] text-[#9fb0c5] hover:text-[#f1f5f9] border border-[#283446] inline-flex items-center justify-center transition-colors" title="关闭 (Esc)" aria-label="关闭弹窗">
           <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>

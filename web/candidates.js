@@ -490,7 +490,7 @@
         : '24h振幅区间缺失';
 
       const chgClass = isFiniteNum(c.price_chg_24h)
-        ? (c.price_chg_24h >= 0 ? 'text-[#38d99f] font-semibold' : 'text-[#f8717e] font-semibold')
+        ? (c.price_chg_24h > 0 ? 'text-[#38d99f] font-semibold' : (c.price_chg_24h < 0 ? 'text-[#f8717e] font-semibold' : 'text-[#f1f5f9] font-medium'))
         : 'text-[#7f91a8]';
       const chgText = escapeHtml(formatSignedPct(c.price_chg_24h, 2));
 
@@ -500,7 +500,7 @@
         const daysLeft = isFiniteNum(c.overflow_days_left) ? c.overflow_days_left.toFixed(1) : '--';
         mcHtml = `<div class="inline-flex flex-col items-end">
           <div class="text-[#f5c451] font-mono tabular-nums font-semibold sym-mc-val">${mcStr}</div>
-          <span class="px-1 py-0.5 rounded-[3px] text-[9px] font-sans bg-[#f0b429]/12 text-[#f5c451] border border-[#f0b429]/30 mt-0.5" title="曾落入 $30M 以下底池，市值溢出后保持 7 天跟踪">溢出 ${escapeHtml(daysLeft)}d</span>
+          <span class="text-[10px] font-mono tabular-nums text-[#f5c451]/80 mt-0.5" title="曾落入 $30M 以下底池，市值溢出后保持 7 天跟踪">7d溢出 · ${escapeHtml(daysLeft)}d</span>
         </div>`;
       } else {
         mcHtml = `<div class="text-[#f1f5f9] font-mono tabular-nums sym-mc-val">${mcStr}</div>`;
@@ -826,7 +826,10 @@
             c.price_chg_24h = chgVal;
             if (refs && refs.chgEl) {
               refs.chgEl.textContent = formatSignedPct(chgVal, 2);
-              refs.chgEl.className = `py-2.5 px-2.5 font-mono tabular-nums sym-chg whitespace-nowrap text-right ${chgVal >= 0 ? 'text-[#38d99f] font-semibold' : 'text-[#f8717e] font-semibold'}`;
+              const nextChgCls = chgVal > 0
+                ? 'text-[#38d99f] font-semibold'
+                : (chgVal < 0 ? 'text-[#f8717e] font-semibold' : 'text-[#f1f5f9] font-medium');
+              refs.chgEl.className = `py-2.5 px-2.5 font-mono tabular-nums sym-chg whitespace-nowrap text-right ${nextChgCls}`;
             }
           }
 
@@ -1139,6 +1142,27 @@
     });
   }
 
+  function openCandidateChartModal(sym, tvSym) {
+    if (!KlineModal) return;
+    const visible = candidatesState.filter(matchesCurrentFilter);
+    const idx = visible.findIndex((c) => c.symbol === sym);
+    if (typeof KlineModal.setNavMeta === 'function') {
+      KlineModal.setNavMeta(idx, visible.length);
+    }
+    KlineModal.open(sym, tvSym);
+  }
+
+  function navigateModalSymbol(delta) {
+    if (!KlineModal || typeof KlineModal.getCurrentSymbol !== 'function') return;
+    const visible = candidatesState.filter(matchesCurrentFilter);
+    if (visible.length <= 1) return;
+    const currentSym = KlineModal.getCurrentSymbol();
+    const curIdx = visible.findIndex((c) => c.symbol === currentSym);
+    const nextIdx = curIdx === -1 ? 0 : (curIdx + delta + visible.length) % visible.length;
+    const nextItem = visible[nextIdx];
+    openCandidateChartModal(nextItem.symbol, getTvSymbol(nextItem.symbol));
+  }
+
   if (tableBody) {
     tableBody.addEventListener('click', async (e) => {
       const copyBtn = e.target.closest('.btn-copy-sym');
@@ -1169,7 +1193,7 @@
         if (!sym || !tvSym) {
           throw new Error('Preview button missing data-sym or data-tv');
         }
-        if (KlineModal) KlineModal.open(sym, tvSym);
+        openCandidateChartModal(sym, tvSym);
         return;
       }
 
@@ -1178,8 +1202,8 @@
       if (row) {
         const sym = row.getAttribute('data-sym');
         const tvSym = row.getAttribute('data-tv-sym');
-        if (sym && tvSym && KlineModal) {
-          KlineModal.open(sym, tvSym);
+        if (sym && tvSym) {
+          openCandidateChartModal(sym, tvSym);
         }
       }
     });
@@ -1287,6 +1311,7 @@
         modalVisibleBars = bars;
         saveUiState();
       },
+      onNavigateSymbol: navigateModalSymbol,
     });
   }
 

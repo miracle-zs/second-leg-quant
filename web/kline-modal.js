@@ -14,6 +14,7 @@
   } = Common;
 
   const VALID_BAR_COUNTS = new Set([60, 120, 168]);
+  const RIGHT_AXIS_WIDTH = 78;
 
   let modalCurrentSymbol = '';
   let modalCurrentTvSymbol = '';
@@ -25,10 +26,15 @@
   let modalFetchController = null;
   let modalRenderRafId = null;
   let onVisibleBarsChange = null;
+  let onNavigateSymbol = null;
   let supportsDisplayTransition;
 
   const chartModal = document.getElementById('chart-modal');
   const modalCloseBtn = document.getElementById('modal-close-btn');
+  const modalNavGroup = document.getElementById('modal-nav-group');
+  const modalPrevBtn = document.getElementById('modal-prev-btn');
+  const modalNextBtn = document.getElementById('modal-next-btn');
+  const modalNavPos = document.getElementById('modal-nav-pos');
   const modalChartTitle = document.getElementById('modal-chart-title');
   const modalChartPrice = document.getElementById('modal-chart-price');
   const modalExternalLink = document.getElementById('modal-external-link');
@@ -118,6 +124,15 @@
     return res;
   }
 
+  function formatCompactVolume(vol) {
+    if (!isFiniteNum(vol)) return '--';
+    const v = Math.abs(Number(vol));
+    if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+    if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+    if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k';
+    return v.toFixed(0);
+  }
+
   function formatAxisTime(tsMs, interval) {
     const bj = toBeijingDate(tsMs);
     const mm = String(bj.getUTCMonth() + 1).padStart(2, '0');
@@ -155,7 +170,7 @@
     const priceH = plotH * 0.78;
     const priceSpanH = Math.max(40, priceH - topPadding);
     const volH = plotH * 0.17;
-    const rightPadding = 72;
+    const rightPadding = RIGHT_AXIS_WIDTH;
     const chartW = w - rightPadding;
 
     let minP = Infinity;
@@ -300,11 +315,45 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
+      // Dynamic Y-axis hover price badge
+      const hoverPriceText = formatCryptoPrice(c.close);
+      ctx.fillStyle = '#243247';
+      ctx.fillRect(chartW + 2, hy - 9, rightPadding - 4, 18);
+      ctx.strokeStyle = '#4b5c75';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(chartW + 2.5, hy - 8.5, rightPadding - 5, 17);
+      ctx.fillStyle = '#f1f5f9';
+      ctx.font = 'bold 10px "JetBrains Mono", "SF Mono", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(hoverPriceText, chartW + 6, hy + 4);
+
+      // Dynamic X-axis hover time badge
+      const axisTimeText = formatAxisTime(c.time, modalCurrentInterval);
+      ctx.font = 'bold 10px "JetBrains Mono", "SF Mono", monospace';
+      const timeBoxW = Math.max(54, Math.ceil(ctx.measureText(axisTimeText).width) + 12);
+      const timeBoxX = Math.max(2, Math.min(chartW - timeBoxW - 2, hx - timeBoxW / 2));
+      ctx.fillStyle = '#243247';
+      ctx.fillRect(timeBoxX, plotH + 2, timeBoxW, 18);
+      ctx.strokeStyle = '#4b5c75';
+      ctx.strokeRect(timeBoxX + 0.5, plotH + 2.5, timeBoxW - 1, 17);
+      ctx.fillStyle = '#f1f5f9';
+      ctx.textAlign = 'center';
+      ctx.fillText(axisTimeText, timeBoxX + timeBoxW / 2, plotH + 14);
+      ctx.textAlign = 'left';
+
       const bj = toBeijingDate(c.time);
       const timeStr = `${bj.getUTCMonth() + 1}/${bj.getUTCDate()} ${String(bj.getUTCHours()).padStart(2, '0')}:${String(bj.getUTCMinutes()).padStart(2, '0')}`;
       const chg = c.open > 0 ? (((c.close - c.open) / c.open) * 100).toFixed(2) : null;
       const isBull = c.close >= c.open;
       const chgLabel = chg !== null ? `${Number(chg) > 0 ? '+' : ''}${chg}%` : '--';
+
+      if (modalHoverIndex < n * 0.45) {
+        modalTooltip.style.left = 'auto';
+        modalTooltip.style.right = `${RIGHT_AXIS_WIDTH + 10}px`;
+      } else {
+        modalTooltip.style.left = '12px';
+        modalTooltip.style.right = 'auto';
+      }
 
       modalTooltip.innerHTML = `
         <div class="flex items-center gap-2 mb-1">
@@ -320,7 +369,7 @@
         <div class="flex items-center gap-3 mt-1 pt-1 border-t border-[#222b38] text-[10px]">
           <span class="text-[#f5c451]">EMA5 ${escapeHtml(formatCryptoPrice(c.ema5))}</span>
           <span class="text-[#8ab8ff]">EMA10 ${escapeHtml(formatCryptoPrice(c.ema10))}</span>
-          <span class="text-[#9fb0c5]">成交量 ${escapeHtml((c.volume / 1000).toFixed(1))}k</span>
+          <span class="text-[#9fb0c5]">成交量 ${escapeHtml(formatCompactVolume(c.volume))}</span>
         </div>
       `;
       modalTooltip.classList.remove('hidden');
@@ -484,7 +533,7 @@
     modalNativeView.addEventListener('mousemove', (e) => {
       const rect = modalNativeView.getBoundingClientRect();
       const x = e.clientX - rect.left;
-      const chartW = modalNativeView.clientWidth - 72;
+      const chartW = modalNativeView.clientWidth - RIGHT_AXIS_WIDTH;
       const visibleCount = Math.min(modalVisibleBars, modalCandles.length);
       if (x >= 0 && x <= chartW && visibleCount > 0) {
         const slot = chartW / visibleCount;
@@ -548,24 +597,34 @@
   if (btnEngineNative && btnEngineTv) {
     btnEngineNative.addEventListener('click', () => {
       modalActiveEngine = 'native';
-      btnEngineNative.className = 'px-2 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold';
-      btnEngineTv.className = 'px-2 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]';
-      if (modalBarsGroup) modalBarsGroup.classList.remove('hidden');
+      btnEngineNative.className = 'px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold';
+      btnEngineTv.className = 'px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]';
+      if (modalBarsGroup) modalBarsGroup.hidden = false;
       if (modalTvView) modalTvView.classList.add('hidden');
       if (modalNativeView) modalNativeView.classList.remove('hidden');
       fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
     });
     btnEngineTv.addEventListener('click', () => {
       modalActiveEngine = 'tv';
-      btnEngineTv.className = 'px-2 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold';
-      btnEngineNative.className = 'px-2 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]';
-      if (modalBarsGroup) modalBarsGroup.classList.add('hidden');
+      btnEngineTv.className = 'px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold';
+      btnEngineNative.className = 'px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]';
+      if (modalBarsGroup) modalBarsGroup.hidden = true;
       if (modalNativeView) modalNativeView.classList.add('hidden');
       if (modalTvView) modalTvView.classList.remove('hidden');
       loadTvIframe();
     });
   }
 
+  if (modalPrevBtn) {
+    modalPrevBtn.addEventListener('click', () => {
+      if (typeof onNavigateSymbol === 'function') onNavigateSymbol(-1);
+    });
+  }
+  if (modalNextBtn) {
+    modalNextBtn.addEventListener('click', () => {
+      if (typeof onNavigateSymbol === 'function') onNavigateSymbol(1);
+    });
+  }
   if (modalRetryBtn) {
     modalRetryBtn.addEventListener('click', () => fetchModalKlines(modalCurrentSymbol, modalCurrentInterval));
   }
@@ -575,6 +634,18 @@
     chartModal.addEventListener('cancel', (event) => {
       event.preventDefault();
       closeTopLayer(chartModal);
+    });
+    chartModal.addEventListener('keydown', (event) => {
+      if (!chartModal.open || typeof onNavigateSymbol !== 'function') return;
+      const tag = document.activeElement ? document.activeElement.tagName : '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        onNavigateSymbol(-1);
+      } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+        event.preventDefault();
+        onNavigateSymbol(1);
+      }
     });
     if (typeof global.HTMLDialogElement === 'undefined' || !('closedBy' in global.HTMLDialogElement.prototype)) {
       chartModal.addEventListener('click', (event) => {
@@ -598,12 +669,23 @@
     }
   });
 
+  function setNavMeta(index, total) {
+    if (!modalNavGroup || !modalNavPos) return;
+    if (Number.isInteger(index) && Number.isInteger(total) && total > 1 && index >= 0 && index < total) {
+      modalNavPos.textContent = `${index + 1}/${total}`;
+      modalNavGroup.hidden = false;
+    } else {
+      modalNavGroup.hidden = true;
+    }
+  }
+
   function init(opts) {
     const options = opts || {};
     if (VALID_BAR_COUNTS.has(Number(options.visibleBars))) {
       modalVisibleBars = Number(options.visibleBars);
     }
     onVisibleBarsChange = typeof options.onVisibleBarsChange === 'function' ? options.onVisibleBarsChange : null;
+    onNavigateSymbol = typeof options.onNavigateSymbol === 'function' ? options.onNavigateSymbol : null;
     updateModalBarsUi();
   }
 
@@ -612,7 +694,9 @@
     init,
     open: openTvModal,
     close: closeTvModal,
+    setNavMeta,
     isOpen: () => Boolean(chartModal && chartModal.open),
     getVisibleBars: () => modalVisibleBars,
+    getCurrentSymbol: () => modalCurrentSymbol,
   });
 })(window);
