@@ -920,6 +920,12 @@ def check_feature_4_trailing_stops(
         except BinanceAPIError as e:
             logger.warning(f"批量获取移动止盈实时价格失败: {e}")
 
+    if not resolved_prices and not any(
+        "pending_trailing_activation_price" in p or "pending_profit_lock_price" in p
+        for p in initial_open
+    ):
+        return []
+
     activation_alerts: list[tuple[str, float, str, str]] = []
     profit_lock_alerts: list[tuple[str, float, float, str, str]] = []
 

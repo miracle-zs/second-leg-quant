@@ -30,7 +30,7 @@ import sqlite3
 import sys
 import time
 import urllib.error
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
@@ -77,6 +77,7 @@ from config import (  # noqa: E402
     clean_symbol,
     get_beijing_time_str,
     get_env_setting,
+    open_sqlite_connection,
     resolve_database_path,
 )
 import db_store  # noqa: E402
@@ -173,8 +174,14 @@ class _SqliteStore:
             try:
                 self.load()
                 yield conn
+            except BaseException:
+                self._on_tx_rollback()
+                raise
             finally:
                 self._tx_conn = None
+
+    def _on_tx_rollback(self) -> None:
+        pass
 
     def load(self) -> None:
         raise NotImplementedError
@@ -306,13 +313,69 @@ class ResonanceStateStore(_SqliteStore):
     def __init__(self, database: Optional[Path] = None):
         super().__init__(database)
         self.data: Dict[str, Any] = db_store.default_resonance_state()
+        self._state_loaded: bool = False
+        self._last_raw_payload: Optional[str] = None
         self.load()
 
-    def load(self) -> None:
-        self.data = db_store.load_resonance_state(self.database, conn=self._tx_conn)
+    def _on_tx_rollback(self) -> None:
+        self._state_loaded = False
+        self._last_raw_payload = None
+
+    @staticmethod
+    def _read_raw_payload(conn: sqlite3.Connection) -> Optional[str]:
+        table_row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'resonance_state'"
+        ).fetchone()
+        if table_row is None:
+            return None
+        row = conn.execute("SELECT payload FROM resonance_state WHERE id = 1").fetchone()
+        return str(row[0]) if row is not None else None
+
+    def _apply_raw_payload(self, raw_payload: Optional[str]) -> None:
+        if raw_payload is None:
+            self.data = db_store.default_resonance_state()
+            self._last_raw_payload = None
+            self._state_loaded = True
+            return
+        loaded = json.loads(raw_payload)
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Expected JSON object in resonance_state, got {type(loaded).__name__}")
+        defaults = db_store.default_resonance_state()
+        for key, default_val in defaults.items():
+            if key != "initialized":
+                loaded.setdefault(key, default_val)
+        if "initialized" not in loaded:
+            loaded["initialized"] = bool(
+                loaded.get("last_updated")
+                or loaded.get("active_resonance_symbols")
+                or loaded.get("history")
+            )
+        self.data = loaded
+        self._last_raw_payload = raw_payload
+        self._state_loaded = True
+
+    def load(self, *, only_if_changed: bool = False) -> None:
+        if self._tx_conn is not None:
+            raw_payload = self._read_raw_payload(self._tx_conn)
+            if only_if_changed and self._state_loaded and raw_payload == self._last_raw_payload:
+                return
+            self._apply_raw_payload(raw_payload)
+            return
+        if not self.database.exists():
+            if only_if_changed and self._state_loaded and self._last_raw_payload is None:
+                return
+            self._apply_raw_payload(None)
+            return
+        with closing(open_sqlite_connection(self.database, readonly=True)) as ro_conn:
+            raw_payload = self._read_raw_payload(ro_conn)
+        if only_if_changed and self._state_loaded and raw_payload == self._last_raw_payload:
+            return
+        self._apply_raw_payload(raw_payload)
 
     def save(self) -> None:
         self.data = db_store.save_resonance_state(self.database, self.data, conn=self._tx_conn)
+        self._last_raw_payload = json.dumps(self.data, ensure_ascii=False, allow_nan=False)
+        self._state_loaded = True
 
     def get_active_symbols(self) -> set[str]:
         if self._tx_conn is None:
@@ -595,7 +658,7 @@ class TradeAlertDaemon:
             if self._feature_retry_state["f2"]["done"] and self._feature_retry_state["f3"]["done"]:
                 self.last_evaluated_15m_bucket = current_bucket
         else:
-            self.state_store.load()
+            self.state_store.load(only_if_changed=True)
             if self.state_store.data.get("pending_breakouts"):
                 check_feature_2_breakout(
                     self.notifier,
@@ -613,13 +676,14 @@ class TradeAlertDaemon:
                     current_bucket=current_bucket,
                 )
 
-        check_feature_4_trailing_stops(
-            self.notifier,
-            self.pos_store,
-            float(self.cfg.get("trailing_activation_pct", 6.0)),
-            float(self.cfg.get("trailing_lock_pct", 1.0)),
-            price_cache=price_cache or None,
-        )
+        if any(p["status"] == "OPEN" for p in self.pos_store._open_positions):
+            check_feature_4_trailing_stops(
+                self.notifier,
+                self.pos_store,
+                float(self.cfg.get("trailing_activation_pct", 6.0)),
+                float(self.cfg.get("trailing_lock_pct", 1.0)),
+                price_cache=price_cache or None,
+            )
 
     def start(self) -> None:
         signal.signal(signal.SIGINT, self.handle_signal)

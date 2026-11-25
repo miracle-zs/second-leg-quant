@@ -212,6 +212,86 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         self.assertEqual(events[0]["type"], "TRAILING_ACTIVATED")
         self.assertIn("$0.00004500", sent[0])
 
+    def test_idle_daemon_tick_skips_begin_immediate_and_tracks_state_freshness(self):
+        db_store.publish_candidates(
+            self.db_path,
+            [{"symbol": "BTCUSDT", "is_resonance": False}],
+            updated_at="2026-11-25 12:00:00+08:00",
+        )
+        db_store.save_resonance_state(
+            self.db_path,
+            {
+                "initialized": True,
+                "active_resonance_symbols": ["YBUSDT"],
+                "notified_breakout_keys": [],
+                "notified_breakout_times": {},
+                "pending_breakouts": {},
+                "history": {},
+            },
+        )
+        daemon = tad.TradeAlertDaemon({"database_path": str(self.db_path)}, dry_run=True)
+        daemon._last_pool_stamp = db_store.load_candidate_version(self.db_path)
+        self.assertTrue(daemon.state_store._state_loaded)
+
+        with patch.object(db_store, "transaction", wraps=db_store.transaction) as tx_spy, patch.object(
+            tad, "check_feature_4_trailing_stops", wraps=tad.check_feature_4_trailing_stops
+        ) as f4_spy, patch.object(
+            daemon.state_store, "_apply_raw_payload", wraps=daemon.state_store._apply_raw_payload
+        ) as decode_spy:
+            daemon.run_iteration(now=1800000005)  # idle else-branch, no open positions
+            daemon.run_iteration(now=1800000006)  # repeated idle tick with unchanged resonance_state
+
+        self.assertEqual(tx_spy.call_count, 0)
+        self.assertEqual(f4_spy.call_count, 0)
+        self.assertEqual(decode_spy.call_count, 0)
+
+        # External DB mutation must still take effect immediately on the next idle tick
+        now_sec = 1795234500
+        db_store.save_resonance_state(
+            self.db_path,
+            {
+                "initialized": True,
+                "active_resonance_symbols": ["YBUSDT"],
+                "notified_breakout_keys": [],
+                "notified_breakout_times": {},
+                "pending_breakouts": {
+                    "YBUSDT_L1": {
+                        "symbol": "YBUSDT",
+                        "res_price": 0.05,
+                        "close_price": 0.052,
+                        "pct": 4.0,
+                        "candle": {"open_time": now_sec, "close_time": now_sec + 899, "candle_time": "2026-11-21 12:15"},
+                        "layout_id": "ig0LuDL8",
+                        "keys": ["YBUSDT_L1"],
+                    }
+                },
+                "history": {},
+            },
+        )
+        with patch.object(
+            daemon.state_store, "_apply_raw_payload", wraps=daemon.state_store._apply_raw_payload
+        ) as decode_spy2, patch.object(daemon.notifier, "send_alert", return_value=True) as mock_send:
+            daemon.run_iteration(now=1800000007)
+
+        self.assertEqual(decode_spy2.call_count, 3)  # 1x load(only_if_changed=True) + 2x transaction reloads in retry_only
+        self.assertEqual(mock_send.call_count, 1)
+        reloaded = tad.ResonanceStateStore(self.db_path)
+        self.assertEqual(reloaded.data.get("pending_breakouts"), {})
+        self.assertTrue(reloaded.has_breakout_notified("YBUSDT_L1"))
+
+    def test_feature_4_skips_transaction_when_no_prices_and_no_pending_alerts(self):
+        db_store.upsert_open_position(
+            self.db_path,
+            {"symbol": "PEPEUSDT", "entry_price": 0.00004, "amount": 100.0, "status": "OPEN"},
+        )
+        pos_store = tad.PositionStore(self.db_path)
+        with patch.object(tad, "fetch_ticker_prices", side_effect=bc.BinanceAPIError("down")), patch.object(
+            pos_store, "transaction", wraps=pos_store.transaction
+        ) as tx_spy:
+            events = tad.check_feature_4_trailing_stops(self.notifier, pos_store)
+        self.assertEqual(events, [])
+        self.assertEqual(tx_spy.call_count, 0)
+
     def test_empty_tv_cache_honored_list_pos_warns_and_rotating_log(self):
         layout_id = "empty-layout"
         with tempfile.TemporaryDirectory() as directory:
@@ -606,6 +686,405 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               const missingHistory = { ...validBase, daily_pnl: [], trade_history: null };
               assert.throws(() => win3.__acctTest.renderDashboard(missingHistory), /Invalid \\/api\\/account payload/);
             }).catch((err) => {
+              console.error(err);
+              process.exit(1);
+            });
+            """
+        )
+        res = subprocess.run(
+            [node_bin, "-e", script],
+            cwd=str(ROOT_DIR),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(res.returncode, 0, msg=f"stdout={res.stdout}\nstderr={res.stderr}")
+
+    def test_web_js_perf_optimizations_runtime(self):
+        node_bin = shutil.which("node")
+        self.assertIsNotNone(node_bin, "node is required to verify web/*.js perf behavior")
+        script = textwrap.dedent(
+            """
+            const assert = require('assert');
+            const fs = require('fs');
+            const path = require('path');
+            const vm = require('vm');
+
+            const root = process.cwd();
+            const commonCode = fs.readFileSync(path.join(root, 'web/common.js'), 'utf8');
+            const klineModalCode = fs.readFileSync(path.join(root, 'web/kline-modal.js'), 'utf8');
+            const candCode = fs.readFileSync(path.join(root, 'web/candidates.js'), 'utf8');
+            const acctCode = fs.readFileSync(path.join(root, 'web/account.js'), 'utf8');
+
+            (async () => {
+              // 1. account.js: one-time Chart.defaults, upsertChart preserves options + dynamic tooltips,
+              //    AbortController cancels superseded tryLoadData(), visibilitychange honors 5s cooldown.
+              const acctEls = {};
+              const makeAcctEl = (id) => ({
+                id,
+                textContent: '',
+                innerHTML: '',
+                value: '',
+                hidden: false,
+                dataset: {},
+                style: {},
+                classList: { add() {}, remove() {}, toggle() {} },
+                addEventListener() {},
+              });
+              const createdCharts = {};
+              const updateCalls = [];
+              function FakeChart(canvas, config) {
+                this.canvas = canvas;
+                this.data = config.data;
+                this.options = config.options;
+                this.update = (mode) => updateCalls.push({ id: canvas.id, mode });
+                createdCharts[canvas.id] = this;
+              }
+              let defaultsColorWrites = 0;
+              let defaultsColorVal = '';
+              FakeChart.defaults = {
+                font: {},
+                borderColor: '',
+                get color() { return defaultsColorVal; },
+                set color(v) { defaultsColorWrites += 1; defaultsColorVal = v; },
+              };
+
+              let fakeNow = 100000;
+              class FakeDate extends Date {
+                static now() { return fakeNow; }
+              }
+              const docListeners = {};
+              const acctErrors = [];
+              let fetchCallIndex = 0;
+              const pendingResolvers = [];
+              const abortedSignals = [];
+              const acctPayload1 = {
+                api_status: { mode: 'BINANCE_REALTIME' },
+                generated_at: '2026-11-25 12:00:00',
+                summary: { win_count: 1, loss_count: 0, breakeven_count: 0, initial_capital: 1000 },
+                active_positions: [],
+                trade_history: [],
+                equity_curve: [{ datetime: '2026-11-25 12:00:00', equity: 1050 }],
+                daily_pnl: [{ date: '2026-11-25', net_pnl: 50, trades_count: 1 }],
+                pnl_distribution: { bins: [{ label: '0~5%', min: 0, max: 5, count: 1, trades: ['BTCUSDT'] }] },
+                income_breakdown: {},
+              };
+              const acctPayload2 = {
+                ...acctPayload1,
+                generated_at: '2026-11-25 12:01:00',
+                summary: { win_count: 2, loss_count: 0, breakeven_count: 0, initial_capital: 1000 },
+                daily_pnl: [{ date: '2026-11-25', net_pnl: 80, trades_count: 2 }],
+                pnl_distribution: { bins: [{ label: '0~5%', min: 0, max: 5, count: 2, trades: ['BTCUSDT', 'ETHUSDT'] }] },
+              };
+
+              const winAcct = {
+                Date: FakeDate,
+                document: {
+                  hidden: false,
+                  readyState: 'loading',
+                  getElementById: (id) => (acctEls[id] ||= makeAcctEl(id)),
+                  querySelectorAll: () => [],
+                  addEventListener(ev, fn) { (docListeners[ev] ||= []).push(fn); },
+                },
+                Chart: FakeChart,
+                fetch: (url, opts) => {
+                  const idx = ++fetchCallIndex;
+                  return new Promise((resolve, reject) => {
+                    if (opts && opts.signal) {
+                      opts.signal.addEventListener('abort', () => {
+                        abortedSignals.push(idx);
+                        reject(new DOMException('Aborted', 'AbortError'));
+                      }, { once: true });
+                    }
+                    pendingResolvers.push({ idx, resolve });
+                  });
+                },
+                AbortController,
+                DOMException,
+                setTimeout,
+                clearTimeout,
+                setInterval: () => 1,
+                console: { error: (...a) => acctErrors.push(a.join(' ')), warn() {} },
+              };
+              winAcct.window = winAcct;
+              vm.runInNewContext(commonCode, winAcct);
+              const acctTestCode = acctCode.replace(
+                /\\}\\)\\(\\);\\s*$/,
+                'window.__acctTest = { renderDashboard, tryLoadData };})();'
+              );
+              vm.runInNewContext(acctTestCode, winAcct);
+
+              // First render configures Chart.defaults once and creates chart instances
+              winAcct.__acctTest.renderDashboard(acctPayload1);
+              assert.strictEqual(defaultsColorWrites, 1);
+              const eqOptionsRef = createdCharts['chart-equity-curve'].options;
+              const dailyOptionsRef = createdCharts['chart-daily-pnl'].options;
+              const distOptionsRef = createdCharts['chart-pnl-dist'].options;
+
+              // Second render does NOT re-mutate Chart.defaults or overwrite chart.options
+              winAcct.__acctTest.renderDashboard(acctPayload2);
+              assert.strictEqual(defaultsColorWrites, 1);
+              assert.strictEqual(createdCharts['chart-equity-curve'].options, eqOptionsRef);
+              assert.strictEqual(createdCharts['chart-daily-pnl'].options, dailyOptionsRef);
+              assert.strictEqual(createdCharts['chart-pnl-dist'].options, distOptionsRef);
+              assert.ok(updateCalls.some((u) => u.id === 'chart-daily-pnl' && u.mode === 'none'));
+
+              // Tooltip callbacks read currentAccountData dynamically (reflects acctPayload2, not acctPayload1)
+              const dailyTooltip = dailyOptionsRef.plugins.tooltip.callbacks.label({ dataIndex: 0, raw: 80 });
+              assert.deepStrictEqual(Array.from(dailyTooltip), ['当日净盈亏: +$80.00', '成交笔数: 2 笔']);
+              const distTooltip = distOptionsRef.plugins.tooltip.callbacks.label({ dataIndex: 0, raw: 2 });
+              assert.strictEqual(distTooltip, '笔数: 2 笔 (BTCUSDT, ETHUSDT)');
+
+              // AbortController supersedes in-flight tryLoadData cleanly without logging errors
+              const p1 = winAcct.__acctTest.tryLoadData();
+              const p2 = winAcct.__acctTest.tryLoadData();
+              assert.deepStrictEqual(abortedSignals, [1]);
+              assert.strictEqual(pendingResolvers.length, 2);
+              pendingResolvers[1].resolve({
+                ok: true,
+                status: 200,
+                headers: { get: () => '"etag-2"' },
+                text: async () => JSON.stringify(acctPayload2),
+              });
+              await Promise.all([p1, p2]);
+              assert.strictEqual(acctErrors.length, 0);
+
+              // visibilitychange within 5s cooldown must NOT trigger fetch; after 5s it MUST trigger fetch
+              const beforeVisCalls = fetchCallIndex;
+              docListeners.visibilitychange.forEach((fn) => fn());
+              assert.strictEqual(fetchCallIndex, beforeVisCalls);
+
+              fakeNow += 5001;
+              const p3 = (docListeners.visibilitychange.forEach((fn) => fn()), pendingResolvers[pendingResolvers.length - 1]);
+              assert.strictEqual(fetchCallIndex, beforeVisCalls + 1);
+              p3.resolve({
+                ok: true,
+                status: 304,
+                headers: { get: () => '"etag-2"' },
+                text: async () => '',
+              });
+              await new Promise((r) => setTimeout(r, 0));
+
+              // 2. candidates.js: matchMedia cached + change listener, redundant sort/DOM display skipped
+              let matchMediaCalls = 0;
+              let reducedMotionMatches = false;
+              const mediaListeners = [];
+              const candEls = {};
+              const makeStyleTracker = () => {
+                let displayVal = '';
+                let displaySets = 0;
+                const styleObj = {
+                  get display() { return displayVal; },
+                  set display(v) { displaySets += 1; displayVal = v; },
+                  get _displaySets() { return displaySets; },
+                };
+                return styleObj;
+              };
+              const makeCandEl = (id) => ({
+                id,
+                textContent: '',
+                innerHTML: '',
+                title: '',
+                className: '',
+                value: '',
+                hidden: false,
+                dataset: {},
+                style: makeStyleTracker(),
+                classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+                addEventListener() {},
+                removeEventListener() {},
+                setAttribute() {},
+                removeAttribute() {},
+                getAttribute() { return null; },
+                querySelector() { return null; },
+                querySelectorAll() { return []; },
+              });
+
+              let rowAnimateCalls = 0;
+              let appendChildCalls = 0;
+              const rowEls = new Map();
+              const makeRowEl = (sym) => {
+                const rankEl = { textContent: '1' };
+                const priceEl = {
+                  textContent: '',
+                  animate() { rowAnimateCalls += 1; },
+                };
+                const makeSub = () => ({ textContent: '', className: '', innerHTML: '', style: {}, setAttribute() {} });
+                const el = {
+                  sym,
+                  className: '',
+                  style: makeStyleTracker(),
+                  getAttribute(k) { return k === 'data-sym' ? sym : null; },
+                  querySelector(sel) {
+                    if (sel === '.sym-rank') return rankEl;
+                    if (sel === '.sym-price') return priceEl;
+                    return makeSub();
+                  },
+                };
+                rowEls.set(sym, el);
+                return el;
+              };
+              const tableBodyEl = {
+                ...makeCandEl('candidate-table-body'),
+                set innerHTML(html) {
+                  rowEls.clear();
+                  const matches = [...html.matchAll(/data-sym="([^"]+)"/g)];
+                  for (const m of matches) {
+                    if (!rowEls.has(m[1])) makeRowEl(m[1]);
+                  }
+                },
+                querySelectorAll(sel) {
+                  if (sel === 'tr.candidate-row') return [...rowEls.values()];
+                  return [];
+                },
+                appendChild() { appendChildCalls += 1; },
+              };
+              candEls['candidate-table-body'] = tableBodyEl;
+
+              const candSnapshot = {
+                updated_at: '2026-11-25T12:00:00+08:00',
+                candidates: [
+                  {
+                    symbol: 'AAAUSDT',
+                    price: 1.0,
+                    high_24h: 1.2,
+                    low_24h: 0.8,
+                    price_chg_24h: 2.0,
+                    market_cap_usd: 10000000,
+                    volume_24h_usd: 20000000,
+                    turnover_ratio: 2.0,
+                    circulating_supply: 10000000,
+                    multiplier: 1,
+                    funding_interval_hours: 4,
+                    funding_rate_pct: 0.01,
+                    funding_rate_4h_pct: 0.01,
+                    ema5: 1.02,
+                    ema10: 1.0,
+                    ema_spread_pct: 2.0,
+                    is_ema_bull: true,
+                    is_high_turnover: true,
+                    is_neg_funding: false,
+                    is_resonance: true,
+                  },
+                  {
+                    symbol: 'BBBUSDT',
+                    price: 2.0,
+                    high_24h: 2.2,
+                    low_24h: 1.8,
+                    price_chg_24h: 1.0,
+                    market_cap_usd: 20000000,
+                    volume_24h_usd: 40000000,
+                    turnover_ratio: 2.0,
+                    circulating_supply: 10000000,
+                    multiplier: 1,
+                    funding_interval_hours: 4,
+                    funding_rate_pct: 0.01,
+                    funding_rate_4h_pct: 0.01,
+                    ema5: 2.01,
+                    ema10: 2.0,
+                    ema_spread_pct: 0.5,
+                    is_ema_bull: true,
+                    is_high_turnover: true,
+                    is_neg_funding: false,
+                    is_resonance: true,
+                  },
+                ],
+              };
+              let tickerTick = 0;
+              const winCand = {
+                document: {
+                  hidden: false,
+                  readyState: 'complete',
+                  activeElement: null,
+                  createDocumentFragment: () => ({ appendChild() {} }),
+                  getElementById: (id) => (candEls[id] ||= makeCandEl(id)),
+                  querySelectorAll: () => [],
+                  addEventListener() {},
+                },
+                sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+                fetch: async (url) => {
+                  if (url === 'api/candidates') {
+                    return { ok: true, status: 200, headers: { get: () => null }, text: async () => JSON.stringify(candSnapshot) };
+                  }
+                  if (url === 'api/binance/ticker24hr') {
+                    const priceA = tickerTick === 0 ? '1.0' : (tickerTick === 1 ? '1.1' : '3.0');
+                    return {
+                      ok: true,
+                      status: 200,
+                      headers: { get: () => null },
+                      text: async () => JSON.stringify([
+                        { symbol: 'AAAUSDT', lastPrice: priceA, priceChangePercent: '2.0', highPrice: '1.2', lowPrice: '0.8', quoteVolume: '20000000' },
+                        { symbol: 'BBBUSDT', lastPrice: '2.0', priceChangePercent: '1.0', highPrice: '2.2', lowPrice: '1.8', quoteVolume: '40000000' },
+                      ]),
+                    };
+                  }
+                  if (url === 'api/binance/premiumIndex') {
+                    return {
+                      ok: true,
+                      status: 200,
+                      headers: { get: () => null },
+                      text: async () => JSON.stringify([
+                        { symbol: 'AAAUSDT', lastFundingRate: '0.0001' },
+                        { symbol: 'BBBUSDT', lastFundingRate: '0.0001' },
+                      ]),
+                    };
+                  }
+                  return { ok: true, status: 200, headers: { get: () => null }, text: async () => '{}' };
+                },
+                AbortController,
+                DOMException,
+                setTimeout,
+                clearTimeout,
+                setInterval: () => 1,
+                clearInterval() {},
+                addEventListener() {},
+                matchMedia: () => {
+                  matchMediaCalls += 1;
+                  return {
+                    get matches() { return reducedMotionMatches; },
+                    addEventListener(ev, fn) { if (ev === 'change') mediaListeners.push(fn); },
+                  };
+                },
+                console: { warn() {}, error() {} },
+              };
+              winCand.window = winCand;
+              vm.runInNewContext(commonCode, winCand);
+              vm.runInNewContext(klineModalCode, winCand);
+              const candTestCode = candCode.replace(
+                /\\}\\)\\(\\);\\s*$/,
+                'window.__candTest = { syncBinancePool, applyFilter, loadCandidateSnapshot, setSort: (col) => { sortColumn = col; } };})();'
+              );
+              vm.runInNewContext(candTestCode, winCand);
+              // Wait for initial loadCandidateSnapshot() + initial syncBinancePool()
+              await new Promise((r) => setTimeout(r, 20));
+              assert.strictEqual(matchMediaCalls, 1);
+
+              // Redundant applyFilter() when visibility did NOT change must skip DOM style.display writes
+              const setsAfterLoad = rowEls.get('AAAUSDT').style._displaySets;
+              winCand.__candTest.applyFilter();
+              assert.strictEqual(rowEls.get('AAAUSDT').style._displaySets, setsAfterLoad);
+
+              // Price change triggers animation when prefersReducedMotion is false, and matchMedia is NOT re-called
+              tickerTick = 1;
+              await winCand.__candTest.syncBinancePool();
+              assert.strictEqual(matchMediaCalls, 1);
+              assert.strictEqual(rowAnimateCalls, 1);
+
+              // Sort column 'ema' never changes in syncBinancePool -> applySortOrder skipped (no appendChild)
+              winCand.__candTest.setSort('ema');
+              const appendBeforeEma = appendChildCalls;
+              await winCand.__candTest.syncBinancePool();
+              assert.strictEqual(appendChildCalls, appendBeforeEma);
+
+              // MediaQueryList 'change' event updates cached prefersReducedMotion; price change skips animate()
+              reducedMotionMatches = true;
+              mediaListeners.forEach((fn) => fn({ matches: true }));
+              winCand.__candTest.setSort('price');
+              tickerTick = 2;
+              await winCand.__candTest.syncBinancePool();
+              assert.strictEqual(rowAnimateCalls, 1);
+              assert.strictEqual(matchMediaCalls, 1);
+            })().catch((err) => {
               console.error(err);
               process.exit(1);
             });

@@ -46,6 +46,22 @@
   let activeFetchId = 0;
   let activeSnapshotFetchId = 0;
   let toastTimer = null;
+  let prefersReducedMotion = false;
+  if (typeof window.matchMedia === 'function') {
+    const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (reducedMotionQuery) {
+      prefersReducedMotion = Boolean(reducedMotionQuery.matches);
+      if (typeof reducedMotionQuery.addEventListener === 'function') {
+        reducedMotionQuery.addEventListener('change', (e) => {
+          prefersReducedMotion = Boolean(e.matches);
+        });
+      } else if (typeof reducedMotionQuery.addListener === 'function') {
+        reducedMotionQuery.addListener((e) => {
+          prefersReducedMotion = Boolean(e.matches);
+        });
+      }
+    }
+  }
 
   function saveUiState() {
     try {
@@ -593,19 +609,27 @@
     candidatesState.forEach((c) => {
       const refs = rowRefsBySym.get(c.symbol);
       if (!refs || !refs.rowEl) return;
-      if (matchesCurrentFilter(c)) {
-        refs.rowEl.style.display = '';
+      const shouldShow = matchesCurrentFilter(c);
+      const nextDisplay = shouldShow ? '' : 'none';
+      if (refs.rowEl.style.display !== nextDisplay) {
+        refs.rowEl.style.display = nextDisplay;
+      }
+      if (shouldShow) {
         visibleCount += 1;
-      } else {
-        refs.rowEl.style.display = 'none';
       }
     });
 
     if (countBadge) {
-      countBadge.textContent = `${visibleCount} / ${candidatesState.length} 标的`;
+      const nextCountText = `${visibleCount} / ${candidatesState.length} 标的`;
+      if (countBadge.textContent !== nextCountText) {
+        countBadge.textContent = nextCountText;
+      }
     }
     if (activeZonePill) {
-      activeZonePill.textContent = `当前筛选: ${ZONE_NAMES[currentZone] || '自定义'}`;
+      const nextZoneText = `当前筛选: ${ZONE_NAMES[currentZone] || '自定义'}`;
+      if (activeZonePill.textContent !== nextZoneText) {
+        activeZonePill.textContent = nextZoneText;
+      }
     }
     const emptyRow = document.getElementById('empty-search-row');
     if (emptyRow) {
@@ -692,13 +716,15 @@
         premMap.set(p.symbol, p);
       });
 
-      const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      let sortMetricChanged = false;
+      let anyClassChanged = false;
 
       candidatesState.forEach((c) => {
         const sym = c.symbol;
         const refs = rowRefsBySym.get(sym);
         const t = tickMap.get(sym);
         const pr = premMap.get(sym);
+        const prevSortVal = sortColumn ? getSortMetric(c, sortColumn) : NaN;
         const prevRes = c.is_resonance;
         const prevHighTr = c.is_high_turnover;
         const prevNegFr = c.is_neg_funding;
@@ -797,12 +823,21 @@
         }
 
         classifyCandidate(c);
+        if (sortColumn && !sortMetricChanged) {
+          const nextSortVal = getSortMetric(c, sortColumn);
+          const prevOk = Number.isFinite(prevSortVal);
+          const nextOk = Number.isFinite(nextSortVal);
+          if (prevOk !== nextOk || (prevOk && prevSortVal !== nextSortVal)) {
+            sortMetricChanged = true;
+          }
+        }
         const currTrText = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) : '';
         const classChanged = (
           prevRes !== c.is_resonance ||
           prevHighTr !== c.is_high_turnover ||
           prevNegFr !== c.is_neg_funding
         );
+        if (classChanged) anyClassChanged = true;
         if (refs && refs.rowEl && (prevRes !== c.is_resonance || prevNegFr !== c.is_neg_funding)) {
           refs.rowEl.className = getRowClass(c);
         }
@@ -820,8 +855,8 @@
       }
 
       updateKpiCards(candidatesState);
-      if (sortColumn) applySortOrder();
-      applyFilter();
+      if (sortColumn && sortMetricChanged) applySortOrder();
+      if (anyClassChanged) applyFilter();
     } catch (e) {
       if (e.name !== 'AbortError') {
         console.warn('Binance pool sync error:', e);

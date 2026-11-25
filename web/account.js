@@ -11,10 +11,14 @@
 
   const chartInstances = {};
   const HISTORY_SORT = { column: 'closed_ts', asc: false };
+  const VISIBILITY_COOLDOWN_MS = 5000;
   let currentAccountData = null;
   let latestSnapshot = '';
   let lastEtag = null;
-  let refreshInFlight = false;
+  let accountController = null;
+  let activeLoadId = 0;
+  let lastSuccessfulLoadAt = 0;
+  let chartDefaultsConfigured = false;
   let historySearchTimer = null;
   let cachedEqGradient = null;
   let cachedEqGradientTop = null;
@@ -476,13 +480,20 @@
     }).join('');
   }
 
+  function ensureChartDefaults() {
+    if (chartDefaultsConfigured || typeof Chart === 'undefined' || !Chart.defaults) return;
+    Chart.defaults.color = '#94a3b8';
+    if (Chart.defaults.font) {
+      Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "JetBrains Mono", sans-serif';
+    }
+    Chart.defaults.borderColor = 'rgba(51, 65, 85, 0.35)';
+    chartDefaultsConfigured = true;
+  }
+
   function upsertChart(key, canvas, config) {
     if (!canvas || typeof Chart === 'undefined') return;
     if (chartInstances[key]) {
       chartInstances[key].data = config.data;
-      if (config.options) {
-        chartInstances[key].options = config.options;
-      }
       chartInstances[key].update('none');
       return;
     }
@@ -538,9 +549,7 @@
 
     if (typeof Chart === 'undefined') return;
 
-    Chart.defaults.color = '#94a3b8';
-    Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "JetBrains Mono", sans-serif';
-    Chart.defaults.borderColor = 'rgba(51, 65, 85, 0.35)';
+    ensureChartDefaults();
 
     const tooltipConfig = {
       backgroundColor: 'rgba(15, 23, 42, 0.95)',
@@ -852,8 +861,10 @@
   }
 
   async function tryLoadData() {
-    if (refreshInFlight) return;
-    refreshInFlight = true;
+    if (accountController) accountController.abort();
+    const controller = new AbortController();
+    accountController = controller;
+    const loadId = ++activeLoadId;
     const status = document.getElementById('account-load-status');
     const report = document.getElementById('account-report');
     try {
@@ -861,9 +872,11 @@
       if (lastEtag) headers['If-None-Match'] = lastEtag;
       const { notModified, etag, data, text: snapshot } = await fetchJsonWithTimeout(
         'api/account',
-        { cache: 'no-store', headers },
+        { cache: 'no-store', headers, signal: controller.signal },
         12000
       );
+      if (loadId !== activeLoadId) return;
+      lastSuccessfulLoadAt = Date.now();
       if (notModified) {
         if (currentAccountData) updateApiStatusBadge(currentAccountData, false);
         if (status) status.hidden = true;
@@ -879,6 +892,8 @@
       }
       if (status) status.hidden = true;
     } catch (error) {
+      if (error && error.name === 'AbortError') return;
+      if (loadId !== activeLoadId) return;
       console.error('Failed to load account snapshot:', error);
       if (report) report.hidden = !latestSnapshot;
       updateApiStatusBadge(currentAccountData, true);
@@ -890,11 +905,14 @@
           : ('暂时无法加载账户数据 (' + error.message + ')，将自动重试。');
       }
     } finally {
-      refreshInFlight = false;
+      if (accountController === controller) {
+        accountController = null;
+      }
     }
   }
 
   function init() {
+    ensureChartDefaults();
     bindControlsOnce();
     tryLoadData();
   }
@@ -909,6 +927,15 @@
     if (!document.hidden) tryLoadData();
   }, 30000);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) tryLoadData();
+    if (document.hidden) {
+      if (accountController) {
+        accountController.abort();
+        accountController = null;
+      }
+      activeLoadId += 1;
+      return;
+    }
+    if (Date.now() - lastSuccessfulLoadAt < VISIBILITY_COOLDOWN_MS) return;
+    tryLoadData();
   });
 })();
