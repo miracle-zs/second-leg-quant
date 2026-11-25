@@ -15,11 +15,13 @@ Regression test suite for P0/P1 account pipeline fixes:
 """
 
 from contextlib import closing
+import gzip
 import io
 import json
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -423,6 +425,251 @@ class TestDashboardAPIP0Fixes(unittest.TestCase):
             self.assertEqual(c403, 403)
             self.assertIn("application/json", h403["content-type"])
             self.assertIn("Forbidden", json.loads(b403)["error"])
+
+    def test_binance_proxy_singleflight_coalesces_concurrent_requests_and_cleans_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            handler_cls = api.create_handler(Path(tmp) / "sf.sqlite3")
+
+            entered = threading.Event()
+            release = threading.Event()
+            call_count = 0
+            count_lock = threading.Lock()
+
+            def slow_upstream(_url: str, **_kwargs) -> bytes:
+                nonlocal call_count
+                with count_lock:
+                    call_count += 1
+                entered.set()
+                release.wait(timeout=5.0)
+                return b'[{"symbol":"BTCUSDT","lastPrice":"95000"}]'
+
+            results: list[tuple[int, dict, bytes]] = []
+            res_lock = threading.Lock()
+
+            def worker(path: str) -> None:
+                res = self._invoke(handler_cls, "GET", path)
+                with res_lock:
+                    results.append(res)
+
+            with patch.object(http_client, "request_bytes", side_effect=slow_upstream):
+                t1 = threading.Thread(target=worker, args=("/api/binance/ticker24hr",))
+                t1.start()
+                self.assertTrue(entered.wait(timeout=2.0))
+                waiters = [
+                    threading.Thread(target=worker, args=("/api/binance/ticker24hr",))
+                    for _ in range(3)
+                ]
+                for w in waiters:
+                    w.start()
+                # Give waiters a moment to block on the singleflight event before releasing.
+                release.wait(timeout=0.05)
+                release.set()
+                t1.join(timeout=5.0)
+                for w in waiters:
+                    w.join(timeout=5.0)
+
+            self.assertEqual(call_count, 1)
+            self.assertEqual(len(results), 4)
+            for code, hdrs, body in results:
+                self.assertEqual(code, 200)
+                self.assertEqual(hdrs["content-type"], "application/json; charset=utf-8")
+                self.assertEqual(json.loads(body), [{"symbol": "BTCUSDT", "lastPrice": "95000"}])
+
+            # Error path coalesces & cleans up inflight slot in finally so subsequent calls retry.
+            err_entered = threading.Event()
+            err_release = threading.Event()
+            err_calls = 0
+
+            def failing_upstream(_url: str, **_kwargs) -> bytes:
+                nonlocal err_calls
+                with count_lock:
+                    err_calls += 1
+                err_entered.set()
+                err_release.wait(timeout=5.0)
+                raise http_client.HttpError("HTTP 503", status_code=503, body="upstream down")
+
+            err_results: list[tuple[int, dict, bytes]] = []
+
+            def err_worker() -> None:
+                res = self._invoke(handler_cls, "GET", "/api/binance/premiumIndex")
+                with res_lock:
+                    err_results.append(res)
+
+            with patch.object(http_client, "request_bytes", side_effect=failing_upstream):
+                et1 = threading.Thread(target=err_worker)
+                et1.start()
+                self.assertTrue(err_entered.wait(timeout=2.0))
+                et2 = threading.Thread(target=err_worker)
+                et2.start()
+                err_release.wait(timeout=0.05)
+                err_release.set()
+                et1.join(timeout=5.0)
+                et2.join(timeout=5.0)
+
+            self.assertEqual(err_calls, 1)
+            self.assertEqual([r[0] for r in err_results], [502, 502])
+
+            with patch.object(http_client, "request_bytes", return_value=b'[{"symbol":"BTCUSDT"}]') as mock_recover:
+                code_ok, _, body_ok = self._invoke(handler_cls, "GET", "/api/binance/premiumIndex")
+            self.assertEqual(mock_recover.call_count, 1)
+            self.assertEqual(code_ok, 200)
+            self.assertEqual(body_ok, b'[{"symbol":"BTCUSDT"}]')
+
+    def test_gzip_precompression_for_snapshots_static_and_proxy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "gzip.sqlite3"
+            big_trades = [{"symbol": f"COIN{i}USDT", "pnl": i * 1.5} for i in range(60)]
+            db_store.publish_report(
+                db_path,
+                {
+                    "summary": {"total_equity": 1234.0},
+                    "active_positions": [],
+                    "trade_history": big_trades,
+                    "equity_curve": [],
+                    "daily_pnl": [],
+                },
+            )
+            db_store.publish_candidates(
+                db_path,
+                [{"symbol": f"CAND{i}USDT", "score": i} for i in range(60)],
+                updated_at="2026-11-25T12:00:00+08:00",
+            )
+            handler_cls = api.create_handler(db_path)
+
+            # 1. /api/account & /api/candidates: gzip vs raw + ETag/304 preservation
+            for endpoint in ("/api/account", "/api/candidates"):
+                c_gz, h_gz, b_gz = self._invoke(
+                    handler_cls, "GET", endpoint, headers={"Accept-Encoding": "deflate, gzip"}
+                )
+                c_raw, h_raw, b_raw = self._invoke(handler_cls, "GET", endpoint)
+                self.assertEqual(c_gz, 200)
+                self.assertEqual(c_raw, 200)
+                self.assertEqual(h_gz.get("content-encoding"), "gzip")
+                self.assertEqual(h_gz.get("vary"), "Accept-Encoding")
+                self.assertEqual(h_gz.get("content-length"), str(len(b_gz)))
+                self.assertNotIn("content-encoding", h_raw)
+                self.assertEqual(gzip.decompress(b_gz), b_raw)
+                self.assertGreater(len(b_raw), 1024)
+
+                c304_gz, _, b304_gz = self._invoke(
+                    handler_cls,
+                    "GET",
+                    endpoint,
+                    headers={"Accept-Encoding": "gzip", "If-None-Match": h_gz["etag"]},
+                )
+                c304_raw, _, b304_raw = self._invoke(
+                    handler_cls,
+                    "GET",
+                    endpoint,
+                    headers={"If-None-Match": h_raw["etag"]},
+                )
+                self.assertEqual(c304_gz, 304)
+                self.assertEqual(b304_gz, b"")
+                self.assertEqual(c304_raw, 304)
+                self.assertEqual(b304_raw, b"")
+
+            # 2. Static file (/static/account.js)
+            cs_gz, hs_gz, bs_gz = self._invoke(
+                handler_cls, "GET", "/static/account.js", headers={"Accept-Encoding": "gzip"}
+            )
+            cs_raw, hs_raw, bs_raw = self._invoke(handler_cls, "GET", "/static/account.js")
+            self.assertEqual(cs_gz, 200)
+            self.assertEqual(cs_raw, 200)
+            self.assertEqual(hs_gz.get("content-encoding"), "gzip")
+            self.assertEqual(hs_gz.get("vary"), "Accept-Encoding")
+            self.assertNotIn("content-encoding", hs_raw)
+            self.assertEqual(gzip.decompress(bs_gz), bs_raw)
+
+            # 3. Proxy endpoint: large (>=1024B) compresses, small (<1024B) stays raw
+            big_proxy_payload = json.dumps([[i, "1.0"] for i in range(120)]).encode("utf-8")
+            self.assertGreater(len(big_proxy_payload), 1024)
+            with patch.object(http_client, "request_bytes", return_value=big_proxy_payload):
+                cp_gz, hp_gz, bp_gz = self._invoke(
+                    handler_cls,
+                    "GET",
+                    "/api/binance/klines?symbol=BTCUSDT&interval=1h&limit=100",
+                    headers={"Accept-Encoding": "gzip"},
+                )
+                cp_raw, hp_raw, bp_raw = self._invoke(
+                    handler_cls,
+                    "GET",
+                    "/api/binance/klines?symbol=BTCUSDT&interval=1h&limit=100",
+                )
+            self.assertEqual(cp_gz, 200)
+            self.assertEqual(cp_raw, 200)
+            self.assertEqual(hp_gz.get("content-encoding"), "gzip")
+            self.assertEqual(hp_gz.get("vary"), "Accept-Encoding")
+            self.assertNotIn("content-encoding", hp_raw)
+            self.assertEqual(gzip.decompress(bp_gz), big_proxy_payload)
+            self.assertEqual(bp_raw, big_proxy_payload)
+
+            with patch.object(http_client, "request_bytes", return_value=b"[[1,2,3]]"):
+                c_small, h_small, b_small = self._invoke(
+                    handler_cls,
+                    "GET",
+                    "/api/binance/klines?symbol=ETHUSDT&interval=1h&limit=10",
+                    headers={"Accept-Encoding": "gzip"},
+                )
+            self.assertEqual(c_small, 200)
+            self.assertNotIn("content-encoding", h_small)
+            self.assertEqual(b_small, b"[[1,2,3]]")
+
+    def test_load_ledger_bundle_partial_and_empty_dbs_single_schema_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # 1. Missing DB file
+            missing_db = Path(tmp) / "missing.sqlite3"
+            self.assertEqual(
+                db_store.load_ledger_bundle(missing_db),
+                {"recording": None, "income": [], "fills": [], "observations": []},
+            )
+
+            # 2. Empty DB (no tables at all)
+            empty_db = Path(tmp) / "empty.sqlite3"
+            sqlite3.connect(empty_db).close()
+            self.assertEqual(
+                db_store.load_ledger_bundle(empty_db),
+                {"recording": None, "income": [], "fills": [], "observations": []},
+            )
+
+            # 3. Partial DB (only account_recording & income_ledger) + single sqlite_master query check
+            partial_db = Path(tmp) / "partial.sqlite3"
+            with closing(sqlite3.connect(partial_db)) as conn:
+                conn.execute("CREATE TABLE account_recording (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)")
+                conn.execute(
+                    "CREATE TABLE income_ledger (income_type TEXT NOT NULL, transaction_id TEXT NOT NULL, "
+                    "timestamp INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (income_type, transaction_id))"
+                )
+                conn.execute(
+                    "INSERT INTO account_recording (id, payload) VALUES (1, ?)",
+                    (json.dumps({"start_ms": 1000, "initial_equity": 500.0}),),
+                )
+                conn.execute(
+                    "INSERT INTO income_ledger (income_type, transaction_id, timestamp, payload) VALUES (?, ?, ?, ?)",
+                    ("REALIZED_PNL", "1", 900, json.dumps({"tranId": "1", "time": 900, "income": "10"})),
+                )
+                conn.execute(
+                    "INSERT INTO income_ledger (income_type, transaction_id, timestamp, payload) VALUES (?, ?, ?, ?)",
+                    ("REALIZED_PNL", "2", 1500, json.dumps({"tranId": "2", "time": 1500, "income": "25"})),
+                )
+                conn.commit()
+
+            traced_sql: list[str] = []
+            real_open = db_store.open_sqlite_connection
+
+            def traced_open(database: Path, *, readonly: bool = False):
+                conn = real_open(database, readonly=readonly)
+                conn.set_trace_callback(traced_sql.append)
+                return conn
+
+            with patch.object(db_store, "open_sqlite_connection", side_effect=traced_open):
+                bundle = db_store.load_ledger_bundle(partial_db, start_ms=1000)
+
+            schema_queries = [q for q in traced_sql if "sqlite_master" in q]
+            self.assertEqual(len(schema_queries), 1)
+            self.assertEqual(bundle["recording"], {"start_ms": 1000, "initial_equity": 500.0})
+            self.assertEqual(bundle["income"], [{"tranId": "2", "time": 1500, "income": "25"}])
+            self.assertEqual(bundle["fills"], [])
+            self.assertEqual(bundle["observations"], [])
 
 
 class TestAccountFailFastRegressionFixes(unittest.TestCase):

@@ -365,7 +365,14 @@ def load_ledger_bundle(
     with _read_conn(database, None) as conn:
         if conn is None:
             return bundle
-        if _table_exists(conn, "account_recording"):
+        existing_tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' "
+                "AND name IN ('account_recording', 'income_ledger', 'trade_fills', 'equity_observations')"
+            ).fetchall()
+        }
+        if "account_recording" in existing_tables:
             rec_row = conn.execute("SELECT payload FROM account_recording WHERE id = 1").fetchone()
             if rec_row is not None:
                 bundle["recording"] = _loads_dict(rec_row[0], context="account_recording")
@@ -375,7 +382,7 @@ def load_ledger_bundle(
             ("fills", "trade_fills"),
             ("observations", "equity_observations"),
         ):
-            if not _table_exists(conn, table_name):
+            if table_name not in existing_tables:
                 continue
             if start_ms is None:
                 rows = conn.execute(f"SELECT payload FROM {table_name} ORDER BY timestamp").fetchall()
