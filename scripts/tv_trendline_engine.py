@@ -26,11 +26,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from binance_client import (  # noqa: E402
-    BinanceFuturesClient,
-    fetch_klines,
-    get_closed_15m_candle,
-)
+from binance_client import get_closed_15m_candle  # noqa: E402
 from config import (  # noqa: E402
     DEFAULT_TV_LAYOUT_ID,
     RUNS_DIR,
@@ -58,19 +54,6 @@ USER_AGENT = (
 _TOKEN_LOCK = threading.Lock()
 _TOKEN_CACHE: dict[str, dict[str, Any]] = {}
 _TOKEN_FETCH_LOCKS: dict[str, threading.Lock] = {}
-_SERVER_TIME_CLIENT = BinanceFuturesClient()
-
-_INTERVAL_SECONDS = {
-    "m": 60,
-    "h": 3600,
-    "d": 86400,
-    "w": 604800,
-}
-
-
-def get_server_time_ms() -> int:
-    """Returns Binance server time in milliseconds using the shared offset-cached client."""
-    return _SERVER_TIME_CLIENT.get_server_time()
 
 
 def _extract_jwt_exp(token: str) -> int:
@@ -486,67 +469,6 @@ def calculate_log_resistance(
     return float(math.exp(log_val))
 
 
-def fetch_latest_closed_candle(
-    symbol: str,
-    interval: str = "15m",
-    limit: int = 5,
-) -> dict[str, Any]:
-    """Fetches the latest confirmed closed candlestick via unified binance_client."""
-    return get_closed_15m_candle(symbol, interval=interval, limit=limit)
-
-
-def _interval_to_ms(interval: str) -> int:
-    iv = interval.strip().lower()
-    if len(iv) < 2 or iv[-1] not in _INTERVAL_SECONDS:
-        raise ValueError(f"Unsupported kline interval: {interval}")
-    count = int(iv[:-1])
-    if count <= 0:
-        raise ValueError(f"Invalid kline interval: {interval}")
-    return count * _INTERVAL_SECONDS[iv[-1]] * 1000
-
-
-def fetch_candle_at_time(
-    symbol: str,
-    target_time_s: int | float,
-    interval: str = "15m",
-) -> dict[str, Any]:
-    """Fetches a specific historical candlestick covering the given timestamp."""
-    clean_sym = clean_symbol(symbol)
-    iv_ms = _interval_to_ms(interval)
-    target_ms = int(target_time_s * 1000)
-    server_time_ms = get_server_time_ms()
-    klines = fetch_klines(
-        clean_sym,
-        interval=interval,
-        limit=10,
-        start_time_ms=target_ms - iv_ms,
-        end_time_ms=target_ms + 2 * iv_ms,
-    )
-
-    for c in klines:
-        o_ms, c_ms = int(c[0]), int(c[6])
-        if o_ms <= target_ms <= c_ms or abs(o_ms - target_ms) < 60000:
-            open_sec = o_ms // 1000
-            close_sec = c_ms // 1000
-            return {
-                "symbol": clean_sym,
-                "interval": interval,
-                "open_time_ms": o_ms,
-                "close_time_ms": c_ms,
-                "open_time": open_sec,
-                "close_time": close_sec,
-                "open": float(c[1]),
-                "high": float(c[2]),
-                "low": float(c[3]),
-                "close": float(c[4]),
-                "volume": float(c[5]),
-                "candle_time": get_beijing_time_str(open_sec)[:16],
-                "is_closed": c_ms <= server_time_ms,
-            }
-
-    raise ValueError(f"No candlestick found covering timestamp {target_time_s} for {clean_sym} ({interval})")
-
-
 def check_symbol_breakout(
     symbol: str,
     trendline: dict[str, Any],
@@ -575,7 +497,7 @@ def check_symbol_breakout(
         raise ValueError(f"Invalid trendline anchor geometry: p1={p1}, t1={t1}, p2={p2}, t2={t2}")
 
     if candle is None:
-        candle = fetch_latest_closed_candle(clean_sym, interval="15m")
+        candle = get_closed_15m_candle(clean_sym, interval="15m")
 
     p_candle = prev_candle if prev_candle is not None else candle.get("prev_candle")
     if not isinstance(p_candle, dict):

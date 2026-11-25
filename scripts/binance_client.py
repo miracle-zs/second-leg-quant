@@ -31,7 +31,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from config import DEFAULT_ENV_PATH, clean_symbol, get_beijing_time_str, get_env_setting  # noqa: E402
 import http_client  # noqa: E402
-from http_client import HttpError  # noqa: E402
+from http_client import DEFAULT_USER_AGENT, HttpError, RETRYABLE_STATUS_CODES  # noqa: E402
 
 logger = logging.getLogger("binance_client")
 
@@ -39,8 +39,6 @@ BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com"
 POSITION_RISK_ENDPOINT = "/fapi/v2/positionRisk"
 SERVER_TIME_ENDPOINT = "/fapi/v1/time"
 TIME_SYNC_TTL_SEC = 600.0
-RETRYABLE_HTTP_CODES = frozenset({429, 500, 502, 503, 504})
-DEFAULT_USER_AGENT = "second-leg-quant/3.5"
 
 
 class BinanceAPIError(RuntimeError):
@@ -112,32 +110,6 @@ def _http_error_to_binance_error(err: HttpError, *, endpoint: str = "") -> Binan
     return BinanceAPIError(err_str, code=code, endpoint=target)
 
 
-def fetch_bytes_with_retry(
-    url: str,
-    *,
-    headers: Optional[dict[str, str]] = None,
-    timeout: int = 15,
-    max_retries: int = 3,
-    backoff: float = 0.8,
-) -> bytes:
-    """带指数退避重试的通用 HTTP GET 请求（仅重试 429/5xx/网络超时，4xx 快速失败）。"""
-    req_headers = {"User-Agent": DEFAULT_USER_AGENT}
-    if headers:
-        req_headers.update(headers)
-    try:
-        return http_client.request_bytes(
-            url,
-            method="GET",
-            headers=req_headers,
-            timeout=float(timeout),
-            max_retries=max(0, max_retries - 1),
-            backoff_base=backoff,
-            retry_statuses=tuple(RETRYABLE_HTTP_CODES),
-        )
-    except HttpError as e:
-        raise _http_error_to_binance_error(e, endpoint=url) from e
-
-
 def fetch_json_with_retry(
     url: str,
     *,
@@ -147,18 +119,15 @@ def fetch_json_with_retry(
     backoff: float = 0.8,
 ) -> Any:
     """带指数退避重试的通用 HTTP GET JSON 请求。"""
-    req_headers = {"User-Agent": DEFAULT_USER_AGENT}
-    if headers:
-        req_headers.update(headers)
     try:
         return http_client.request_json(
             url,
             method="GET",
-            headers=req_headers,
+            headers=headers,
             timeout=float(timeout),
             max_retries=max(0, max_retries - 1),
             backoff_base=backoff,
-            retry_statuses=tuple(RETRYABLE_HTTP_CODES),
+            retry_statuses=RETRYABLE_STATUS_CODES,
         )
     except HttpError as e:
         raise _http_error_to_binance_error(e, endpoint=url) from e
@@ -357,7 +326,7 @@ class BinanceFuturesClient:
                     logger.info("检测到币安 -1021 时间偏移，重新同步服务器时间后重试 [%s]", endpoint)
                     self.get_server_time(force_sync=True)
                     continue
-                retryable = e.status_code is None or e.status_code in RETRYABLE_HTTP_CODES
+                retryable = e.status_code is None or e.status_code in RETRYABLE_STATUS_CODES
                 if retryable and attempt < max_retries:
                     delay = backoff * (2 ** attempt)
                     if e.retry_after is not None:
@@ -669,24 +638,6 @@ def _get_public_client() -> BinanceFuturesClient:
         if _PUBLIC_CLIENT is None:
             _PUBLIC_CLIENT = BinanceFuturesClient()
         return _PUBLIC_CLIENT
-
-
-def fetch_klines(
-    symbol: str,
-    interval: str = "15m",
-    limit: int = 5,
-    *,
-    start_time_ms: Optional[int] = None,
-    end_time_ms: Optional[int] = None,
-) -> List[list]:
-    """共享公共行情 K 线拉取辅助函数。"""
-    return _get_public_client().fetch_klines(
-        symbol,
-        interval=interval,
-        limit=limit,
-        start_time_ms=start_time_ms,
-        end_time_ms=end_time_ms,
-    )
 
 
 def get_closed_15m_candle(

@@ -129,26 +129,6 @@ class TestTVCloudAndFallback(unittest.TestCase):
             with self.assertRaises(bc.BinanceAPIError):
                 client.get_closed_15m_candle("YBUSDT")
 
-    def test_fetch_candle_at_time_respects_interval_window(self):
-        target_s = 1795200000
-        close_ms = (target_s + 14399) * 1000
-        kline_4h = [[target_s * 1000, "1.0", "1.2", "0.9", "1.1", "50", close_ms, "50", 10]]
-        with patch.object(tve, "fetch_klines", return_value=kline_4h) as mock_klines, patch.object(
-            tve, "get_server_time_ms", return_value=close_ms + 1000
-        ):
-            candle = tve.fetch_candle_at_time("YBUSDT", target_time_s=target_s, interval="4h")
-        self.assertEqual(candle["interval"], "4h")
-        self.assertTrue(candle["is_closed"])
-        kwargs = mock_klines.call_args.kwargs
-        self.assertEqual(kwargs["start_time_ms"], target_s * 1000 - 4 * 3600 * 1000)
-        self.assertEqual(kwargs["end_time_ms"], target_s * 1000 + 8 * 3600 * 1000)
-
-        with patch.object(tve, "fetch_klines", return_value=kline_4h), patch.object(
-            tve, "get_server_time_ms", return_value=close_ms - 1000
-        ):
-            open_candle = tve.fetch_candle_at_time("YBUSDT", target_time_s=target_s, interval="4h")
-        self.assertFalse(open_candle["is_closed"])
-
     def test_tv_drawings_handles_malformed_points_and_none_linewidth(self):
         sources = {
             "bad_pts": {

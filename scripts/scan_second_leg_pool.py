@@ -53,6 +53,42 @@ class _TargetRecord(TypedDict):
     volume_usd: float
 
 
+class _BaseCandidateRecord(TypedDict):
+    symbol: str
+    base: str
+    multiplier: float
+    price: float
+    high_24h: float
+    low_24h: float
+    price_chg_24h: float
+    market_cap_usd: float
+    market_cap_wu: float
+    is_overflow_7d: bool
+    overflow_days_left: float
+    circulating_supply: float
+    funding_interval_hours: int
+    funding_rate_pct: float
+    funding_rate_4h_pct: float
+    volume_24h_usd: float
+    turnover_ratio: float
+
+
+class _CandidateRecord(_BaseCandidateRecord):
+    ema5: Optional[float]
+    ema10: Optional[float]
+    is_ema_bull: bool
+    ema_spread_pct: Optional[float]
+    resonance_duration_hours: int
+    resonance_entry_time: str
+    resonance_detected_at: str
+    is_neg_funding: bool
+    is_high_turnover: bool
+    is_resonance: bool
+    zones: list[str]
+    resonance_score: int
+    status: str
+
+
 def extract_base_and_multiplier(symbol: str) -> tuple[str, float]:
     """剥离 USDT 后缀及 1000/1M 合约面值乘数，得到底层代币代号与乘数。"""
     base = symbol.removesuffix("USDT")
@@ -162,7 +198,7 @@ def _parse_detected_datetime(
         return None
 
 
-def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
+def scan_pool(database: Optional[Path] = None) -> list[_CandidateRecord]:
     """执行 CMC 校验 + 1h EMA 趋势共振筛选并将候选池与 7 天溢出历史写入 SQLite。"""
     cmc_key = get_env_setting("CMC_API_KEY")
     if not cmc_key:
@@ -273,7 +309,7 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
                 for fut in as_completed(chunk_futs):
                     cmc_data.update(fut.result())
 
-        verified_candidates: list[dict[str, object]] = []
+        base_candidates: list[_BaseCandidateRecord] = []
         for t in targets:
             sym = t["symbol"]
             base = t["base"]
@@ -373,7 +409,7 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
             turnover = vol_usd / mcap_f
             fr_4h_pct = fr_4h * 100
 
-            verified_candidates.append({
+            base_candidates.append({
                 "symbol": sym,
                 "base": base,
                 "multiplier": mult,
@@ -393,7 +429,7 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
                 "turnover_ratio": round(turnover, 2),
             })
 
-        if not verified_candidates:
+        if not base_candidates:
             raise RuntimeError("❌ 致命异常：未拉取到任何有效候选标的，拒绝写入 SQLite 以防清空历史数据！")
 
         # 清理超过 7 天的过期 sub_30m_history 记录，避免无限膨胀
@@ -403,10 +439,10 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
             if (now_ts - float(str(entry["last_sub_30m_ts"]))) / 86400.0 <= 7.0
         }
 
-        print(f"\n[*] 正在并发拉取 {len(verified_candidates)} 个候选标的 1h 级别 K 线并计算 EMA5/EMA10 趋势与共振时长...")
+        print(f"\n[*] 正在并发拉取 {len(base_candidates)} 个候选标的 1h 级别 K 线并计算 EMA5/EMA10 趋势与共振时长...")
         kline_results: dict[str, tuple[Optional[float], Optional[float], bool, Optional[float]]] = {}
         kline_errors: dict[str, str] = {}
-        symbols_list = [str(c["symbol"]) for c in verified_candidates]
+        symbols_list = [c["symbol"] for c in base_candidates]
         # Pre-warm Binance server time offset cache before fan-out
         get_server_time_ms()
 
@@ -446,7 +482,7 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
             if not kline_results:
                 raise RuntimeError(f"❌ 1h K线全部拉取失败 ({len(kline_errors)} 个标的): {preview}")
             print(f"⚠️ 跳过 1h K线拉取失败标的 ({len(kline_errors)} 个): {preview}")
-            verified_candidates = [c for c in verified_candidates if str(c["symbol"]) in kline_results]
+            base_candidates = [c for c in base_candidates if c["symbol"] in kline_results]
 
     res_state = db_store.load_resonance_state(db_path)
     raw_history = res_state.get("history", {})
@@ -462,16 +498,13 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
         print(f"⚠️ resonance_state active_resonance_symbols 格式异常 ({type(raw_active).__name__})，已忽略")
         active_res_symbols = set()
 
-    for c in verified_candidates:
-        sym = str(c["symbol"])
+    verified_candidates: list[_CandidateRecord] = []
+    for base_c in base_candidates:
+        sym = base_c["symbol"]
         ema5, ema10, is_ema_bull, ema_spread = kline_results[sym]
-        c["ema5"] = ema5
-        c["ema10"] = ema10
-        c["is_ema_bull"] = is_ema_bull
-        c["ema_spread_pct"] = ema_spread
 
-        fr_4h_pct = float(str(c["funding_rate_4h_pct"]))
-        turnover_ratio = float(str(c["turnover_ratio"]))
+        fr_4h_pct = base_c["funding_rate_4h_pct"]
+        turnover_ratio = base_c["turnover_ratio"]
         is_neg_fr = fr_4h_pct < 0
         is_high_tr = turnover_ratio >= 1.5
         is_resonance = is_ema_bull and is_high_tr
@@ -488,13 +521,10 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
                 now_dt = datetime.datetime.fromtimestamp(now_ts, BEIJING_TZ)
                 detected_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
                 ent_str = now_dt.strftime("%m-%d %H:%M")
-            c["resonance_duration_hours"] = dur_h
-            c["resonance_entry_time"] = ent_str
-            c["resonance_detected_at"] = detected_str
         else:
-            c["resonance_duration_hours"] = 0
-            c["resonance_entry_time"] = ""
-            c["resonance_detected_at"] = ""
+            dur_h = 0
+            ent_str = ""
+            detected_str = ""
 
         zones: list[str] = []
         if is_resonance:
@@ -507,11 +537,6 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
             if is_neg_fr:
                 zones.append("负费率贴水")
 
-        c["is_neg_funding"] = is_neg_fr
-        c["is_high_turnover"] = is_high_tr
-        c["is_resonance"] = is_resonance
-        c["zones"] = zones
-
         if is_resonance and not is_neg_fr:
             res_score = 2
         elif is_resonance and is_neg_fr:
@@ -520,31 +545,46 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
             res_score = 1
         else:
             res_score = 0
-        c["resonance_score"] = res_score
 
-        days_left_f = float(str(c["overflow_days_left"]))
-        overflow_tag = f" ★7d溢出跟踪(剩{days_left_f:.1f}天)" if c["is_overflow_7d"] else ""
+        overflow_tag = f" ★7d溢出跟踪(剩{base_c['overflow_days_left']:.1f}天)" if base_c["is_overflow_7d"] else ""
         if is_resonance and not is_neg_fr:
-            c["status"] = f"👑 双核黄金共振：1h顺势+换手{turnover_ratio:.1f}x (资金面健康){overflow_tag}"
+            status = f"👑 双核黄金共振：1h顺势+换手{turnover_ratio:.1f}x (资金面健康){overflow_tag}"
         elif is_resonance and is_neg_fr:
-            c["status"] = f"⚠️ 贴水双核：1h顺势+换手{turnover_ratio:.1f}x+负费率{fr_4h_pct:+.4f}% (空头主导){overflow_tag}"
+            status = f"⚠️ 贴水双核：1h顺势+换手{turnover_ratio:.1f}x+负费率{fr_4h_pct:+.4f}% (空头主导){overflow_tag}"
         elif is_ema_bull and is_neg_fr:
-            c["status"] = f"顺势负费率：1h金叉但贴水{overflow_tag}"
+            status = f"顺势负费率：1h金叉但贴水{overflow_tag}"
         elif is_ema_bull:
-            c["status"] = f"1h顺势多头{overflow_tag}"
+            status = f"1h顺势多头{overflow_tag}"
         elif is_high_tr:
-            c["status"] = f"巨量高换手 ({turnover_ratio:.1f}x){overflow_tag}"
+            status = f"巨量高换手 ({turnover_ratio:.1f}x){overflow_tag}"
         elif is_neg_fr:
-            c["status"] = f"负费率贴水 (4h等效{fr_4h_pct:+.4f}%){overflow_tag}"
+            status = f"负费率贴水 (4h等效{fr_4h_pct:+.4f}%){overflow_tag}"
         else:
-            c["status"] = f"常规收敛{overflow_tag}"
+            status = f"常规收敛{overflow_tag}"
+
+        verified_candidates.append({
+            **base_c,
+            "ema5": ema5,
+            "ema10": ema10,
+            "is_ema_bull": is_ema_bull,
+            "ema_spread_pct": ema_spread,
+            "resonance_duration_hours": dur_h,
+            "resonance_entry_time": ent_str,
+            "resonance_detected_at": detected_str,
+            "is_neg_funding": is_neg_fr,
+            "is_high_turnover": is_high_tr,
+            "is_resonance": is_resonance,
+            "zones": zones,
+            "resonance_score": res_score,
+            "status": status,
+        })
 
     verified_candidates.sort(
         key=lambda x: (
-            -int(str(x["resonance_score"])),
+            -x["resonance_score"],
             1 if x["is_neg_funding"] else 0,
-            -float(str(x["turnover_ratio"])),
-            -float(str(x["funding_rate_4h_pct"])),
+            -x["turnover_ratio"],
+            -x["funding_rate_4h_pct"],
         )
     )
 
@@ -552,24 +592,37 @@ def scan_pool(database: Optional[Path] = None) -> list[dict[str, object]]:
     db_store.publish_candidates(db_path, verified_candidates, updated_at=updated_at)
     db_store.save_sub30m_history(db_path, sub_30m_history)
 
-    n_overflow = len([c for c in verified_candidates if c["is_overflow_7d"]])
+    n_overflow = n_gold_res = n_neg_res = n_neg_fr = n_high_tr = n_ema_bull = 0
+    for c in verified_candidates:
+        if c["is_overflow_7d"]:
+            n_overflow += 1
+        if c["resonance_score"] == 2:
+            n_gold_res += 1
+        if c["is_resonance"] and c["is_neg_funding"]:
+            n_neg_res += 1
+        if c["is_neg_funding"]:
+            n_neg_fr += 1
+        if c["is_high_turnover"]:
+            n_high_tr += 1
+        if c["is_ema_bull"]:
+            n_ema_bull += 1
+
     print(f"\n✅ 官方权威校验完成！纯加密候选标的共 {len(verified_candidates)} 个 (含 {n_overflow} 个 7 天溢出跟踪标的):")
-    print(f"  • 👑 双核黄金共振标的 (健康费率): {len([c for c in verified_candidates if c['resonance_score'] == 2])} 个")
-    print(f"  • ⚠️ 贴水双核标的 (负费率警示): {len([c for c in verified_candidates if c['is_resonance'] and c['is_neg_funding']])} 个")
-    print(f"  • 第一类 负费率贴水区 (< 0): {len([c for c in verified_candidates if c['is_neg_funding']])} 个")
-    print(f"  • 第二类 巨量高换手区 (≥ 1.5x): {len([c for c in verified_candidates if c['is_high_turnover']])} 个")
-    print(f"  • 第三类 1h EMA5>EMA10 顺势区: {len([c for c in verified_candidates if c['is_ema_bull']])} 个")
+    print(f"  • 👑 双核黄金共振标的 (健康费率): {n_gold_res} 个")
+    print(f"  • ⚠️ 贴水双核标的 (负费率警示): {n_neg_res} 个")
+    print(f"  • 第一类 负费率贴水区 (< 0): {n_neg_fr} 个")
+    print(f"  • 第二类 巨量高换手区 (≥ 1.5x): {n_high_tr} 个")
+    print(f"  • 第三类 1h EMA5>EMA10 顺势区: {n_ema_bull} 个")
     print(f"  • ★ 7天溢出跟踪标的 (曾<3000wu现突破): {n_overflow} 个")
     print("\n【前 15 大潜在交易机会标的】：")
     for c in verified_candidates[:15]:
-        zones_list = c["zones"]
-        zones_str = "+".join(str(z) for z in zones_list) if isinstance(zones_list, list) and zones_list else "基础底池"
+        zones_str = "+".join(c["zones"]) if c["zones"] else "基础底池"
         dur_h = c["resonance_duration_hours"]
         dur_str = f"{dur_h}h" if dur_h else "-"
         print(
-            f"  • {str(c['symbol']):12s} | 机会区:[{zones_str:^15s}] | 共振时长:{dur_str:>4s} | "
-            f"4h费率:{float(str(c['funding_rate_4h_pct'])):+.4f}% | 换手:{float(str(c['turnover_ratio'])):4.1f}x | "
-            f"市值:${float(str(c['market_cap_usd']))/1e6:5.2f}M"
+            f"  • {c['symbol']:12s} | 机会区:[{zones_str:^15s}] | 共振时长:{dur_str:>4s} | "
+            f"4h费率:{c['funding_rate_4h_pct']:+.4f}% | 换手:{c['turnover_ratio']:4.1f}x | "
+            f"市值:${c['market_cap_usd']/1e6:5.2f}M"
         )
     return verified_candidates
 
