@@ -25,6 +25,7 @@
   let modalFetchController = null;
   let modalRenderRafId = null;
   let onVisibleBarsChange = null;
+  let supportsDisplayTransition;
 
   const chartModal = document.getElementById('chart-modal');
   const modalCloseBtn = document.getElementById('modal-close-btn');
@@ -45,6 +46,58 @@
   const modalBarsBtns = document.querySelectorAll('.modal-bars-btn');
   const modalHudEma5 = document.getElementById('modal-hud-ema5');
   const modalHudEma10 = document.getElementById('modal-hud-ema10');
+
+  function canTransitionDisplay() {
+    if (supportsDisplayTransition !== undefined) return supportsDisplayTransition;
+    if (
+      !global.CSS ||
+      typeof global.CSS.supports !== 'function' ||
+      !global.CSS.supports('transition-behavior', 'allow-discrete') ||
+      !global.document ||
+      !global.document.body ||
+      typeof global.document.createElement !== 'function' ||
+      typeof global.getComputedStyle !== 'function'
+    ) {
+      supportsDisplayTransition = false;
+      return false;
+    }
+    const probe = global.document.createElement('div');
+    probe.style.cssText = 'transition: display 1s allow-discrete !important; display: block;';
+    global.document.body.appendChild(probe);
+    global.getComputedStyle(probe).display;
+    probe.style.display = 'none';
+    supportsDisplayTransition = global.getComputedStyle(probe).display === 'block';
+    probe.remove();
+    return supportsDisplayTransition;
+  }
+
+  function supportsTopLayerExit() {
+    return Boolean(
+      global.CSS &&
+      typeof global.CSS.supports === 'function' &&
+      global.CSS.supports('overlay', 'auto') &&
+      canTransitionDisplay()
+    );
+  }
+
+  async function closeTopLayer(dialogEl) {
+    if (!dialogEl || !dialogEl.open) return;
+    if (!supportsTopLayerExit() && typeof dialogEl.getAnimations === 'function') {
+      dialogEl.setAttribute('data-closing', '');
+      const animations = dialogEl.getAnimations({ subtree: true });
+      if (animations.length > 0) {
+        await Promise.race([
+          Promise.allSettled(animations.map((a) => a.finished)),
+          new Promise((r) => setTimeout(r, 400)),
+        ]);
+      }
+      if (!dialogEl.hasAttribute('data-closing')) return;
+      dialogEl.removeAttribute('data-closing');
+    }
+    if (dialogEl.open) {
+      dialogEl.close();
+    }
+  }
 
   // SMA-seeded EMA matching scripts/scan_second_leg_pool.py calc_ema_series
   function calcEMAArray(candlesList, period) {
@@ -96,11 +149,13 @@
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    const bottomAxisH = 20;
-    const plotH = Math.max(80, h - bottomAxisH);
+    const topPadding = 14;
+    const bottomAxisH = 22;
+    const plotH = Math.max(96, h - bottomAxisH);
     const priceH = plotH * 0.78;
-    const volH = plotH * 0.18;
-    const rightPadding = 68;
+    const priceSpanH = Math.max(40, priceH - topPadding);
+    const volH = plotH * 0.17;
+    const rightPadding = 72;
     const chartW = w - rightPadding;
 
     let minP = Infinity;
@@ -116,16 +171,18 @@
     maxP += span * 0.05;
     const fullSpan = maxP - minP;
 
-    const getY = (p) => priceH - ((p - minP) / fullSpan) * priceH;
+    const getY = (p) => topPadding + priceSpanH - ((p - minP) / fullSpan) * priceSpanH;
     const getVolY = (v) => plotH - 3 - (v / (maxVol || 1)) * volH;
+    const lastCandle = visibleCandles[visibleCandles.length - 1];
+    const lastCloseY = lastCandle ? getY(lastCandle.close) : null;
 
-    ctx.fillStyle = '#0b0f19';
+    ctx.fillStyle = '#0b0e13';
     ctx.fillRect(0, 0, w, h);
 
-    ctx.strokeStyle = '#1e293b';
-    ctx.lineWidth = 0.8;
-    ctx.fillStyle = '#64748b';
-    ctx.font = '10px monospace';
+    ctx.strokeStyle = '#1b2432';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#8b9bb0';
+    ctx.font = '10px "JetBrains Mono", "SF Mono", monospace';
     ctx.textAlign = 'left';
 
     const steps = 6;
@@ -136,7 +193,9 @@
       ctx.moveTo(0, y);
       ctx.lineTo(chartW, y);
       ctx.stroke();
-      ctx.fillText(formatCryptoPrice(p), chartW + 6, y + 3);
+      if (lastCloseY === null || Math.abs(y - lastCloseY) >= 13) {
+        ctx.fillText(formatCryptoPrice(p), chartW + 7, y + 3);
+      }
     }
 
     const n = visibleCandles.length;
@@ -150,8 +209,8 @@
 
     const tickTarget = Math.max(2, Math.min(6, Math.floor(chartW / 120)));
     const tickStep = Math.max(1, Math.floor((n - 1) / tickTarget));
-    ctx.fillStyle = '#64748b';
-    ctx.font = '10px monospace';
+    ctx.fillStyle = '#8b9bb0';
+    ctx.font = '10px "JetBrains Mono", "SF Mono", monospace';
     ctx.textAlign = 'center';
     for (let i = 0; i < n; i += tickStep) {
       const x = i * slot + slot / 2;
@@ -160,14 +219,14 @@
       ctx.moveTo(x, plotH);
       ctx.lineTo(x, plotH + 4);
       ctx.stroke();
-      ctx.fillText(formatAxisTime(visibleCandles[i].time, modalCurrentInterval), x, plotH + 14);
+      ctx.fillText(formatAxisTime(visibleCandles[i].time, modalCurrentInterval), x, plotH + 15);
     }
     ctx.textAlign = 'left';
 
     visibleCandles.forEach((c, i) => {
       const x = i * slot + slot / 2;
       const isBull = c.close >= c.open;
-      const col = isBull ? '#10b981' : '#f43f5e';
+      const col = isBull ? '#22c58b' : '#f25565';
       ctx.strokeStyle = col;
       ctx.fillStyle = col;
 
@@ -181,14 +240,14 @@
       ctx.fillRect(x - barW / 2, Math.min(yO, yC), barW, Math.max(Math.abs(yC - yO), 1));
 
       const vY = getVolY(c.volume);
-      ctx.fillStyle = isBull ? 'rgba(16, 185, 129, 0.35)' : 'rgba(244, 63, 94, 0.35)';
+      ctx.fillStyle = isBull ? 'rgba(34, 197, 139, 0.32)' : 'rgba(242, 85, 101, 0.32)';
       ctx.fillRect(x - barW / 2, vY, barW, plotH - 3 - vY);
     });
 
     const drawEmaLine = (field, color) => {
       ctx.beginPath();
       ctx.strokeStyle = color;
-      ctx.lineWidth = 1.6;
+      ctx.lineWidth = 1.5;
       let started = false;
       visibleCandles.forEach((c, i) => {
         if (!isFiniteNum(c[field])) return;
@@ -204,25 +263,25 @@
       if (started) ctx.stroke();
     };
 
-    drawEmaLine('ema5', '#f59e0b');
-    drawEmaLine('ema10', '#a855f7');
+    drawEmaLine('ema5', '#f0b429');
+    drawEmaLine('ema10', '#60a5fa');
 
     const last = visibleCandles[visibleCandles.length - 1];
     if (last) {
       const lastY = getY(last.close);
       const isBull = last.close >= last.open;
       ctx.beginPath();
-      ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = isBull ? '#10b981' : '#f43f5e';
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = isBull ? '#22c58b' : '#f25565';
       ctx.moveTo(0, lastY);
       ctx.lineTo(chartW, lastY);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = isBull ? '#059669' : '#e11d48';
+      ctx.fillStyle = isBull ? '#159668' : '#d13b4b';
       ctx.fillRect(chartW + 2, lastY - 9, rightPadding - 4, 18);
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 10px monospace';
+      ctx.font = 'bold 10px "JetBrains Mono", "SF Mono", monospace';
       ctx.fillText(formatCryptoPrice(last.close), chartW + 6, lastY + 4);
     }
 
@@ -231,7 +290,7 @@
       const hx = modalHoverIndex * slot + slot / 2;
       const hy = getY(c.close);
 
-      ctx.strokeStyle = '#94a3b8';
+      ctx.strokeStyle = '#647894';
       ctx.setLineDash([2, 2]);
       ctx.beginPath();
       ctx.moveTo(hx, 0);
@@ -249,19 +308,19 @@
 
       modalTooltip.innerHTML = `
         <div class="flex items-center gap-2 mb-1">
-          <span class="text-white font-bold">${escapeHtml(timeStr)}</span>
-          <span class="${isBull ? 'text-emerald-400' : 'text-rose-400'} font-bold">${escapeHtml(chgLabel)}</span>
+          <span class="text-[#f1f5f9] font-bold">${escapeHtml(timeStr)}</span>
+          <span class="${isBull ? 'text-[#38d99f]' : 'text-[#f8717e]'} font-bold">${escapeHtml(chgLabel)}</span>
         </div>
-        <div class="grid grid-cols-4 gap-x-2.5 gap-y-0.5 text-slate-400">
-          <div>开: <span class="text-white">${escapeHtml(formatCryptoPrice(c.open))}</span></div>
-          <div>高: <span class="text-white">${escapeHtml(formatCryptoPrice(c.high))}</span></div>
-          <div>低: <span class="text-white">${escapeHtml(formatCryptoPrice(c.low))}</span></div>
-          <div>收: <span class="text-white">${escapeHtml(formatCryptoPrice(c.close))}</span></div>
+        <div class="grid grid-cols-4 gap-x-3 gap-y-0.5 text-[#9fb0c5]">
+          <div>开 <span class="text-[#f1f5f9]">${escapeHtml(formatCryptoPrice(c.open))}</span></div>
+          <div>高 <span class="text-[#f1f5f9]">${escapeHtml(formatCryptoPrice(c.high))}</span></div>
+          <div>低 <span class="text-[#f1f5f9]">${escapeHtml(formatCryptoPrice(c.low))}</span></div>
+          <div>收 <span class="text-[#f1f5f9]">${escapeHtml(formatCryptoPrice(c.close))}</span></div>
         </div>
-        <div class="flex items-center gap-2.5 mt-1 pt-1 border-t border-slate-800 text-[10px]">
-          <span class="text-amber-400">EMA5: ${escapeHtml(formatCryptoPrice(c.ema5))}</span>
-          <span class="text-purple-400">EMA10: ${escapeHtml(formatCryptoPrice(c.ema10))}</span>
-          <span class="text-slate-400">量: ${escapeHtml((c.volume / 1000).toFixed(1))}k</span>
+        <div class="flex items-center gap-3 mt-1 pt-1 border-t border-[#222b38] text-[10px]">
+          <span class="text-[#f5c451]">EMA5 ${escapeHtml(formatCryptoPrice(c.ema5))}</span>
+          <span class="text-[#8ab8ff]">EMA10 ${escapeHtml(formatCryptoPrice(c.ema10))}</span>
+          <span class="text-[#9fb0c5]">成交量 ${escapeHtml((c.volume / 1000).toFixed(1))}k</span>
         </div>
       `;
       modalTooltip.classList.remove('hidden');
@@ -276,7 +335,7 @@
     if (modalTooltip) modalTooltip.classList.add('hidden');
     if (modalChartPrice) {
       modalChartPrice.textContent = '--';
-      modalChartPrice.className = 'font-mono text-emerald-400 font-bold text-sm';
+      modalChartPrice.className = 'font-mono tabular-nums text-[#38d99f] font-bold text-sm';
     }
     if (modalHudEma5) modalHudEma5.textContent = '--';
     if (modalHudEma10) modalHudEma10.textContent = '--';
@@ -352,7 +411,7 @@
       if (last && modalChartPrice) {
         const isUp = last.close >= last.open;
         modalChartPrice.textContent = formatCryptoPrice(last.close);
-        modalChartPrice.className = `font-mono font-bold text-sm ${isUp ? 'text-emerald-400' : 'text-rose-400'}`;
+        modalChartPrice.className = `font-mono tabular-nums font-bold text-sm ${isUp ? 'text-[#38d99f]' : 'text-[#f8717e]'}`;
         if (modalHudEma5) modalHudEma5.textContent = formatCryptoPrice(last.ema5);
         if (modalHudEma10) modalHudEma10.textContent = formatCryptoPrice(last.ema10);
       }
@@ -368,6 +427,7 @@
 
   function openTvModal(sym, tvSym) {
     if (!chartModal) return;
+    chartModal.removeAttribute('data-closing');
     modalCurrentSymbol = sym;
     modalCurrentTvSymbol = tvSym;
     clearModalChartDisplay();
@@ -390,6 +450,7 @@
   }
 
   function resetModalStateOnClose() {
+    if (chartModal) chartModal.removeAttribute('data-closing');
     if (modalFetchController) modalFetchController.abort();
     if (modalTvIframe) modalTvIframe.src = 'about:blank';
     clearModalChartDisplay();
@@ -397,7 +458,7 @@
 
   function closeTvModal() {
     if (!chartModal || !chartModal.open) return;
-    chartModal.close();
+    closeTopLayer(chartModal);
   }
 
   function scheduleModalRender() {
@@ -411,11 +472,11 @@
   function updateModalBarsUi() {
     modalBarsBtns.forEach((b) => {
       const active = Number(b.getAttribute('data-bars')) === modalVisibleBars;
-      b.classList.toggle('bg-emerald-500/20', active);
-      b.classList.toggle('text-emerald-300', active);
-      b.classList.toggle('font-bold', active);
-      b.classList.toggle('hover:bg-slate-800', !active);
-      b.classList.toggle('text-slate-400', !active);
+      b.classList.toggle('bg-[#192231]', active);
+      b.classList.toggle('text-[#f1f5f9]', active);
+      b.classList.toggle('font-semibold', active);
+      b.classList.toggle('hover:bg-[#151c27]', !active);
+      b.classList.toggle('text-[#9fb0c5]', !active);
     });
   }
 
@@ -423,7 +484,7 @@
     modalNativeView.addEventListener('mousemove', (e) => {
       const rect = modalNativeView.getBoundingClientRect();
       const x = e.clientX - rect.left;
-      const chartW = modalNativeView.clientWidth - 68;
+      const chartW = modalNativeView.clientWidth - 72;
       const visibleCount = Math.min(modalVisibleBars, modalCandles.length);
       if (x >= 0 && x <= chartW && visibleCount > 0) {
         const slot = chartW / visibleCount;
@@ -462,11 +523,11 @@
   document.querySelectorAll('.modal-interval-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.modal-interval-btn').forEach((b) => {
-        b.classList.remove('bg-sky-500/20', 'text-sky-300', 'font-bold');
-        b.classList.add('hover:bg-slate-800', 'text-slate-400');
+        b.classList.remove('bg-[#192231]', 'text-[#f1f5f9]', 'font-semibold');
+        b.classList.add('hover:bg-[#151c27]', 'text-[#9fb0c5]');
       });
-      btn.classList.add('bg-sky-500/20', 'text-sky-300', 'font-bold');
-      btn.classList.remove('hover:bg-slate-800', 'text-slate-400');
+      btn.classList.add('bg-[#192231]', 'text-[#f1f5f9]', 'font-semibold');
+      btn.classList.remove('hover:bg-[#151c27]', 'text-[#9fb0c5]');
 
       const nextInterval = btn.getAttribute('data-interval');
       if (!nextInterval || !Object.hasOwn(TV_INTERVAL_MAP, nextInterval)) {
@@ -487,8 +548,8 @@
   if (btnEngineNative && btnEngineTv) {
     btnEngineNative.addEventListener('click', () => {
       modalActiveEngine = 'native';
-      btnEngineNative.className = 'px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-semibold';
-      btnEngineTv.className = 'px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400';
+      btnEngineNative.className = 'px-2 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold';
+      btnEngineTv.className = 'px-2 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]';
       if (modalBarsGroup) modalBarsGroup.classList.remove('hidden');
       if (modalTvView) modalTvView.classList.add('hidden');
       if (modalNativeView) modalNativeView.classList.remove('hidden');
@@ -496,8 +557,8 @@
     });
     btnEngineTv.addEventListener('click', () => {
       modalActiveEngine = 'tv';
-      btnEngineTv.className = 'px-2 py-0.5 rounded bg-[#2962FF]/20 text-[#38bdf8] font-semibold';
-      btnEngineNative.className = 'px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400';
+      btnEngineTv.className = 'px-2 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold';
+      btnEngineNative.className = 'px-2 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]';
       if (modalBarsGroup) modalBarsGroup.classList.add('hidden');
       if (modalNativeView) modalNativeView.classList.add('hidden');
       if (modalTvView) modalTvView.classList.remove('hidden');
@@ -511,17 +572,25 @@
   if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeTvModal);
   if (chartModal) {
     chartModal.addEventListener('close', resetModalStateOnClose);
-    const outsideDialog = (e) => {
-      const r = chartModal.getBoundingClientRect();
-      return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
-    };
-    let pressedOutside = false;
-    chartModal.addEventListener('pointerdown', (e) => {
-      pressedOutside = outsideDialog(e);
+    chartModal.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      closeTopLayer(chartModal);
     });
-    chartModal.addEventListener('pointerup', (e) => {
-      if (pressedOutside && outsideDialog(e)) closeTvModal();
-    });
+    if (typeof global.HTMLDialogElement === 'undefined' || !('closedBy' in global.HTMLDialogElement.prototype)) {
+      chartModal.addEventListener('click', (event) => {
+        if (event.target !== chartModal) return;
+        const rect = chartModal.getBoundingClientRect();
+        const isDialogContent = (
+          rect.top <= event.clientY &&
+          event.clientY <= rect.top + rect.height &&
+          rect.left <= event.clientX &&
+          event.clientX <= rect.left + rect.width
+        );
+        if (!isDialogContent) {
+          closeTvModal();
+        }
+      });
+    }
   }
   global.addEventListener('resize', () => {
     if (chartModal && chartModal.open && modalActiveEngine === 'native') {

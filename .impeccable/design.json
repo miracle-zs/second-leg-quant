@@ -1,0 +1,644 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-25T10:35:00Z",
+  "title": "Design System: 突破追多与移动保本系统",
+  "extensions": {
+    "colorMeta": {
+      "sig-cobalt": {
+        "role": "primary",
+        "displayName": "Execution Cobalt",
+        "canonical": "#3b82f6",
+        "tonalRamp": [
+          "oklch(16% 0.188 259.8)",
+          "oklch(27% 0.188 259.8)",
+          "oklch(38% 0.188 259.8)",
+          "oklch(49% 0.188 259.8)",
+          "oklch(60% 0.188 259.8)",
+          "oklch(72% 0.188 259.8)",
+          "oklch(83% 0.188 259.8)",
+          "oklch(94% 0.188 259.8)"
+        ]
+      },
+      "action-cobalt": {
+        "role": "primary",
+        "displayName": "Action Cobalt",
+        "canonical": "#2563eb",
+        "tonalRamp": [
+          "oklch(16% 0.215 262.9)",
+          "oklch(27% 0.215 262.9)",
+          "oklch(38% 0.215 262.9)",
+          "oklch(49% 0.215 262.9)",
+          "oklch(60% 0.215 262.9)",
+          "oklch(72% 0.215 262.9)",
+          "oklch(83% 0.215 262.9)",
+          "oklch(94% 0.215 262.9)"
+        ]
+      },
+      "action-cobalt-hover": {
+        "role": "primary",
+        "displayName": "Action Cobalt Hover",
+        "canonical": "#1d4ed8",
+        "tonalRamp": [
+          "oklch(16% 0.217 264.4)",
+          "oklch(27% 0.217 264.4)",
+          "oklch(38% 0.217 264.4)",
+          "oklch(49% 0.217 264.4)",
+          "oklch(60% 0.217 264.4)",
+          "oklch(72% 0.217 264.4)",
+          "oklch(83% 0.217 264.4)",
+          "oklch(94% 0.217 264.4)"
+        ]
+      },
+      "sky-turnover": {
+        "role": "primary",
+        "displayName": "Sky Turnover",
+        "canonical": "#60a5fa",
+        "tonalRamp": [
+          "oklch(16% 0.143 254.6)",
+          "oklch(27% 0.143 254.6)",
+          "oklch(38% 0.143 254.6)",
+          "oklch(49% 0.143 254.6)",
+          "oklch(60% 0.143 254.6)",
+          "oklch(72% 0.143 254.6)",
+          "oklch(83% 0.143 254.6)",
+          "oklch(94% 0.143 254.6)"
+        ]
+      },
+      "ink-cobalt": {
+        "role": "primary",
+        "displayName": "Ice Cobalt Ink",
+        "canonical": "#8ab8ff",
+        "tonalRamp": [
+          "oklch(16% 0.114 258.9)",
+          "oklch(27% 0.114 258.9)",
+          "oklch(38% 0.114 258.9)",
+          "oklch(49% 0.114 258.9)",
+          "oklch(60% 0.114 258.9)",
+          "oklch(72% 0.114 258.9)",
+          "oklch(83% 0.114 258.9)",
+          "oklch(94% 0.114 258.9)"
+        ]
+      },
+      "sig-amber": {
+        "role": "secondary",
+        "displayName": "Bullion Amber",
+        "canonical": "#f0b429",
+        "tonalRamp": [
+          "oklch(16% 0.156 82.5)",
+          "oklch(27% 0.156 82.5)",
+          "oklch(38% 0.156 82.5)",
+          "oklch(49% 0.156 82.5)",
+          "oklch(60% 0.156 82.5)",
+          "oklch(72% 0.156 82.5)",
+          "oklch(83% 0.156 82.5)",
+          "oklch(94% 0.156 82.5)"
+        ]
+      },
+      "ink-amber": {
+        "role": "secondary",
+        "displayName": "Warm Amber Ink",
+        "canonical": "#f5c451",
+        "tonalRamp": [
+          "oklch(16% 0.141 85.5)",
+          "oklch(27% 0.141 85.5)",
+          "oklch(38% 0.141 85.5)",
+          "oklch(49% 0.141 85.5)",
+          "oklch(60% 0.141 85.5)",
+          "oklch(72% 0.141 85.5)",
+          "oklch(83% 0.141 85.5)",
+          "oklch(94% 0.141 85.5)"
+        ]
+      },
+      "sig-emerald": {
+        "role": "tertiary",
+        "displayName": "Bullish Emerald",
+        "canonical": "#22c58b",
+        "tonalRamp": [
+          "oklch(16% 0.152 162.5)",
+          "oklch(27% 0.152 162.5)",
+          "oklch(38% 0.152 162.5)",
+          "oklch(49% 0.152 162.5)",
+          "oklch(60% 0.152 162.5)",
+          "oklch(72% 0.152 162.5)",
+          "oklch(83% 0.152 162.5)",
+          "oklch(94% 0.152 162.5)"
+        ]
+      },
+      "ink-emerald": {
+        "role": "tertiary",
+        "displayName": "Mint Emerald Ink",
+        "canonical": "#38d99f",
+        "tonalRamp": [
+          "oklch(16% 0.155 163.7)",
+          "oklch(27% 0.155 163.7)",
+          "oklch(38% 0.155 163.7)",
+          "oklch(49% 0.155 163.7)",
+          "oklch(60% 0.155 163.7)",
+          "oklch(72% 0.155 163.7)",
+          "oklch(83% 0.155 163.7)",
+          "oklch(94% 0.155 163.7)"
+        ]
+      },
+      "sig-crimson": {
+        "role": "tertiary",
+        "displayName": "Squeeze Crimson",
+        "canonical": "#f25565",
+        "tonalRamp": [
+          "oklch(16% 0.192 18.2)",
+          "oklch(27% 0.192 18.2)",
+          "oklch(38% 0.192 18.2)",
+          "oklch(49% 0.192 18.2)",
+          "oklch(60% 0.192 18.2)",
+          "oklch(72% 0.192 18.2)",
+          "oklch(83% 0.192 18.2)",
+          "oklch(94% 0.192 18.2)"
+        ]
+      },
+      "ink-crimson": {
+        "role": "tertiary",
+        "displayName": "Coral Crimson Ink",
+        "canonical": "#f8717e",
+        "tonalRamp": [
+          "oklch(16% 0.165 16.4)",
+          "oklch(27% 0.165 16.4)",
+          "oklch(38% 0.165 16.4)",
+          "oklch(49% 0.165 16.4)",
+          "oklch(60% 0.165 16.4)",
+          "oklch(72% 0.165 16.4)",
+          "oklch(83% 0.165 16.4)",
+          "oklch(94% 0.165 16.4)"
+        ]
+      },
+      "bg-canvas": {
+        "role": "neutral",
+        "displayName": "Obsidian Canvas",
+        "canonical": "#0b0e13",
+        "tonalRamp": [
+          "oklch(16% 0.012 260.6)",
+          "oklch(27% 0.012 260.6)",
+          "oklch(38% 0.012 260.6)",
+          "oklch(49% 0.012 260.6)",
+          "oklch(60% 0.012 260.6)",
+          "oklch(72% 0.012 260.6)",
+          "oklch(83% 0.012 260.6)",
+          "oklch(94% 0.012 260.6)"
+        ]
+      },
+      "bg-header": {
+        "role": "neutral",
+        "displayName": "Abyssal Header",
+        "canonical": "#0d1219",
+        "tonalRamp": [
+          "oklch(16% 0.016 256.8)",
+          "oklch(27% 0.016 256.8)",
+          "oklch(38% 0.016 256.8)",
+          "oklch(49% 0.016 256.8)",
+          "oklch(60% 0.016 256.8)",
+          "oklch(72% 0.016 256.8)",
+          "oklch(83% 0.016 256.8)",
+          "oklch(94% 0.016 256.8)"
+        ]
+      },
+      "bg-masthead": {
+        "role": "neutral",
+        "displayName": "Masthead Slate",
+        "canonical": "#0e131b",
+        "tonalRamp": [
+          "oklch(16% 0.018 259.7)",
+          "oklch(27% 0.018 259.7)",
+          "oklch(38% 0.018 259.7)",
+          "oklch(49% 0.018 259.7)",
+          "oklch(60% 0.018 259.7)",
+          "oklch(72% 0.018 259.7)",
+          "oklch(83% 0.018 259.7)",
+          "oklch(94% 0.018 259.7)"
+        ]
+      },
+      "bg-plate": {
+        "role": "neutral",
+        "displayName": "Ledger Plate",
+        "canonical": "#10151d",
+        "tonalRamp": [
+          "oklch(16% 0.018 259.7)",
+          "oklch(27% 0.018 259.7)",
+          "oklch(38% 0.018 259.7)",
+          "oklch(49% 0.018 259.7)",
+          "oklch(60% 0.018 259.7)",
+          "oklch(72% 0.018 259.7)",
+          "oklch(83% 0.018 259.7)",
+          "oklch(94% 0.018 259.7)"
+        ]
+      },
+      "bg-toolbar": {
+        "role": "neutral",
+        "displayName": "Toolbar Slate",
+        "canonical": "#121822",
+        "tonalRamp": [
+          "oklch(16% 0.022 260.5)",
+          "oklch(27% 0.022 260.5)",
+          "oklch(38% 0.022 260.5)",
+          "oklch(49% 0.022 260.5)",
+          "oklch(60% 0.022 260.5)",
+          "oklch(72% 0.022 260.5)",
+          "oklch(83% 0.022 260.5)",
+          "oklch(94% 0.022 260.5)"
+        ]
+      },
+      "bg-plate-elevated": {
+        "role": "neutral",
+        "displayName": "Elevated Plate",
+        "canonical": "#151c27",
+        "tonalRamp": [
+          "oklch(16% 0.024 259.3)",
+          "oklch(27% 0.024 259.3)",
+          "oklch(38% 0.024 259.3)",
+          "oklch(49% 0.024 259.3)",
+          "oklch(60% 0.024 259.3)",
+          "oklch(72% 0.024 259.3)",
+          "oklch(83% 0.024 259.3)",
+          "oklch(94% 0.024 259.3)"
+        ]
+      },
+      "bg-row-hover": {
+        "role": "neutral",
+        "displayName": "Row Hover Slate",
+        "canonical": "#17202e",
+        "tonalRamp": [
+          "oklch(16% 0.030 259.1)",
+          "oklch(27% 0.030 259.1)",
+          "oklch(38% 0.030 259.1)",
+          "oklch(49% 0.030 259.1)",
+          "oklch(60% 0.030 259.1)",
+          "oklch(72% 0.030 259.1)",
+          "oklch(83% 0.030 259.1)",
+          "oklch(94% 0.030 259.1)"
+        ]
+      },
+      "bg-plate-active": {
+        "role": "neutral",
+        "displayName": "Active Zone Plate",
+        "canonical": "#192231",
+        "tonalRamp": [
+          "oklch(16% 0.031 260.4)",
+          "oklch(27% 0.031 260.4)",
+          "oklch(38% 0.031 260.4)",
+          "oklch(49% 0.031 260.4)",
+          "oklch(60% 0.031 260.4)",
+          "oklch(72% 0.031 260.4)",
+          "oklch(83% 0.031 260.4)",
+          "oklch(94% 0.031 260.4)"
+        ]
+      },
+      "bg-control-hover": {
+        "role": "neutral",
+        "displayName": "Control Hover Slate",
+        "canonical": "#1d2736",
+        "tonalRamp": [
+          "oklch(16% 0.031 258.3)",
+          "oklch(27% 0.031 258.3)",
+          "oklch(38% 0.031 258.3)",
+          "oklch(49% 0.031 258.3)",
+          "oklch(60% 0.031 258.3)",
+          "oklch(72% 0.031 258.3)",
+          "oklch(83% 0.031 258.3)",
+          "oklch(94% 0.031 258.3)"
+        ]
+      },
+      "border-subtle": {
+        "role": "neutral",
+        "displayName": "Subtle Divider",
+        "canonical": "#1c2532",
+        "tonalRamp": [
+          "oklch(16% 0.028 257.5)",
+          "oklch(27% 0.028 257.5)",
+          "oklch(38% 0.028 257.5)",
+          "oklch(49% 0.028 257.5)",
+          "oklch(60% 0.028 257.5)",
+          "oklch(72% 0.028 257.5)",
+          "oklch(83% 0.028 257.5)",
+          "oklch(94% 0.028 257.5)"
+        ]
+      },
+      "border-hairline": {
+        "role": "neutral",
+        "displayName": "Structural Hairline",
+        "canonical": "#222b38",
+        "tonalRamp": [
+          "oklch(16% 0.027 257.5)",
+          "oklch(27% 0.027 257.5)",
+          "oklch(38% 0.027 257.5)",
+          "oklch(49% 0.027 257.5)",
+          "oklch(60% 0.027 257.5)",
+          "oklch(72% 0.027 257.5)",
+          "oklch(83% 0.027 257.5)",
+          "oklch(94% 0.027 257.5)"
+        ]
+      },
+      "border-control": {
+        "role": "neutral",
+        "displayName": "Control Border",
+        "canonical": "#283446",
+        "tonalRamp": [
+          "oklch(16% 0.036 258.3)",
+          "oklch(27% 0.036 258.3)",
+          "oklch(38% 0.036 258.3)",
+          "oklch(49% 0.036 258.3)",
+          "oklch(60% 0.036 258.3)",
+          "oklch(72% 0.036 258.3)",
+          "oklch(83% 0.036 258.3)",
+          "oklch(94% 0.036 258.3)"
+        ]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "Strong Frame Border",
+        "canonical": "#324055",
+        "tonalRamp": [
+          "oklch(16% 0.041 258.3)",
+          "oklch(27% 0.041 258.3)",
+          "oklch(38% 0.041 258.3)",
+          "oklch(49% 0.041 258.3)",
+          "oklch(60% 0.041 258.3)",
+          "oklch(72% 0.041 258.3)",
+          "oklch(83% 0.041 258.3)",
+          "oklch(94% 0.041 258.3)"
+        ]
+      },
+      "scrollbar-thumb": {
+        "role": "neutral",
+        "displayName": "Scrollbar Slate",
+        "canonical": "#4b5c75",
+        "tonalRamp": [
+          "oklch(16% 0.046 257.9)",
+          "oklch(27% 0.046 257.9)",
+          "oklch(38% 0.046 257.9)",
+          "oklch(49% 0.046 257.9)",
+          "oklch(60% 0.046 257.9)",
+          "oklch(72% 0.046 257.9)",
+          "oklch(83% 0.046 257.9)",
+          "oklch(94% 0.046 257.9)"
+        ]
+      },
+      "ink-primary": {
+        "role": "neutral",
+        "displayName": "Cold White Ink",
+        "canonical": "#f1f5f9",
+        "tonalRamp": [
+          "oklch(16% 0.007 247.9)",
+          "oklch(27% 0.007 247.9)",
+          "oklch(38% 0.007 247.9)",
+          "oklch(49% 0.007 247.9)",
+          "oklch(60% 0.007 247.9)",
+          "oklch(72% 0.007 247.9)",
+          "oklch(83% 0.007 247.9)",
+          "oklch(94% 0.007 247.9)"
+        ]
+      },
+      "ink-secondary": {
+        "role": "neutral",
+        "displayName": "Slate Secondary Ink",
+        "canonical": "#9fb0c5",
+        "tonalRamp": [
+          "oklch(16% 0.036 253.8)",
+          "oklch(27% 0.036 253.8)",
+          "oklch(38% 0.036 253.8)",
+          "oklch(49% 0.036 253.8)",
+          "oklch(60% 0.036 253.8)",
+          "oklch(72% 0.036 253.8)",
+          "oklch(83% 0.036 253.8)",
+          "oklch(94% 0.036 253.8)"
+        ]
+      },
+      "ink-muted": {
+        "role": "neutral",
+        "displayName": "Muted Telemetry Ink",
+        "canonical": "#7f91a8",
+        "tonalRamp": [
+          "oklch(16% 0.040 254.6)",
+          "oklch(27% 0.040 254.6)",
+          "oklch(38% 0.040 254.6)",
+          "oklch(49% 0.040 254.6)",
+          "oklch(60% 0.040 254.6)",
+          "oklch(72% 0.040 254.6)",
+          "oklch(83% 0.040 254.6)",
+          "oklch(94% 0.040 254.6)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display Tabular Readout",
+        "purpose": "Zone Schedule ticker counts and Account Tier-1 primary capital/PnL figures."
+      },
+      "headline": {
+        "displayName": "System Masthead Headline",
+        "purpose": "Top masthead system title across all three terminal views."
+      },
+      "title": {
+        "displayName": "Ledger Section Title",
+        "purpose": "Playbook rule headings, execution timetable steps, and K-line modal symbol header."
+      },
+      "body": {
+        "displayName": "Terminal Body & Control Copy",
+        "purpose": "Playbook rule descriptions (65-68ch), search inputs, segmented navigation, and toolbar buttons."
+      },
+      "label": {
+        "displayName": "Telemetry & Micro-Badge Label",
+        "purpose": "Table column headers, funding/EMA sub-metrics, signal chips, and <kbd> shortcut keycaps."
+      }
+    },
+    "shadows": [
+      {
+        "name": "modal-top-layer",
+        "value": "0 24px 48px -12px rgba(0, 0, 0, 0.72)",
+        "purpose": "Top-layer depth under native <dialog.chart-modal-dialog> over blurred dark backdrop."
+      },
+      {
+        "name": "toast-float",
+        "value": "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1)",
+        "purpose": "Floating elevation under transient bottom-right #toast clipboard confirmation."
+      },
+      {
+        "name": "sticky-header-seam",
+        "value": "0 1px 0 #222b38",
+        "purpose": "Crisp 1px bottom structural rule under position: sticky table headers."
+      },
+      {
+        "name": "sticky-col-seam",
+        "value": "inset -1px 0 0 #222b38",
+        "purpose": "Crisp 1px right structural rule on the frozen first symbol column during horizontal scroll."
+      },
+      {
+        "name": "resonance-row-amber",
+        "value": "inset 1px 0 0 #f0b429",
+        "purpose": "1px leading conviction hairline on dual-core golden resonance candidate rows."
+      },
+      {
+        "name": "resonance-row-crimson",
+        "value": "inset 1px 0 0 #f25565",
+        "purpose": "1px leading squeeze hairline on negative-funding dual-core resonance candidate rows."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-out-expo",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Authored exponential ease-out for Zone Schedule cell selection, top-layer modal entry/exit, and live price-tick color flashes."
+      },
+      {
+        "name": "ease-standard",
+        "value": "cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "Default state transition curve for button/tab colors and proportional pool-share bars."
+      },
+      {
+        "name": "duration-micro",
+        "value": "150ms",
+        "purpose": "Crisp hover/active feedback on buttons, sort headers, row micro-actions, and schedule cells."
+      },
+      {
+        "name": "duration-modal",
+        "value": "180ms",
+        "purpose": "Discrete top-layer <dialog> and ::backdrop entry/exit transition (shortened to 80ms under prefers-reduced-motion)."
+      },
+      {
+        "name": "duration-bar",
+        "value": "300ms",
+        "purpose": "Proportional Zone Schedule bar width updates, 24h range percentile bars, and manual refresh icon spin."
+      },
+      {
+        "name": "duration-price-tick",
+        "value": "480ms",
+        "purpose": "Web Animations API directional emerald/crimson text flash on live Binance price updates."
+      }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Execution Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "High-emphasis Action Cobalt trigger reserved for batch copying TradingView watchlists and launching layout ig0LuDL8.",
+      "html": "<button type=\"button\" class=\"ds-btn-primary\"><svg class=\"ds-btn-icon\" viewBox=\"0 0 16 16\" fill=\"none\" aria-hidden=\"true\"><rect x=\"5.5\" y=\"5.5\" width=\"8\" height=\"8\" rx=\"1.2\" stroke=\"currentColor\" stroke-width=\"1.4\"/><path d=\"M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5H9A1.5 1.5 0 0 1 10.5 3V3.5\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linecap=\"round\"/></svg><span>复制 TV 自选</span></button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 4px; border: 1px solid transparent; background-color: #2563eb; color: #ffffff; font-family: var(--font-sans, 'Inter', sans-serif); font-size: 12px; line-height: 16px; font-weight: 600; cursor: pointer; transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-btn-primary:hover { background-color: #1d4ed8; } .ds-btn-primary:active { background-color: #1e40af; } .ds-btn-primary:focus-visible { outline: 2px solid var(--sig-cobalt, #3b82f6); outline-offset: 2px; } .ds-btn-icon { width: 14px; height: 14px; flex-shrink: 0; }"
+    },
+    {
+      "name": "Secondary Ledger Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Compact slate toolbar control for manual Binance sync, quick-reference drawer toggles, .txt watchlist export, and filter resets.",
+      "html": "<button type=\"button\" class=\"ds-btn-secondary\"><svg class=\"ds-btn-sec-icon\" viewBox=\"0 0 16 16\" fill=\"none\" aria-hidden=\"true\"><path d=\"M13.5 8A5.5 5.5 0 1 1 11.9 4.1M13.5 2.5V5.5H10.5\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg><span>刷新</span></button>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 4px; background-color: var(--bg-plate-elevated, #151c27); color: var(--ink-primary, #f1f5f9); border: 1px solid #283446; font-family: var(--font-sans, 'Inter', sans-serif); font-size: 12px; line-height: 16px; font-weight: 500; cursor: pointer; transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1), border-color 150ms cubic-bezier(0.4, 0, 0.2, 1), color 150ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-btn-secondary:hover { background-color: #1d2736; border-color: #3b4d66; } .ds-btn-secondary:active { background-color: var(--bg-plate-active, #192231); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--sig-cobalt, #3b82f6); outline-offset: 2px; } .ds-btn-sec-icon { width: 14px; height: 14px; color: var(--ink-secondary, #9fb0c5); flex-shrink: 0; }"
+    },
+    {
+      "name": "Row Micro-Action Group",
+      "kind": "button",
+      "refersTo": "row-action-primary",
+      "description": "Dense 11px inline action bar inside sticky candidate symbol cells for instant 15m chart preview and external TV/Binance jumps.",
+      "html": "<div class=\"ds-row-actions\"><button type=\"button\" class=\"ds-row-action ds-row-action-primary\">15m图</button><a href=\"#tv\" class=\"ds-row-action\"><span>TV</span><svg class=\"ds-ext-arrow\" viewBox=\"0 0 12 12\" fill=\"none\" aria-hidden=\"true\"><path d=\"M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg></a></div>",
+      "css": ".ds-row-actions { display: inline-flex; align-items: center; gap: 4px; background-color: var(--bg-plate, #10151d); padding: 4px; } .ds-row-action { display: inline-flex; align-items: center; gap: 2px; padding: 1px 6px; border-radius: 3px; font-family: var(--font-sans, 'Inter', sans-serif); font-size: 11px; line-height: 1.4; font-weight: 500; text-decoration: none; color: var(--ink-secondary, #9fb0c5); background-color: var(--bg-plate-elevated, #151c27); border: 1px solid #263244; cursor: pointer; transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease; } .ds-row-action:hover { color: var(--ink-primary, #f1f5f9); background-color: #1d2736; border-color: #3d4f6a; } .ds-row-action:focus-visible { outline: 2px solid var(--sig-cobalt, #3b82f6); outline-offset: 2px; } .ds-row-action-primary { color: #8ab8ff; border-color: rgba(59, 130, 246, 0.35); background-color: rgba(59, 130, 246, 0.1); } .ds-row-action-primary:hover { color: #ffffff; background-color: rgba(59, 130, 246, 0.24); border-color: rgba(59, 130, 246, 0.6); } .ds-ext-arrow { width: 10px; height: 10px; flex-shrink: 0; }"
+    },
+    {
+      "name": "Segmented View Navigation",
+      "kind": "nav",
+      "refersTo": "nav-segment-active",
+      "description": "Hairline-divided 3-view masthead switcher uniting Strategy Monitor, Account Analytics, and Second-Leg Playbook.",
+      "html": "<nav class=\"ds-seg-nav\" aria-label=\"全系统核心视图导航\"><a href=\"#monitor\" aria-current=\"page\" class=\"ds-seg-link ds-seg-link-active\">策略监控看板</a><a href=\"#account\" class=\"ds-seg-link\">账户数据分析</a><a href=\"#playbook\" class=\"ds-seg-link\">二段爆发战法</a></nav>",
+      "css": ".ds-seg-nav { display: inline-flex; align-items: center; border: 1px solid #283446; border-radius: 4px; overflow: hidden; background-color: var(--bg-canvas, #0b0e13); } .ds-seg-link { padding: 4px 12px; font-family: var(--font-sans, 'Inter', sans-serif); font-size: 12px; line-height: 16px; font-weight: 500; color: var(--ink-secondary, #9fb0c5); text-decoration: none; transition: color 150ms cubic-bezier(0.4, 0, 0.2, 1), background-color 150ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-seg-link + .ds-seg-link { border-left: 1px solid #283446; } .ds-seg-link:hover { color: var(--ink-primary, #f1f5f9); background-color: var(--bg-plate-elevated, #151c27); } .ds-seg-link-active, .ds-seg-link[aria-current='page'] { font-weight: 600; color: var(--ink-primary, #f1f5f9); background-color: var(--bg-plate-active, #192231); } .ds-seg-link:focus-visible { outline: 2px solid var(--sig-cobalt, #3b82f6); outline-offset: -2px; }"
+    },
+    {
+      "name": "Symbol Search Input",
+      "kind": "input",
+      "refersTo": "input-search",
+      "description": "Recessed obsidian search input with inline SVG magnifier, '/' keyboard shortcut hint, cobalt focus stroke, and bullion-amber caret.",
+      "html": "<div class=\"ds-search-wrap\"><svg class=\"ds-search-icon\" viewBox=\"0 0 16 16\" fill=\"none\" aria-hidden=\"true\"><circle cx=\"7\" cy=\"7\" r=\"4.5\" stroke=\"currentColor\" stroke-width=\"1.4\"/><path d=\"M10.5 10.5L13.5 13.5\" stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linecap=\"round\"/></svg><input type=\"search\" class=\"ds-search-input\" placeholder=\"搜索合约代号 (按 / 聚焦)...\" aria-label=\"按合约代号搜索\" /></div>",
+      "css": ".ds-search-wrap { position: relative; display: inline-flex; align-items: center; width: 256px; } .ds-search-icon { position: absolute; left: 10px; width: 14px; height: 14px; color: var(--ink-muted, #7f91a8); pointer-events: none; } .ds-search-input { width: 100%; padding: 4px 10px 4px 32px; border-radius: 4px; border: 1px solid #283446; background-color: var(--bg-canvas, #0b0e13); color: var(--ink-primary, #f1f5f9); caret-color: var(--sig-amber, #f0b429); font-family: var(--font-sans, 'Inter', sans-serif); font-size: 12px; line-height: 16px; transition: border-color 150ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-search-input::placeholder { color: var(--ink-muted, #7f91a8); } .ds-search-input:hover { border-color: #3b4d66; } .ds-search-input:focus, .ds-search-input:focus-visible { outline: 2px solid var(--sig-cobalt, #3b82f6); outline-offset: 1px; border-color: var(--sig-cobalt, #3b82f6); }"
+    },
+    {
+      "name": "Resonance & Regime Signal Chips",
+      "kind": "chip",
+      "refersTo": "badge-resonance-gold",
+      "description": "Rectilinear 3px micro-badges pairing low-alpha signal fills with lifted high-contrast inks for conviction, squeeze, and shortcut tokens.",
+      "html": "<div class=\"ds-chip-row\"><span class=\"ds-chip ds-chip-gold\">双核黄金共振</span><span class=\"ds-chip ds-chip-squeeze\">贴水双核共振</span><span class=\"ds-chip ds-chip-long\">LONG</span><kbd class=\"ds-kbd\">Alt+L</kbd></div>",
+      "css": ".ds-chip-row { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; background-color: var(--bg-plate, #10151d); border-radius: 4px; } .ds-chip { display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 3px; font-size: 10px; line-height: 1.4; font-weight: 600; font-family: var(--font-sans, 'Inter', sans-serif); border: 1px solid transparent; } .ds-chip-gold { background-color: rgba(240, 180, 41, 0.15); color: #f5c451; border-color: rgba(240, 180, 41, 0.35); } .ds-chip-squeeze { background-color: rgba(242, 85, 101, 0.15); color: #f8717e; border-color: rgba(242, 85, 101, 0.35); } .ds-chip-long { font-family: var(--font-mono, 'JetBrains Mono', monospace); background-color: rgba(34, 197, 139, 0.12); color: #38d99f; border-color: rgba(34, 197, 139, 0.3); } .ds-kbd { display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 3px; background-color: var(--bg-canvas, #0b0e13); color: var(--ink-primary, #f1f5f9); border: 1px solid #283446; font-family: var(--font-mono, 'JetBrains Mono', monospace); font-size: 10px; line-height: 1.4; }"
+    },
+    {
+      "name": "Ruled Ledger Frame",
+      "kind": "card",
+      "refersTo": "ledger-frame",
+      "description": "Flat-at-rest 6px slate ledger container with a #121822 toolbar header, 1px #222b38 structural rules, and tabular readout body.",
+      "html": "<section class=\"ds-ledger-frame\"><header class=\"ds-ledger-head\"><span class=\"ds-ledger-title\">资金净值走势</span><span class=\"ds-ledger-pill\">当前: $14,820.50</span></header><div class=\"ds-ledger-body\"><div class=\"ds-ledger-metric\">+$2,820.50</div><div class=\"ds-ledger-sub\"><span>本金: $12,000</span><span class=\"ds-ledger-gain\">+23.50%</span></div></div></section>",
+      "css": ".ds-ledger-frame { width: 300px; background-color: var(--bg-plate, #10151d); border: 1px solid var(--border-hairline, #222b38); border-radius: 6px; overflow: hidden; color: var(--ink-primary, #f1f5f9); } .ds-ledger-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; background-color: #121822; border-bottom: 1px solid var(--border-hairline, #222b38); } .ds-ledger-title { font-family: var(--font-sans, 'Inter', sans-serif); font-size: 12px; font-weight: 600; color: var(--ink-primary, #f1f5f9); } .ds-ledger-pill { padding: 2px 8px; border-radius: 3px; background-color: var(--bg-plate-active, #192231); border: 1px solid var(--border-strong, #324055); font-family: var(--font-mono, 'JetBrains Mono', monospace); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--ink-primary, #f1f5f9); } .ds-ledger-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; } .ds-ledger-metric { font-family: var(--font-mono, 'JetBrains Mono', monospace); font-variant-numeric: tabular-nums; font-size: 24px; font-weight: 700; line-height: 1; letter-spacing: -0.025em; color: #38d99f; } .ds-ledger-sub { display: flex; align-items: center; justify-content: space-between; padding-top: 8px; border-top: 1px solid #1c2532; font-family: var(--font-mono, 'JetBrains Mono', monospace); font-variant-numeric: tabular-nums; font-size: 11px; color: var(--ink-secondary, #9fb0c5); } .ds-ledger-gain { font-weight: 600; color: #38d99f; }"
+    },
+    {
+      "name": "Swiss Zone Schedule Cell",
+      "kind": "custom",
+      "refersTo": "zone-schedule-cell-active",
+      "description": "Signature interactive KPI and zone-filter schedule cell featuring a 2px top semantic signal rule, keycap index, tabular count, and pool-share bar.",
+      "html": "<div role=\"button\" tabindex=\"0\" aria-pressed=\"true\" class=\"ds-zone-cell ds-zone-active\"><div class=\"ds-zone-top\"><span class=\"ds-zone-name\">顺势高换手共振区</span><kbd class=\"ds-zone-key\">1</kbd></div><div class=\"ds-zone-mid\"><span class=\"ds-zone-count\">12</span><span class=\"ds-zone-sub\">8 黄金 / 4 贴水</span></div><div class=\"ds-zone-foot\"><div class=\"ds-zone-track\" aria-hidden=\"true\"><div class=\"ds-zone-fill\"></div></div><div class=\"ds-zone-sample\">代表: LAYER · ARC · BMT</div></div></div>",
+      "css": ".ds-zone-cell { position: relative; width: 240px; padding: 8px 14px; display: flex; flex-direction: column; justify-content: space-between; gap: 6px; background-color: var(--bg-plate, #10151d); border: 1px solid var(--border-hairline, #222b38); border-radius: 6px; cursor: pointer; transition: background-color 150ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-zone-cell::before { content: ''; position: absolute; inset-block-start: 0; inset-inline: 0; height: 2px; background-color: transparent; transition: background-color 150ms cubic-bezier(0.16, 1, 0.3, 1); } .ds-zone-cell:hover { background-color: var(--bg-plate-elevated, #151c27); } .ds-zone-cell.ds-zone-active { background-color: var(--bg-plate-active, #192231); } .ds-zone-cell.ds-zone-active::before { background-color: var(--sig-amber, #f0b429); } .ds-zone-cell:focus-visible { outline: 2px solid var(--sig-cobalt, #3b82f6); outline-offset: 2px; } .ds-zone-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; } .ds-zone-name { font-family: var(--font-sans, 'Inter', sans-serif); font-size: 12px; font-weight: 600; color: #f5c451; } .ds-zone-key { padding: 2px 6px; border-radius: 3px; font-family: var(--font-mono, 'JetBrains Mono', monospace); font-size: 10px; background-color: var(--bg-canvas, #0b0e13); color: var(--ink-secondary, #9fb0c5); border: 1px solid #283446; } .ds-zone-mid { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; } .ds-zone-count { font-family: var(--font-mono, 'JetBrains Mono', monospace); font-variant-numeric: tabular-nums; font-size: 24px; font-weight: 700; line-height: 1; color: var(--ink-primary, #f1f5f9); } .ds-zone-sub { font-family: var(--font-mono, 'JetBrains Mono', monospace); font-size: 11px; color: #f5c451; } .ds-zone-foot { display: flex; flex-direction: column; gap: 4px; } .ds-zone-track { height: 2px; width: 100%; background-color: #1a2230; overflow: hidden; } .ds-zone-fill { height: 100%; width: 28%; background-color: var(--sig-amber, #f0b429); transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-zone-sample { font-family: var(--font-mono, 'JetBrains Mono', monospace); font-size: 11px; color: var(--ink-secondary, #9fb0c5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Swiss Schedule Ledger",
+    "overview": "This visual system governs a high-frequency discretionary-quant trading terminal built for scanning sub-$30M Binance USDⓈ-M perpetual contracts, previewing 15m/1h EMA structures, launching TradingView logarithmic trendline layouts (`ig0LuDL8`), and auditing live stop-loss and trailing-breakeven discipline. It fuses the typographic rigor of a Swiss railway timetable with the density of an institutional order-book ledger: every funding countdown, keyboard-indexed opportunity zone, and contract row locks into a continuous `1px`-ruled slate matrix designed for multi-hour dark-room screen sessions.\n\nHierarchy is architectural rather than decorative. Stepped obsidian-to-slate plates (`#0b0e13` through `#192231`) and crisp `1px` structural hairlines (`#222b38`) replace floating card grids, while tabular monospace numerals (`tabular-nums`) guarantee zero horizontal jitter during 1-second settlement countdowns and 60-second market polls. The system explicitly rejects generic SaaS floating rounded cards, rainbow pill soup, and soft decorative glow shadows—chromatic ink appears only when signaling dual-core conviction, funding-rate squeeze polarity, EMA alignment, PnL outcome, or direct TradingView execution.\n\nMotion and browser chrome follow the same instrument-grade restraint. Top-layer candlestick dialogs enter and exit via crisp `180ms` exponential ease-out (`cubic-bezier(0.16, 1, 0.3, 1)`) transitions with `@starting-style`, live price ticks flash briefly (`480ms`) in directional emerald or crimson before settling back to cold white, and native scrollbars, focus outlines, text selection, and input carets are all explicitly themed from the ledger palette while honoring `prefers-reduced-motion`.",
+    "keyCharacteristics": [
+      "**Connected 1px Hairline Matrices:** Multi-cell KPI schedules, trading rules, and two-tier account metrics sit inside shared `1px`-gap background grids (`#222b38`) rather than detached cards.",
+      "**Rationed Quad-Signal Inks:** Neutral obsidian-slate plates occupy ≥85% of the viewport; Bullion Amber, Squeeze Crimson, Bullish Emerald, and Execution Cobalt appear strictly as semantic market and execution signals.",
+      "**Zero-Jitter Tabular Numerals:** Every price, percentage, funding rate, countdown, rank, and ratio enforces `JetBrains Mono` with `\"tnum\" 1, \"zero\" 1` and right-aligned numeric columns.",
+      "**Single-Keystroke Operational Cadence:** Visible `<kbd>` keycaps (`1`–`5`, `/`, `Esc`), sticky symbol columns, and inline `15m图` / `TV` row micro-actions keep scanning-to-charting to one action.",
+      "**Themed Native Browser Surfaces:** Dark `color-scheme`, high-contrast slate scrollbars (`#4b5c75` over `#0e131b`), `2px` cobalt `:focus-visible` rings, cobalt selection highlights, and a bullion-amber caret leave zero unstyled browser defaults."
+    ],
+    "rules": [
+      {
+        "name": "The Signal Rationing Rule",
+        "body": "Chromatic tokens (`#f0b429`, `#f25565`, `#22c58b`, `#3b82f6`) are reserved strictly for live market state, PnL polarity, and TradingView execution triggers; ≥85% of every screen remains obsidian-slate neutral.",
+        "section": "colors"
+      },
+      {
+        "name": "The Dual-Tone Contrast Rule",
+        "body": "Pair saturated signal fills (`#f0b429`, `#22c58b`, `#f25565`, `#3b82f6`) on bars, dots, and `10%`–`15%` alpha badge backgrounds with their lifted ink counterparts (`#f5c451`, `#38d99f`, `#f8717e`, `#8ab8ff`) for `10px`–`12px` text so dense dark-mode telemetry always clears contrast floors.",
+        "section": "colors"
+      },
+      {
+        "name": "The Whisper-Wash Row Rule",
+        "body": "Full-row semantic highlights (`resonance-gold-row` at `rgba(240, 180, 41, 0.04)` and `resonance-neg-row` at `rgba(242, 85, 101, 0.045)`) combine an ultra-sheer row wash with an `inset 1px 0 0` leading signal hairline and opaque color-matched sticky symbol cells (`#16181d` / `#16141c`) so horizontally scrolled data never shows through the frozen column.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular-Everywhere Rule",
+        "body": "Every numeric element—prices, signed percentages, 4h/settle funding rates, market caps, countdowns, timestamps, and table ranks—must enforce `font-variant-numeric: tabular-nums` (`\"tnum\" 1, \"zero\" 1`) with right alignment (`text-right`) in numeric columns so live polling never shifts column rhythm.",
+        "section": "typography"
+      },
+      {
+        "name": "The Monospace-For-Measurement Rule",
+        "body": "Reserve `JetBrains Mono` strictly for financial figures, timestamps, keyboard keycaps (`<kbd>`), quote-currency suffixes (`USDT`), step codes (`STEP 01`), and TradingView layout/trendline IDs (`ig0LuDL8`); never set Chinese prose or section headings in monospace.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-At-Rest Ledger Rule",
+        "body": "Workspace containers, KPI strips, charts, and tables are strictly flat at rest (`box-shadow: none`); never add ambient drop shadows or zero-offset colored neon glows to cards, badges, or buttons.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** house multi-metric KPIs and rule summaries inside connected `.ledger-grid` (`1px` `#222b38` hairline gap) or `.ledger-frame` plates so adjacent cells share crisp architectural rules.",
+      "**Do** apply `tabular-nums` (`\"tnum\" 1, \"zero\" 1`) and `JetBrains Mono` to every price, percentage, funding rate, countdown, timestamp, and table rank, right-aligning numeric columns (`text-right`).",
+      "**Do** pair `10%`–`15%` alpha signal badge fills (`#f0b429`, `#22c58b`, `#f25565`, `#3b82f6`) with their lifted ink tokens (`#f5c451`, `#38d99f`, `#f8717e`, `#8ab8ff`) so compact `10px`–`12px` labels maintain dark-mode readability.",
+      "**Do** give sticky columns (`sticky-col`) an explicit opaque background matching each row state (`#10151d` default, `#16181d` gold resonance, `#16141c` squeeze resonance, `#17202e` hover) plus an `inset -1px 0 0 #222b38` seam shadow.",
+      "**Do** expose keyboard shortcuts (`1`–`5`, `/`, `Esc`) via `3px`-radius `<kbd>` keycaps and preserve `2px solid #3b82f6` `:focus-visible` outlines and `prefers-reduced-motion` fallbacks across all interactive controls."
+    ],
+    "donts": [
+      "**Don't** break KPI strips or specification matrices into detached, wide-gap rounded SaaS cards with drop shadows or hover lift transforms.",
+      "**Don't** use `9999px` pill geometry on buttons, filter tabs, or signal tags; reserve `rounded-full` strictly for `6px`–`8px` status indicator dots.",
+      "**Don't** introduce thick (`>1px`) colored `border-left` or `border-right` stripes on cards, rows, or callouts; use `inset 1px 0 0` hairlines on resonance table rows or `2px` top edge bars on active schedule cells.",
+      "**Don't** paint secondary or muted text with flat neutral gray; always tint secondary (`#9fb0c5`) and muted (`#7f91a8`) inks from the cool steel-slate hue family.",
+      "**Don't** add decorative neon `box-shadow` halos, gradient text, or unrequested modal interruptions; reserve top-layer `<dialog>` elevation strictly for on-demand candlestick inspection."
+    ]
+  }
+}

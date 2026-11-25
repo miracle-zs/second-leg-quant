@@ -17,12 +17,15 @@
     resonance: '顺势高换手共振区',
     neg_fr: '负费率贴水区',
     high_tr: '巨量高换手区',
-    ema_bull: '1h EMA顺势区',
+    ema_bull: '1h EMA 顺势区',
     all: '全量候选底池',
   };
   const UI_STATE_KEY = 'slq_candidates_ui_state';
   const VALID_SORT_COLS = new Set(['price', 'chg', 'mc', 'vol', 'tr', 'fr', 'ema', 'duration']);
   const VALID_BAR_COUNTS = KlineModal ? KlineModal.VALID_BAR_COUNTS : new Set([60, 120, 168]);
+
+  const EXT_ARROW_SVG = '<svg class="w-2.5 h-2.5 shrink-0" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const CHECK_SVG = '<svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 6.2L5 8.7L9.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
   let candidatesState = [];
   const rowRefsBySym = new Map();
@@ -125,8 +128,10 @@
   const searchInput = document.getElementById('symbol-search-input');
   const resetBtn = document.getElementById('btn-reset-filter');
   const kpiCards = document.querySelectorAll('.kpi-card');
+  const candidatesTable = document.getElementById('candidates-table');
   const tableBody = document.getElementById('candidate-table-body');
   const sortHeaders = document.querySelectorAll('th.sortable');
+  const sortStatusEl = document.getElementById('candidates-sort-status');
   const batchCopyBtn = document.getElementById('btn-batch-copy-tv');
   const batchExportBtn = document.getElementById('btn-batch-export-tv');
   const toast = document.getElementById('toast');
@@ -139,12 +144,16 @@
     resCount: document.getElementById('kpi-resonance-count'),
     resSub: document.getElementById('kpi-resonance-sub'),
     resSample: document.getElementById('kpi-resonance-sample'),
+    resBar: document.getElementById('kpi-resonance-bar'),
     negCount: document.getElementById('kpi-neg-fr-count'),
     negSample: document.getElementById('kpi-neg-fr-sample'),
+    negBar: document.getElementById('kpi-neg-fr-bar'),
     highTrCount: document.getElementById('kpi-high-tr-count'),
     highTrSample: document.getElementById('kpi-high-tr-sample'),
+    highTrBar: document.getElementById('kpi-high-tr-bar'),
     emaBullCount: document.getElementById('kpi-ema-bull-count'),
     emaBullSample: document.getElementById('kpi-ema-bull-sample'),
+    emaBullBar: document.getElementById('kpi-ema-bull-bar'),
     allCount: document.getElementById('kpi-all-count'),
     allSub: document.getElementById('kpi-all-sub'),
   };
@@ -187,79 +196,87 @@
   }
 
   function getFundingClass(fr4h) {
-    if (!isFiniteNum(fr4h)) return 'sym-fr-4h font-mono tabular-nums text-slate-500';
-    if (fr4h <= -0.025) return 'sym-fr-4h font-mono tabular-nums text-rose-400 font-bold';
-    if (fr4h < 0) return 'sym-fr-4h font-mono tabular-nums text-rose-300';
-    return 'sym-fr-4h font-mono tabular-nums text-slate-400';
+    if (!isFiniteNum(fr4h)) return 'sym-fr-4h font-mono tabular-nums text-[#7f91a8]';
+    if (fr4h <= -0.025) return 'sym-fr-4h font-mono tabular-nums text-[#f8717e] font-bold';
+    if (fr4h < 0) return 'sym-fr-4h font-mono tabular-nums text-[#f8717e]';
+    return 'sym-fr-4h font-mono tabular-nums text-[#9fb0c5]';
   }
 
   function getTurnoverBadgeClass(tr) {
-    if (!isFiniteNum(tr)) return 'text-slate-500';
-    if (tr >= 2.0) return 'text-purple-300 font-bold bg-purple-500/10 px-1 py-0.5 rounded border border-purple-500/20';
-    if (tr >= 1.5) return 'text-purple-400 font-semibold bg-purple-500/5 px-1 py-0.5 rounded border border-purple-500/15';
-    if (tr >= 0.8) return 'text-slate-300';
-    return 'text-slate-500';
+    if (!isFiniteNum(tr)) return 'text-[#7f91a8]';
+    if (tr >= 2.0) return 'text-[#f1f5f9] font-bold bg-[#3b82f6]/15 px-1.5 py-0.5 rounded-[3px] border border-[#3b82f6]/35';
+    if (tr >= 1.5) return 'text-[#8ab8ff] font-medium bg-[#3b82f6]/10 px-1.5 py-0.5 rounded-[3px] border border-[#3b82f6]/25';
+    if (tr >= 0.8) return 'text-[#f1f5f9]';
+    return 'text-[#7f91a8]';
   }
 
   function getPosBarColor(posPct) {
-    if (!isFiniteNum(posPct)) return 'bg-sky-400';
-    if (posPct <= 25) return 'bg-emerald-400';
-    if (posPct >= 75) return 'bg-amber-400';
-    return 'bg-sky-400';
+    if (!isFiniteNum(posPct)) return 'bg-[#3b82f6]';
+    if (posPct <= 25) return 'bg-[#22c58b]';
+    if (posPct >= 75) return 'bg-[#f0b429]';
+    return 'bg-[#3b82f6]';
   }
 
   function getRowClass(c) {
     if (c.is_resonance && c.is_neg_funding) {
-      return 'hover:bg-slate-800/40 bg-rose-950/15 resonance-neg-row candidate-row';
+      return 'resonance-neg-row candidate-row';
     }
     if (c.is_resonance) {
-      return 'hover:bg-slate-800/40 bg-amber-950/10 resonance-gold-row candidate-row';
+      return 'resonance-gold-row candidate-row';
     }
-    return 'hover:bg-slate-800/30 candidate-row';
+    return 'candidate-row';
+  }
+
+  function formatTickerDisplayHtml(sym) {
+    if (sym.endsWith('USDT') && sym.length > 4) {
+      const base = escapeHtml(sym.slice(0, -4));
+      return `<span class="text-[#f1f5f9] font-bold font-sans text-[13px] tracking-tight">${base}</span><span class="text-[#7f91a8] font-mono text-[10px]">USDT</span>`;
+    }
+    return `<span class="text-[#f1f5f9] font-bold font-sans text-[13px] tracking-tight">${escapeHtml(sym)}</span>`;
   }
 
   function buildZonesHtml(c) {
     let resonanceBadge = '';
     if (c.is_resonance && c.is_neg_funding) {
-      resonanceBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30" title="1h顺势+高换手，但4h负费率，合约端做空情绪浓厚">贴水双核(空头浓厚)</span>';
+      resonanceBadge = '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-semibold bg-[#f25565]/15 text-[#f8717e] border border-[#f25565]/35" title="1h顺势+高换手，4h负费率贴水逼空">贴水双核共振</span>';
     } else if (c.is_resonance) {
-      resonanceBadge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30" title="1h顺势+高换手，资金面健康">双核黄金共振</span>';
+      resonanceBadge = '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-semibold bg-[#f0b429]/15 text-[#f5c451] border border-[#f0b429]/35" title="1h顺势+高换手，资金面健康">双核黄金共振</span>';
     }
 
     const tags = [];
-    if (c.is_ema_bull) {
-      tags.push('<span class="px-1 py-0.5 rounded text-[9px] bg-emerald-950/60 text-emerald-300 border border-emerald-500/20">1h顺势</span>');
+    if (!c.is_resonance && c.is_ema_bull) {
+      tags.push('<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] bg-[#151c27] text-[#38d99f] border border-[#283446]">1h顺势</span>');
     }
     if (c.is_high_turnover) {
       const trLabel = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) + 'x' : '--';
-      tags.push(`<span class="px-1 py-0.5 rounded text-[9px] bg-purple-950/60 text-purple-300 border border-purple-500/20">换手${escapeHtml(trLabel)}</span>`);
+      tags.push(`<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#151c27] text-[#9fb0c5] border border-[#283446]">换手 ${escapeHtml(trLabel)}</span>`);
     }
-    if (c.is_neg_funding) {
-      tags.push('<span class="px-1 py-0.5 rounded text-[9px] bg-rose-950/60 text-rose-300 border border-rose-500/20" title="合约相对现货深度贴水，空头情绪极强">负费率贴水</span>');
+    if (!c.is_resonance && c.is_neg_funding) {
+      tags.push('<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] bg-[#151c27] text-[#f8717e] border border-[#283446]" title="合约相对现货贴水">负费率贴水</span>');
     }
 
-    return `<div class="flex items-center gap-1.5 flex-wrap">${resonanceBadge}${tags.length ? tags.join('') : '<span class="text-slate-500 text-[10px]">基础底池</span>'}</div>`;
+    return `<div class="flex items-center gap-1.5 flex-wrap">${resonanceBadge}${tags.length ? tags.join('') : (!resonanceBadge ? '<span class="text-[#7f91a8] text-[11px]">基础底池</span>' : '')}</div>`;
   }
 
   function buildIntervalBadge(interval) {
     if (interval === 1) {
-      return '<span class="px-1 py-0.5 text-[9px] font-sans font-bold rounded border bg-amber-500/20 text-amber-300 border-amber-500/30">1h期</span>';
+      return '<span class="px-1 py-0.5 text-[10px] font-mono rounded-[3px] border bg-[#f0b429]/12 text-[#f5c451] border-[#f0b429]/30">1h</span>';
     }
     if (interval === 4) {
-      return '<span class="px-1 py-0.5 text-[9px] font-sans rounded border bg-sky-500/20 text-sky-300 border-sky-500/30">4h期</span>';
+      return '<span class="px-1 py-0.5 text-[10px] font-mono rounded-[3px] border bg-[#151c27] text-[#9fb0c5] border-[#283446]">4h</span>';
     }
     if (interval === 8) {
-      return '<span class="px-1 py-0.5 text-[9px] font-sans rounded border bg-slate-800 text-slate-400 border-slate-700">8h期</span>';
+      return '<span class="px-1 py-0.5 text-[10px] font-mono rounded-[3px] border bg-[#0e131b] text-[#7f91a8] border-[#222b38]">8h</span>';
     }
     if (isFiniteNum(interval) && interval > 0) {
-      return `<span class="px-1 py-0.5 text-[9px] font-sans rounded border bg-slate-800 text-slate-400 border-slate-700">${escapeHtml(interval)}h期</span>`;
+      return `<span class="px-1 py-0.5 text-[10px] font-mono rounded-[3px] border bg-[#0e131b] text-[#7f91a8] border-[#222b38]">${escapeHtml(interval)}h</span>`;
     }
-    return '<span class="px-1 py-0.5 text-[9px] font-sans rounded border bg-slate-800 text-slate-500 border-slate-700">--期</span>';
+    return '<span class="px-1 py-0.5 text-[10px] font-mono rounded-[3px] border bg-[#0e131b] text-[#7f91a8] border-[#222b38]">--</span>';
   }
 
   function buildEmaHtml(c) {
     if (!isFiniteNum(c.ema5) || !isFiniteNum(c.ema10)) {
-      return '<span class="text-slate-500 text-[10px]">--</span>';
+      return '<span class="text-[#7f91a8] text-[11px]">--</span>';
     }
     const diffEma = c.ema5 - c.ema10;
     const ema5Str = escapeHtml(formatCryptoPrice(c.ema5, { refDiff: diffEma }));
@@ -270,56 +287,56 @@
     if (spread !== null && Math.abs(spread) <= 0.35) {
       return `<div class="whitespace-nowrap">
         <div class="flex items-center gap-1.5">
-          <span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span>
-          <span class="text-amber-300 font-bold px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-[10px]">粘合走平</span>
-          <span class="text-[10px] text-amber-300/80 font-mono">(${spreadText})</span>
+          <span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span>
+          <span class="text-[#f5c451] font-semibold text-xs">粘合收敛</span>
+          <span class="text-[11px] text-[#f5c451] font-mono tabular-nums">${spreadText}</span>
         </div>
-        <div class="text-[10px] text-slate-500 font-mono mt-0.5">5:${ema5Str} / 10:${ema10Str}</div>
+        <div class="text-[10px] text-[#7f91a8] font-mono tabular-nums mt-0.5">${ema5Str} / ${ema10Str}</div>
       </div>`;
     }
     if (c.is_ema_bull) {
       return `<div class="whitespace-nowrap">
         <div class="flex items-center gap-1.5">
-          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>
-          <span class="text-emerald-400 font-bold">金叉多头</span>
-          <span class="text-[10px] text-emerald-300 font-mono">(${spreadText})</span>
+          <span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>
+          <span class="text-[#38d99f] font-semibold text-xs">多头顺势</span>
+          <span class="text-[11px] text-[#38d99f] font-mono tabular-nums">${spreadText}</span>
         </div>
-        <div class="text-[10px] text-slate-500 font-mono mt-0.5">5:${ema5Str} / 10:${ema10Str}</div>
+        <div class="text-[10px] text-[#7f91a8] font-mono tabular-nums mt-0.5">${ema5Str} / ${ema10Str}</div>
       </div>`;
     }
     return `<div class="whitespace-nowrap">
       <div class="flex items-center gap-1.5">
-        <span class="w-1.5 h-1.5 rounded-full bg-slate-600" aria-hidden="true"></span>
-        <span class="text-slate-400">死叉整理</span>
-        <span class="text-[10px] text-slate-500 font-mono">(${spreadText})</span>
+        <span class="w-1.5 h-1.5 rounded-full bg-[#4b5c75]" aria-hidden="true"></span>
+        <span class="text-[#9fb0c5] text-xs">空头回撤</span>
+        <span class="text-[11px] text-[#7f91a8] font-mono tabular-nums">${spreadText}</span>
       </div>
-      <div class="text-[10px] text-slate-600 font-mono mt-0.5">5:${ema5Str} / 10:${ema10Str}</div>
+      <div class="text-[10px] text-[#7f91a8] font-mono tabular-nums mt-0.5">${ema5Str} / ${ema10Str}</div>
     </div>`;
   }
 
   function buildDurationHtml(c) {
     if (!c.is_resonance) {
-      return '<span class="text-slate-600 font-mono text-xs">--</span>';
+      return '<span class="text-[#7f91a8] font-mono text-xs">--</span>';
     }
-    const entryStr = c.resonance_entry_time ? `<div class="text-[9px] font-mono text-slate-400 mt-0.5">入圈: ${escapeHtml(c.resonance_entry_time)}</div>` : '';
+    const entryStr = c.resonance_entry_time ? `<div class="text-[10px] font-mono tabular-nums text-[#7f91a8] mt-0.5">${escapeHtml(c.resonance_entry_time)}</div>` : '';
     if (!isFiniteNum(c.resonance_duration_hours) || Number(c.resonance_duration_hours) < 0) {
-      return `<div><span class="text-slate-500 font-mono text-xs">--</span>${entryStr}</div>`;
+      return `<div><span class="text-[#7f91a8] font-mono text-xs">--</span>${entryStr}</div>`;
     }
     const resHours = Math.floor(Number(c.resonance_duration_hours));
     let badge;
     if (resHours > 0) {
       if (resHours <= 3) {
-        badge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>新进 ${resHours}h</span>`;
+        badge = `<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono tabular-nums font-semibold bg-[#22c58b]/12 text-[#38d99f] border border-[#22c58b]/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>新进 ${resHours}h</span>`;
       } else if (resHours <= 12) {
-        badge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span>活跃 ${resHours}h</span>`;
+        badge = `<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono tabular-nums font-semibold bg-[#f0b429]/12 text-[#f5c451] border border-[#f0b429]/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span>活跃 ${resHours}h</span>`;
       } else {
         const days = Math.floor(resHours / 24);
         const remH = resHours % 24;
-        const dStr = days > 0 ? `${days}天${remH}h` : `${resHours}h`;
-        badge = `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-sky-500/15 text-sky-300 border border-sky-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-sky-400" aria-hidden="true"></span>驻留 ${escapeHtml(dStr)}</span>`;
+        const dStr = days > 0 ? `${days}d ${remH}h` : `${resHours}h`;
+        badge = `<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono tabular-nums font-medium bg-[#151c27] text-[#9fb0c5] border border-[#283446] inline-flex items-center gap-1 w-fit">驻留 ${escapeHtml(dStr)}</span>`;
       }
     } else {
-      badge = '<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span>刚刚进入</span>';
+      badge = '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono font-semibold bg-[#22c58b]/15 text-[#38d99f] border border-[#22c58b]/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>刚入圈</span>';
     }
     return `<div>${badge}${entryStr}</div>`;
   }
@@ -352,6 +369,16 @@
     }
   }
 
+  function syncSortAria() {
+    sortHeaders.forEach((h) => {
+      if (sortColumn && h.getAttribute('data-sort') === sortColumn) {
+        h.setAttribute('aria-sort', sortAsc ? 'ascending' : 'descending');
+      } else {
+        h.removeAttribute('aria-sort');
+      }
+    });
+  }
+
   function showToast(msg) {
     if (!toast || !toastText) return;
     if (toastTimer) {
@@ -367,6 +394,7 @@
   }
 
   function updateKpiCards(list) {
+    const total = list.length;
     const resonance = list.filter((c) => c.is_resonance);
     const negRes = resonance.filter((c) => c.is_neg_funding);
     const pureResCount = resonance.length - negRes.length;
@@ -375,7 +403,7 @@
     const emaBull = list.filter((c) => c.is_ema_bull);
     const overflow = list.filter((c) => Boolean(c.is_overflow_7d));
 
-    const sampleRes = resonance.slice(0, 4).map((c) => c.symbol.replace(/USDT$/, '')).join('、') || '--';
+    const sampleRes = resonance.slice(0, 4).map((c) => c.symbol.replace(/USDT$/, '')).join(' · ') || '--';
     const sampleNeg = negFr
       .filter((c) => isFiniteNum(c.funding_rate_4h_pct))
       .sort((a, b) => Number(a.funding_rate_4h_pct) - Number(b.funding_rate_4h_pct))
@@ -395,33 +423,39 @@
       .map((c) => `${c.symbol.replace(/USDT$/, '')}(${formatSignedPct(c.ema_spread_pct, 1)})`)
       .join('、') || '--';
 
+    const pctWidth = (cnt) => (total > 0 ? `${Math.min(100, (cnt / total) * 100).toFixed(1)}%` : '0%');
+
     if (kpiEls.resCount) kpiEls.resCount.textContent = String(resonance.length);
-    if (kpiEls.resSub) kpiEls.resSub.textContent = `${pureResCount}纯黄金 / ${negRes.length}贴水`;
+    if (kpiEls.resSub) kpiEls.resSub.textContent = `${pureResCount} 黄金 / ${negRes.length} 贴水`;
+    if (kpiEls.resBar) kpiEls.resBar.style.width = pctWidth(resonance.length);
     if (kpiEls.resSample) {
       kpiEls.resSample.textContent = `代表: ${sampleRes}`;
       kpiEls.resSample.title = sampleRes;
     }
 
     if (kpiEls.negCount) kpiEls.negCount.textContent = String(negFr.length);
+    if (kpiEls.negBar) kpiEls.negBar.style.width = pctWidth(negFr.length);
     if (kpiEls.negSample) {
       kpiEls.negSample.textContent = `贴水深: ${sampleNeg}`;
       kpiEls.negSample.title = sampleNeg;
     }
 
     if (kpiEls.highTrCount) kpiEls.highTrCount.textContent = String(highTr.length);
+    if (kpiEls.highTrBar) kpiEls.highTrBar.style.width = pctWidth(highTr.length);
     if (kpiEls.highTrSample) {
       kpiEls.highTrSample.textContent = `最高: ${sampleTr}`;
       kpiEls.highTrSample.title = sampleTr;
     }
 
     if (kpiEls.emaBullCount) kpiEls.emaBullCount.textContent = String(emaBull.length);
+    if (kpiEls.emaBullBar) kpiEls.emaBullBar.style.width = pctWidth(emaBull.length);
     if (kpiEls.emaBullSample) {
       kpiEls.emaBullSample.textContent = `多头: ${sampleEma}`;
       kpiEls.emaBullSample.title = sampleEma;
     }
 
-    if (kpiEls.allCount) kpiEls.allCount.textContent = String(list.length);
-    if (kpiEls.allSub) kpiEls.allSub.textContent = `含${overflow.length}溢出跟踪`;
+    if (kpiEls.allCount) kpiEls.allCount.textContent = String(total);
+    if (kpiEls.allSub) kpiEls.allSub.textContent = `含 ${overflow.length} 溢出跟踪`;
   }
 
   function renderTableRows(list) {
@@ -430,9 +464,9 @@
 
     const emptyRowHtml = `
       <tr id="empty-search-row" class="hidden">
-        <td colspan="11" class="py-12 text-center text-slate-500 font-sans">
-          <div class="text-sm font-semibold text-slate-300">未找到匹配标的</div>
-          <div class="text-xs text-slate-500 mt-1">按 <kbd class="px-1.5 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-slate-400">Esc</kbd> 清空搜索或重置筛选条件</div>
+        <td colspan="11" class="py-14 text-center text-[#9fb0c5] font-sans">
+          <div class="text-sm font-semibold text-[#f1f5f9]">当前筛选下无匹配合约</div>
+          <div class="text-xs text-[#7f91a8] mt-1">按 <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">Esc</kbd> 清空搜索词或点击重置返回全池</div>
         </td>
       </tr>`;
 
@@ -456,20 +490,20 @@
         : '24h振幅区间缺失';
 
       const chgClass = isFiniteNum(c.price_chg_24h)
-        ? (c.price_chg_24h >= 0 ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold')
-        : 'text-slate-500';
+        ? (c.price_chg_24h >= 0 ? 'text-[#38d99f] font-semibold' : 'text-[#f8717e] font-semibold')
+        : 'text-[#7f91a8]';
       const chgText = escapeHtml(formatSignedPct(c.price_chg_24h, 2));
 
       const mcStr = escapeHtml(formatMillions(c.market_cap_usd));
       let mcHtml;
       if (c.is_overflow_7d) {
         const daysLeft = isFiniteNum(c.overflow_days_left) ? c.overflow_days_left.toFixed(1) : '--';
-        mcHtml = `<div>
-          <div class="text-amber-300 font-mono tabular-nums font-semibold sym-mc-val">${mcStr}</div>
-          <span class="px-1.5 py-0.5 rounded text-[9px] bg-amber-500/15 text-amber-300 border border-amber-500/30 inline-flex items-center gap-0.5" title="曾落入3000wu以下，突破后保持7天持续跟踪">溢出剩${escapeHtml(daysLeft)}天</span>
+        mcHtml = `<div class="inline-flex flex-col items-end">
+          <div class="text-[#f5c451] font-mono tabular-nums font-semibold sym-mc-val">${mcStr}</div>
+          <span class="px-1 py-0.5 rounded-[3px] text-[9px] font-sans bg-[#f0b429]/12 text-[#f5c451] border border-[#f0b429]/30 mt-0.5" title="曾落入 $30M 以下底池，市值溢出后保持 7 天跟踪">溢出 ${escapeHtml(daysLeft)}d</span>
         </div>`;
       } else {
-        mcHtml = `<div class="text-slate-200 font-mono tabular-nums sym-mc-val">${mcStr}</div>`;
+        mcHtml = `<div class="text-[#f1f5f9] font-mono tabular-nums sym-mc-val">${mcStr}</div>`;
       }
 
       const volStr = escapeHtml(formatMillions(c.volume_24h_usd));
@@ -482,41 +516,41 @@
       const cycleBadge = buildIntervalBadge(c.funding_interval_hours);
 
       return `<tr class="${getRowClass(c)}" data-sym="${safeSym}" data-tv-sym="${safeTvSym}">
-        <td class="py-1.5 px-1.5 text-center text-slate-500 font-sans text-xs sym-rank">${idx + 1}</td>
-        <th scope="row" class="py-1.5 px-2 font-normal whitespace-nowrap sticky-col">
-          <div class="flex items-center gap-1">
-            <span class="text-white font-bold font-sans text-sm tracking-tight">${safeSym}</span>
-            <button type="button" class="btn-copy-sym px-1 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 border border-slate-700 text-[10px] transition-all" data-copy="${safeTvSym}" data-label="复制" title="复制 TV 代码 (${safeTvSym})">复制</button>
+        <td class="py-2.5 px-2 text-center text-[#7f91a8] font-mono tabular-nums text-[11px] sym-rank">${idx + 1}</td>
+        <th scope="row" class="py-2 px-3 font-normal whitespace-nowrap sticky-col">
+          <div class="flex items-center justify-between gap-1.5">
+            <div class="flex items-baseline gap-0.5">${formatTickerDisplayHtml(sym)}</div>
+            <button type="button" class="btn-copy-sym px-1.5 py-0.5 rounded-[3px] bg-[#151c27] hover:bg-[#1d2736] text-[#9fb0c5] hover:text-[#f1f5f9] border border-[#283446] text-[10px] font-sans transition-colors inline-flex items-center justify-center min-w-[32px]" data-copy="${safeTvSym}" data-label="复制" title="复制 TV 代码 (${safeTvSym})">复制</button>
           </div>
-          <div class="flex items-center gap-1 mt-0.5 text-[10px] font-sans">
-            <button type="button" class="btn-preview-chart px-1.5 py-0.5 rounded bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 border border-sky-500/30 transition-all font-semibold" data-sym="${safeSym}" data-tv="${safeTvSym}" title="站内弹窗预览 15m 实时 K 线">15m图</button>
-            <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="px-1.5 py-0.5 rounded bg-[#2962FF]/15 hover:bg-[#2962FF]/25 text-[#38bdf8] hover:text-white border border-[#2962FF]/30 transition-all font-semibold" title="在 TradingView 打开 15m 专属画线布局 (ig0LuDL8)"><span>TV↗</span></a>
-            <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="px-1.5 py-0.5 rounded bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 hover:text-white border border-amber-500/30 transition-all" title="直达币安合约盘口深度"><span>币安↗</span></a>
+          <div class="flex items-center gap-1 mt-1 font-sans">
+            <button type="button" class="btn-preview-chart row-action-link row-action-primary" data-sym="${safeSym}" data-tv="${safeTvSym}" title="站内弹窗预览 15m 实时 K 线">15m图</button>
+            <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="row-action-link" title="在 TradingView 打开 15m 专属画线布局 (ig0LuDL8)"><span>TV</span>${EXT_ARROW_SVG}</a>
+            <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="row-action-link" title="打开币安合约盘口"><span>币安</span>${EXT_ARROW_SVG}</a>
           </div>
         </th>
-        <td class="py-1.5 px-2 whitespace-nowrap">
-          <div class="text-white font-mono tabular-nums font-semibold sym-price">${pStr}</div>
-          <div class="sym-pos-box w-16 mt-0.5 flex items-center gap-1 text-[9px] text-slate-500" title="${posTitle}">
-            <div class="w-full h-1 bg-slate-800 rounded-full relative overflow-hidden">
-              <div class="sym-pos-bar h-full ${posBarCol} rounded-full transition-all duration-300" style="width: ${posWidth}%"></div>
+        <td class="py-2.5 px-2.5 whitespace-nowrap text-right">
+          <div class="text-[#f1f5f9] font-mono tabular-nums font-semibold sym-price">${pStr}</div>
+          <div class="sym-pos-box w-[76px] ml-auto mt-1 flex items-center justify-end gap-1.5 text-[10px]" title="${posTitle}">
+            <div class="w-12 h-1 bg-[#1b2432] rounded-[1px] relative overflow-hidden">
+              <div class="sym-pos-bar h-full ${posBarCol} transition-all duration-300" style="width: ${posWidth}%"></div>
             </div>
-            <span class="sym-pos-text font-mono text-[9px] text-slate-400">${posLabel}</span>
+            <span class="sym-pos-text font-mono tabular-nums text-[10px] text-[#9fb0c5] w-7 text-right">${posLabel}</span>
           </div>
         </td>
-        <td class="py-1.5 px-2 font-mono tabular-nums sym-chg whitespace-nowrap ${chgClass}">${chgText}</td>
-        <td class="py-1.5 px-2 whitespace-nowrap">${mcHtml}</td>
-        <td class="py-1.5 px-2 text-slate-300 font-mono tabular-nums sym-vol whitespace-nowrap">${volStr}</td>
-        <td class="py-1.5 px-2 sym-tr font-mono tabular-nums whitespace-nowrap"><span class="${trClass}">${escapeHtml(trStr)}</span></td>
-        <td class="py-1.5 px-2 sym-fr whitespace-nowrap">
-          <div class="flex items-center gap-1">
+        <td class="py-2.5 px-2.5 font-mono tabular-nums sym-chg whitespace-nowrap text-right ${chgClass}">${chgText}</td>
+        <td class="py-2.5 px-2.5 whitespace-nowrap text-right border-l border-[#1c2532]">${mcHtml}</td>
+        <td class="py-2.5 px-2.5 text-[#9fb0c5] font-mono tabular-nums sym-vol whitespace-nowrap text-right">${volStr}</td>
+        <td class="py-2.5 px-2.5 sym-tr font-mono tabular-nums whitespace-nowrap text-right"><span class="${trClass}">${escapeHtml(trStr)}</span></td>
+        <td class="py-2.5 px-2.5 sym-fr whitespace-nowrap text-right border-l border-[#1c2532]">
+          <div class="inline-flex items-center justify-end gap-1">
             <span class="${frColor}">${fr4hStr}</span>
             ${cycleBadge}
           </div>
-          <div class="text-[10px] text-slate-500 font-mono sym-fr-settle">单期: ${frSettleStr}</div>
+          <div class="text-[10px] text-[#7f91a8] font-mono tabular-nums sym-fr-settle mt-0.5">单期: ${frSettleStr}</div>
         </td>
-        <td class="py-1.5 px-2 font-sans whitespace-nowrap">${buildEmaHtml(c)}</td>
-        <td class="py-1.5 px-2 font-sans whitespace-nowrap sym-duration">${buildDurationHtml(c)}</td>
-        <td class="py-1.5 px-2 font-sans whitespace-nowrap sym-zones">${buildZonesHtml(c)}</td>
+        <td class="py-2.5 px-3 font-sans whitespace-nowrap">${buildEmaHtml(c)}</td>
+        <td class="py-2.5 px-3 font-sans whitespace-nowrap sym-duration border-l border-[#1c2532]">${buildDurationHtml(c)}</td>
+        <td class="py-2.5 px-3 font-sans whitespace-nowrap sym-zones">${buildZonesHtml(c)}</td>
       </tr>`;
     }).join('');
 
@@ -575,12 +609,19 @@
     }
 
     if (orderChanged) {
-      const frag = document.createDocumentFragment();
-      candidatesState.forEach((c) => {
-        const refs = rowRefsBySym.get(c.symbol);
-        if (refs && refs.rowEl) frag.appendChild(refs.rowEl);
-      });
-      tableBody.appendChild(frag);
+      if (typeof tableBody.moveBefore === 'function') {
+        candidatesState.forEach((c) => {
+          const refs = rowRefsBySym.get(c.symbol);
+          if (refs && refs.rowEl) tableBody.moveBefore(refs.rowEl, null);
+        });
+      } else {
+        const frag = document.createDocumentFragment();
+        candidatesState.forEach((c) => {
+          const refs = rowRefsBySym.get(c.symbol);
+          if (refs && refs.rowEl) frag.appendChild(refs.rowEl);
+        });
+        tableBody.appendChild(frag);
+      }
     }
 
     candidatesState.forEach((c, idx) => {
@@ -639,7 +680,9 @@
 
   function switchZone(zone) {
     kpiCards.forEach((card) => {
-      card.classList.toggle('active', card.getAttribute('data-zone') === zone);
+      const isSelected = card.getAttribute('data-zone') === zone;
+      card.classList.toggle('active', isSelected);
+      card.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
     });
     currentZone = zone;
     saveUiState();
@@ -746,10 +789,10 @@
               if (oldP !== undefined && oldP !== pVal && !prefersReducedMotion) {
                 refs.priceEl.animate(
                   [
-                    { color: pVal > oldP ? '#34d399' : '#f87171', transform: 'scale(1.05)' },
-                    { color: '#ffffff', transform: 'scale(1)' },
+                    { color: pVal > oldP ? '#38d99f' : '#f8717e' },
+                    { color: '#f1f5f9' },
                   ],
-                  { duration: 600, easing: 'ease-out' }
+                  { duration: 480, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }
                 );
               }
               refs.priceEl.textContent = formatCryptoPrice(pVal);
@@ -763,7 +806,7 @@
           const posPct = computePositionPct(c.price, c.low_24h, c.high_24h);
           if (refs && refs.posBarEl && posPct !== null) {
             refs.posBarEl.style.width = posPct.toFixed(1) + '%';
-            refs.posBarEl.className = `sym-pos-bar h-full ${getPosBarColor(posPct)} rounded-full transition-all duration-300`;
+            refs.posBarEl.className = `sym-pos-bar h-full ${getPosBarColor(posPct)} transition-all duration-300`;
           }
           if (refs && refs.posTextEl) {
             refs.posTextEl.textContent = posPct !== null ? `${Math.round(posPct)}%` : '--';
@@ -776,7 +819,7 @@
             c.price_chg_24h = chgVal;
             if (refs && refs.chgEl) {
               refs.chgEl.textContent = formatSignedPct(chgVal, 2);
-              refs.chgEl.className = `py-1.5 px-2 font-mono tabular-nums sym-chg whitespace-nowrap ${chgVal >= 0 ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold'}`;
+              refs.chgEl.className = `py-2.5 px-2.5 font-mono tabular-nums sym-chg whitespace-nowrap text-right ${chgVal >= 0 ? 'text-[#38d99f] font-semibold' : 'text-[#f8717e] font-semibold'}`;
             }
           }
 
@@ -850,8 +893,8 @@
       });
 
       if (syncStatusBadge) {
-        syncStatusBadge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1.5';
-        syncStatusBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" aria-hidden="true"></span><span>币安 60 秒轮询</span>';
+        syncStatusBadge.className = 'px-2 py-0.5 font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5';
+        syncStatusBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span><span>币安 60s 轮询</span>';
       }
 
       updateKpiCards(candidatesState);
@@ -861,8 +904,8 @@
       if (e.name !== 'AbortError') {
         console.warn('Binance pool sync error:', e);
         if (syncStatusBadge) {
-          syncStatusBadge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1.5';
-          syncStatusBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>币安轮询异常</span>';
+          syncStatusBadge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/12 text-[#f5c451] inline-flex items-center gap-1.5';
+          syncStatusBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安轮询异常</span>';
         }
       }
     } finally {
@@ -896,7 +939,7 @@
       currentVersion = payload.updated_at;
       if (poolUpdatedEl) {
         poolUpdatedEl.textContent = `更新: ${formatUpdatedAtBeijing(currentVersion)}`;
-        poolUpdatedEl.className = 'px-2 py-0.5 text-[11px] font-mono text-slate-400 bg-slate-800/80 rounded-md border border-slate-700/60';
+        poolUpdatedEl.className = 'hidden sm:inline-flex px-2 py-0.5 font-mono tabular-nums text-[#9fb0c5] bg-[#10151d]';
       }
 
       const optionalNumericFields = [
@@ -945,10 +988,10 @@
       console.error('Failed to load candidate pool:', err);
       if (poolUpdatedEl) {
         poolUpdatedEl.textContent = '候选池加载失败';
-        poolUpdatedEl.className = 'px-2 py-0.5 text-[11px] font-mono text-rose-300 bg-rose-500/10 rounded-md border border-rose-500/30';
+        poolUpdatedEl.className = 'px-2 py-0.5 font-mono text-[#f8717e] bg-[#f25565]/10 inline-flex';
       }
       if (!candidatesState.length && tableBody) {
-        tableBody.innerHTML = `<tr><td colspan="11" class="py-12 text-center text-rose-400 font-sans">候选币池加载失败 (${escapeHtml(err.message)})，请检查后台 API 服务。</td></tr>`;
+        tableBody.innerHTML = `<tr><td colspan="11" class="py-14 text-center text-[#f8717e] font-sans text-xs">候选币池读取失败 (${escapeHtml(err.message)})，请检查后台 API 服务是否在线。</td></tr>`;
       }
     }
   }
@@ -987,9 +1030,34 @@
     }
   }
 
+  function triggerHeaderSort(th) {
+    if (!th) return;
+    const col = th.getAttribute('data-sort');
+    if (!col) return;
+    if (sortColumn === col) {
+      sortAsc = !sortAsc;
+    } else {
+      sortColumn = col;
+      sortAsc = col === 'fr';
+    }
+    syncSortAria();
+    saveUiState();
+    applySortOrder();
+    if (sortStatusEl) {
+      const label = th.textContent ? th.textContent.trim() : col;
+      sortStatusEl.textContent = `已按 ${label} ${sortAsc ? '升序' : '降序'}排列，共 ${candidatesState.length} 个标的`;
+    }
+  }
+
   kpiCards.forEach((card) => {
     card.addEventListener('click', () => {
       switchZone(card.getAttribute('data-zone') || 'all');
+    });
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        switchZone(card.getAttribute('data-zone') || 'all');
+      }
     });
   });
 
@@ -1003,10 +1071,7 @@
       searchQuery = '';
       sortColumn = null;
       sortAsc = true;
-      sortHeaders.forEach((h) => {
-        const icon = h.querySelector('.sort-icon');
-        if (icon) icon.textContent = '↕';
-      });
+      syncSortAria();
       applySortOrder();
       switchZone('all');
     });
@@ -1031,7 +1096,7 @@
         showToast('当前筛选下无可见标的');
         return;
       }
-      await copyText(symbols.join(', '), `已复制 ${symbols.length} 个标的为 TV 自选格式！`);
+      await copyText(symbols.join(', '), `已复制 ${symbols.length} 个标的为 TV 自选格式`);
     });
   }
 
@@ -1048,29 +1113,24 @@
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showToast(`已导出 ${symbols.length} 个标的 .txt 自选文件！`);
+      showToast(`已导出 ${symbols.length} 个标的 .txt 自选文件`);
     });
   }
 
-  sortHeaders.forEach((th) => {
-    th.addEventListener('click', () => {
-      const col = th.getAttribute('data-sort');
-      if (sortColumn === col) {
-        sortAsc = !sortAsc;
-      } else {
-        sortColumn = col;
-        sortAsc = col === 'fr';
+  const supportsInvokerCommands = typeof HTMLButtonElement !== 'undefined' && 'commandForElement' in HTMLButtonElement.prototype;
+  if (candidatesTable && supportsInvokerCommands) {
+    candidatesTable.addEventListener('command', (e) => {
+      if (e.command === '--sort' && e.source && typeof e.source.closest === 'function') {
+        triggerHeaderSort(e.source.closest('th.sortable'));
       }
-      sortHeaders.forEach((h) => {
-        const icon = h.querySelector('.sort-icon');
-        if (icon) icon.textContent = '↕';
-      });
-      const activeIcon = th.querySelector('.sort-icon');
-      if (activeIcon) activeIcon.textContent = sortAsc ? '▲' : '▼';
-      saveUiState();
-      applySortOrder();
     });
-  });
+  } else {
+    sortHeaders.forEach((th) => {
+      const btn = th.querySelector('button[command="--sort"]');
+      const target = btn || th;
+      target.addEventListener('click', () => triggerHeaderSort(th));
+    });
+  }
 
   if (tableBody) {
     tableBody.addEventListener('click', async (e) => {
@@ -1083,11 +1143,11 @@
         const prevTimer = copyResetTimers.get(copyBtn);
         if (prevTimer) clearTimeout(prevTimer);
         await copyText(tvSym, `已复制: ${tvSym}`);
-        copyBtn.textContent = '✓';
-        copyBtn.classList.add('bg-emerald-600', 'text-white');
+        copyBtn.innerHTML = CHECK_SVG;
+        copyBtn.classList.add('text-[#38d99f]', 'border-[#22c58b]/40');
         const timerId = setTimeout(() => {
           copyBtn.textContent = label;
-          copyBtn.classList.remove('bg-emerald-600', 'text-white');
+          copyBtn.classList.remove('text-[#38d99f]', 'border-[#22c58b]/40');
           copyResetTimers.delete(copyBtn);
         }, 1200);
         copyResetTimers.set(copyBtn, timerId);
@@ -1107,11 +1167,21 @@
     });
   }
 
+  function setDrawerOpen(open) {
+    if (!tvDrawer) return;
+    tvDrawer.classList.toggle('hidden', !open);
+    if (toggleDrawerBtn) {
+      toggleDrawerBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+  }
+
   if (toggleDrawerBtn && tvDrawer) {
-    toggleDrawerBtn.addEventListener('click', () => tvDrawer.classList.toggle('hidden'));
+    toggleDrawerBtn.addEventListener('click', () => {
+      setDrawerOpen(tvDrawer.classList.contains('hidden'));
+    });
   }
   if (closeDrawerBtn && tvDrawer) {
-    closeDrawerBtn.addEventListener('click', () => tvDrawer.classList.add('hidden'));
+    closeDrawerBtn.addEventListener('click', () => setDrawerOpen(false));
   }
 
   document.addEventListener('keydown', (e) => {
@@ -1124,7 +1194,7 @@
 
     if (e.key === 'Escape') {
       if (tvDrawer && !tvDrawer.classList.contains('hidden')) {
-        tvDrawer.classList.add('hidden');
+        setDrawerOpen(false);
       } else if (searchInput && (searchInput.value || document.activeElement === searchInput)) {
         if (filterDebounceTimer) {
           clearTimeout(filterDebounceTimer);
@@ -1186,16 +1256,12 @@
 
   restoreUiState();
   kpiCards.forEach((card) => {
-    card.classList.toggle('active', card.getAttribute('data-zone') === currentZone);
+    const isSelected = card.getAttribute('data-zone') === currentZone;
+    card.classList.toggle('active', isSelected);
+    card.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
   });
   if (searchInput && searchQuery) searchInput.value = searchQuery;
-  if (sortColumn) {
-    sortHeaders.forEach((h) => {
-      const icon = h.querySelector('.sort-icon');
-      if (!icon) return;
-      icon.textContent = h.getAttribute('data-sort') === sortColumn ? (sortAsc ? '▲' : '▼') : '↕';
-    });
-  }
+  syncSortAria();
   if (KlineModal) {
     KlineModal.init({
       visibleBars: modalVisibleBars,

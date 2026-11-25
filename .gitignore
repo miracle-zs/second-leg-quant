@@ -27,6 +27,7 @@ runs/.hourly_sync.lock
 
 # Scratch & temporary inspection crops
 scratch/inspection_crops/
+.impeccable/review/
 
 # Generated dashboards and market snapshots
 /index.html

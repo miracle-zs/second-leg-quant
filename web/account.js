@@ -9,6 +9,11 @@
     fetchJsonWithTimeout,
   } = Common;
 
+  const EXT_ARROW_SVG = '<svg class="w-2.5 h-2.5 text-[#7f91a8] shrink-0" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const symbolCollator = typeof Intl !== 'undefined' && typeof Intl.Collator === 'function'
+    ? new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+    : null;
+
   const chartInstances = {};
   const HISTORY_SORT = { column: 'closed_ts', asc: false };
   const VISIBILITY_COOLDOWN_MS = 5000;
@@ -63,13 +68,23 @@
 
   function setSignedColorClass(el, val) {
     if (!el) return;
-    el.classList.remove('text-emerald-400', 'text-rose-400', 'text-slate-400', 'text-slate-300', 'text-white');
+    el.classList.remove(
+      'text-[#38d99f]',
+      'text-[#f8717e]',
+      'text-[#9fb0c5]',
+      'text-[#f1f5f9]',
+      'text-emerald-400',
+      'text-rose-400',
+      'text-slate-400',
+      'text-slate-300',
+      'text-white'
+    );
     if (!isFiniteNumber(val)) {
-      el.classList.add('text-slate-400');
+      el.classList.add('text-[#9fb0c5]');
     } else if (Number(val) >= 0) {
-      el.classList.add('text-emerald-400');
+      el.classList.add('text-[#38d99f]');
     } else {
-      el.classList.add('text-rose-400');
+      el.classList.add('text-[#f8717e]');
     }
   }
 
@@ -84,28 +99,28 @@
     if (!badge) return;
 
     if (fetchError) {
-      badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-rose-400" aria-hidden="true"></span><span>数据拉取失败</span>';
+      badge.className = 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f25565]" aria-hidden="true"></span><span>数据拉取失败</span>';
       return;
     }
 
     const mode = (accountData && accountData.api_status && accountData.api_status.mode) || '';
     if (mode === 'BINANCE_REALTIME') {
-      badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" aria-hidden="true"></span><span>币安实盘在线</span>';
+      badge.className = 'px-2 py-0.5 font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span><span>币安实盘在线</span>';
     } else if (mode === 'BINANCE_PARTIAL') {
-      badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>币安部分数据可用</span>';
+      badge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/12 text-[#f5c451] inline-flex items-center gap-1.5';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安部分数据可用</span>';
     } else if (mode === 'BINANCE_SNAPSHOT_PENDING_INCOME') {
-      badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>币安快照同步中</span>';
+      badge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/12 text-[#f5c451] inline-flex items-center gap-1.5';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安快照同步中</span>';
     } else if (mode === 'OFFLINE_FALLBACK') {
-      badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-slate-800 text-amber-300 border border-amber-500/20 flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true"></span><span>离线风控同步</span>';
+      badge.className = 'px-2 py-0.5 font-medium bg-[#151c27] text-[#f5c451] inline-flex items-center gap-1.5';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>离线风控同步</span>';
     } else {
-      badge.className = 'px-2 py-0.5 text-[11px] font-semibold rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center gap-1.5';
+      badge.className = 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5';
       const label = mode ? ('接口状态异常 (' + mode + ')') : '接口状态缺失';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-rose-400" aria-hidden="true"></span><span>' + escapeHtml(label) + '</span>';
+      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f25565]" aria-hidden="true"></span><span>' + escapeHtml(label) + '</span>';
     }
   }
 
@@ -125,7 +140,7 @@
     if (marginBadge) {
       if (isFiniteNumber(summary.total_equity) && Number(summary.total_equity) > 0 && isFiniteNumber(summary.position_margin)) {
         const utilPct = (Number(summary.position_margin) / Number(summary.total_equity)) * 100;
-        marginBadge.textContent = utilPct > 0 ? ('占用 ' + utilPct.toFixed(1) + '%') : '安全在岸';
+        marginBadge.textContent = utilPct > 0 ? ('占用 ' + utilPct.toFixed(1) + '%') : '空仓在岸';
       } else {
         marginBadge.textContent = '--';
       }
@@ -164,7 +179,7 @@
     if (isFiniteNumber(summary.profit_factor)) {
       pfText = Number(summary.profit_factor).toFixed(2);
     } else if (winCount !== null && lossCount !== null && winCount > 0 && lossCount === 0) {
-      pfText = '∞ (全胜)';
+      pfText = '全胜';
     }
     setText('kpi-profit-factor', pfText);
     setText('kpi-avg-win', '均盈: ' + formatMoney(summary.avg_win, { signed: true }));
@@ -185,24 +200,24 @@
     setText('kpi-sharpe', formatRatio(summary.sharpe_ratio, 2));
     const sharpeRating = document.getElementById('kpi-sharpe-rating');
     if (sharpeRating) {
-      sharpeRating.classList.remove('text-emerald-400', 'text-sky-400', 'text-amber-300', 'text-rose-400', 'text-slate-400', 'text-slate-300');
+      sharpeRating.classList.remove('text-[#38d99f]', 'text-[#8ab8ff]', 'text-[#f5c451]', 'text-[#f8717e]', 'text-[#9fb0c5]');
       if (!isFiniteNumber(summary.sharpe_ratio)) {
         sharpeRating.textContent = '样本不足';
-        sharpeRating.classList.add('text-slate-400');
+        sharpeRating.classList.add('text-[#9fb0c5]');
       } else {
         const sr = Number(summary.sharpe_ratio);
         if (sr >= 2.0) {
-          sharpeRating.textContent = '顶级稳健';
-          sharpeRating.classList.add('text-emerald-400');
+          sharpeRating.textContent = '优异稳健';
+          sharpeRating.classList.add('text-[#38d99f]');
         } else if (sr >= 1.0) {
           sharpeRating.textContent = '表现稳健';
-          sharpeRating.classList.add('text-sky-400');
+          sharpeRating.classList.add('text-[#8ab8ff]');
         } else if (sr >= 0) {
           sharpeRating.textContent = '收益一般';
-          sharpeRating.classList.add('text-amber-300');
+          sharpeRating.classList.add('text-[#f5c451]');
         } else {
           sharpeRating.textContent = '负收益警告';
-          sharpeRating.classList.add('text-rose-400');
+          sharpeRating.classList.add('text-[#f8717e]');
         }
       }
     }
@@ -210,29 +225,29 @@
     setText('kpi-sortino', formatRatio(summary.sortino_ratio, 2));
     const sortinoRating = document.getElementById('kpi-sortino-rating');
     if (sortinoRating) {
-      sortinoRating.classList.remove('text-purple-300', 'text-sky-400', 'text-amber-300', 'text-rose-400', 'text-slate-400', 'text-slate-300', 'text-emerald-400');
+      sortinoRating.classList.remove('text-[#38d99f]', 'text-[#8ab8ff]', 'text-[#f5c451]', 'text-[#f8717e]', 'text-[#9fb0c5]');
       if (!isFiniteNumber(summary.sortino_ratio)) {
         if (winCount !== null && lossCount !== null && winCount > 0 && lossCount === 0) {
           sortinoRating.textContent = '零下行波动';
-          sortinoRating.classList.add('text-emerald-400');
+          sortinoRating.classList.add('text-[#38d99f]');
         } else {
           sortinoRating.textContent = '样本不足';
-          sortinoRating.classList.add('text-slate-400');
+          sortinoRating.classList.add('text-[#9fb0c5]');
         }
       } else {
         const so = Number(summary.sortino_ratio);
         if (so >= 2.5) {
           sortinoRating.textContent = '极低尾部风险';
-          sortinoRating.classList.add('text-purple-300');
+          sortinoRating.classList.add('text-[#38d99f]');
         } else if (so >= 1.0) {
           sortinoRating.textContent = '下行风险可控';
-          sortinoRating.classList.add('text-sky-400');
+          sortinoRating.classList.add('text-[#8ab8ff]');
         } else if (so >= 0) {
           sortinoRating.textContent = '下行收益一般';
-          sortinoRating.classList.add('text-amber-300');
+          sortinoRating.classList.add('text-[#f5c451]');
         } else {
           sortinoRating.textContent = '下行风险偏高';
-          sortinoRating.classList.add('text-rose-400');
+          sortinoRating.classList.add('text-[#f8717e]');
         }
       }
     }
@@ -266,7 +281,7 @@
 
     if (!posTbody) return;
     if (positions.length === 0) {
-      posTbody.innerHTML = '<tr><td colspan="9" class="py-6 text-center text-slate-500 font-sans">当前在岸安全，无活跃持仓</td></tr>';
+      posTbody.innerHTML = '<tr><td colspan="9" class="py-8 text-center text-[#9fb0c5] font-sans text-xs">当前空仓在岸，无活跃合约敞口</td></tr>';
       return;
     }
 
@@ -280,14 +295,14 @@
       const safeSide = escapeHtml(side);
       const riskMonitored = p.risk_monitored === true && side !== 'SHORT';
       const sideBadge = side === 'SHORT'
-        ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">SHORT</span>'
+        ? '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono font-semibold bg-[#f25565]/15 text-[#f8717e] border border-[#f25565]/30">SHORT</span>'
         : (side === 'LONG'
-          ? '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">LONG</span>'
-          : '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-slate-800 text-slate-300 border border-slate-700">' + safeSide + '</span>');
+          ? '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono font-semibold bg-[#22c58b]/12 text-[#38d99f] border border-[#22c58b]/30">LONG</span>'
+          : '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono font-semibold bg-[#151c27] text-[#9fb0c5] border border-[#283446]">' + safeSide + '</span>');
 
       const pnlVal = isFiniteNumber(p.unrealized_pnl) ? Number(p.unrealized_pnl) : null;
       const roeVal = isFiniteNumber(p.roe_pct) ? Number(p.roe_pct) : null;
-      const pnlCls = pnlVal === null ? 'text-slate-400' : (pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400');
+      const pnlCls = pnlVal === null ? 'text-[#9fb0c5]' : (pnlVal >= 0 ? 'text-[#38d99f]' : 'text-[#f8717e]');
       const pnlStr = formatMoney(pnlVal, { signed: true });
       const roeStr = roeVal === null ? '--' : (formatPct(roeVal) + ' ROE');
 
@@ -299,36 +314,36 @@
       const safeTlId = p.trendline_id ? escapeHtml(p.trendline_id) : '--';
       const unknownMonitored = p.risk_monitored === undefined && side !== 'SHORT';
       const trailingHtml = riskMonitored
-        ? (p.trailing_stop_triggered ? '<span class="text-emerald-400 font-semibold">已触发</span>' : '未触发')
+        ? (p.trailing_stop_triggered ? '<span class="text-[#38d99f] font-semibold">已激活锁利</span>' : '<span class="text-[#9fb0c5]">待触发</span>')
         : (unknownMonitored
-          ? '<span class="text-amber-300/80">风控状态缺失</span>'
-          : '<span class="text-amber-300/80">未纳入风控（仅多头）</span>');
+          ? '<span class="text-[#f5c451]">风控状态缺失</span>'
+          : '<span class="text-[#f5c451]">未纳入风控</span>');
       const slHtml = riskMonitored
-        ? (p.stop_loss_notified ? '<span class="text-rose-300 font-semibold">已提醒</span>' : '监控中')
+        ? (p.stop_loss_notified ? '<span class="text-[#f8717e] font-semibold">已推送止损</span>' : '<span class="text-[#38d99f]">巡检监控中</span>')
         : (side === 'SHORT'
-          ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">未受风控监控（空单）</span>'
+          ? '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#151c27] text-[#f5c451] border border-[#f0b429]/30">未受风控监控（空单）</span>'
           : (unknownMonitored
-            ? '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/10 text-rose-300 border border-rose-500/30">风控状态未知</span>'
-            : '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-amber-300 border border-amber-500/30">未纳入风控监控</span>'));
+            ? '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#f25565]/10 text-[#f8717e] border border-[#f25565]/30">风控状态未知</span>'
+            : '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#151c27] text-[#f5c451] border border-[#f0b429]/30">未纳入风控监控</span>'));
 
       return (
-        '<tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/60 font-mono text-xs">' +
-          '<td class="px-3 py-2.5 font-bold font-sans text-white">' +
+        '<tr class="hover:bg-[#17202e] transition-colors font-mono tabular-nums text-xs">' +
+          '<td class="px-3.5 py-2.5 font-sans font-bold text-[#f1f5f9]">' +
             '<div class="flex items-center gap-1.5">' +
-              '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" class="text-sky-400 hover:underline flex items-center gap-1">' +
-                '<span>' + safeSym + '</span><span class="text-[9px] text-slate-500">↗</span>' +
+              '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" class="text-[#f1f5f9] hover:text-[#8ab8ff] hover:underline inline-flex items-center gap-1">' +
+                '<span>' + safeSym + '</span>' + EXT_ARROW_SVG +
               '</a>' +
               sideBadge +
             '</div>' +
           '</td>' +
-          '<td class="px-3 py-2.5 tabular-nums text-slate-300">' + escapeHtml(levStr) + ' · ' + escapeHtml(notionalStr) + '<div class="text-[10px] text-slate-500">' + escapeHtml(amtStr) + '</div></td>' +
-          '<td class="px-3 py-2.5 tabular-nums text-slate-300">' + escapeHtml(formatDollarPrice(p.entry_price)) + '</td>' +
-          '<td class="px-3 py-2.5 tabular-nums text-white font-bold">' + escapeHtml(formatDollarPrice(p.mark_price)) + '</td>' +
-          '<td class="px-3 py-2.5 tabular-nums font-bold ' + pnlCls + '"><div>' + escapeHtml(pnlStr) + '</div><div class="text-[10px]">' + escapeHtml(roeStr) + '</div></td>' +
-          '<td class="px-3 py-2.5 tabular-nums text-rose-400">' + escapeHtml(formatDollarPrice(p.liquidation_price)) + '</td>' +
-          '<td class="px-3 py-2.5 text-slate-400">' + trailingHtml + '</td>' +
-          '<td class="px-3 py-2.5 text-slate-400">' + slHtml + '</td>' +
-          '<td class="px-3 py-2.5 text-slate-400">' + (riskMonitored ? safeTlId : '--') + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9]"><div>' + escapeHtml(levStr) + ' · ' + escapeHtml(notionalStr) + '</div><div class="text-[10px] text-[#7f91a8]">' + escapeHtml(amtStr) + '</div></td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#9fb0c5]">' + escapeHtml(formatDollarPrice(p.entry_price)) + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9] font-semibold">' + escapeHtml(formatDollarPrice(p.mark_price)) + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right font-bold ' + pnlCls + '"><div>' + escapeHtml(pnlStr) + '</div><div class="text-[10px] font-medium">' + escapeHtml(roeStr) + '</div></td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#f8717e]">' + escapeHtml(formatDollarPrice(p.liquidation_price)) + '</td>' +
+          '<td class="px-3.5 py-2.5 font-sans text-xs">' + trailingHtml + '</td>' +
+          '<td class="px-3.5 py-2.5 font-sans text-xs">' + slHtml + '</td>' +
+          '<td class="px-3.5 py-2.5 text-[#9fb0c5]">' + (riskMonitored ? safeTlId : '--') + '</td>' +
         '</tr>'
       );
     }).join('');
@@ -359,23 +374,21 @@
     const col = HISTORY_SORT.column;
     const asc = HISTORY_SORT.asc;
     filtered.sort((a, b) => {
-      let valA, valB;
       if (col === 'net_pnl' || col === 'pnl_pct' || col === 'closed_ts') {
         const aOk = isFiniteNumber(a[col]);
         const bOk = isFiniteNumber(b[col]);
         if (!aOk && !bOk) return 0;
         if (!aOk) return 1;
         if (!bOk) return -1;
-        valA = Number(a[col]);
-        valB = Number(b[col]);
-      } else if (col === 'symbol') {
-        valA = String(a.symbol || '');
-        valB = String(b.symbol || '');
-      } else {
-        return 0;
+        const diff = Number(a[col]) - Number(b[col]);
+        return asc ? diff : -diff;
       }
-      if (valA < valB) return asc ? -1 : 1;
-      if (valA > valB) return asc ? 1 : -1;
+      if (col === 'symbol') {
+        const valA = String(a.symbol || '');
+        const valB = String(b.symbol || '');
+        const cmp = symbolCollator ? symbolCollator.compare(valA, valB) : (valA < valB ? -1 : (valA > valB ? 1 : 0));
+        return asc ? cmp : -cmp;
+      }
       return 0;
     });
 
@@ -384,32 +397,30 @@
 
   function updateSortIndicators() {
     document.querySelectorAll('#trade-history-table th.sortable').forEach(th => {
-      const icon = th.querySelector('.sort-icon');
-      if (!icon) return;
       if (th.dataset.sort === HISTORY_SORT.column) {
-        icon.textContent = HISTORY_SORT.asc ? '▲' : '▼';
+        th.setAttribute('aria-sort', HISTORY_SORT.asc ? 'ascending' : 'descending');
       } else {
-        icon.textContent = '↕';
+        th.removeAttribute('aria-sort');
       }
     });
   }
 
   function renderCloseReasonBadge(reason) {
     if (reason === null || reason === undefined || String(reason).trim() === '') {
-      return '<span class="text-slate-500">--</span>';
+      return '<span class="text-[#7f91a8]">--</span>';
     }
     const text = String(reason);
     const safeReason = escapeHtml(text);
     if (text.includes('保本') || text.includes('锁利')) {
-      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">' + safeReason + '</span>';
+      return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#22c58b]/12 text-[#38d99f] border border-[#22c58b]/30">' + safeReason + '</span>';
     }
     if (text.includes('止损') || text.includes('跌破')) {
-      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">' + safeReason + '</span>';
+      return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#f25565]/12 text-[#f8717e] border border-[#f25565]/30">' + safeReason + '</span>';
     }
     if (text.includes('实盘') || text.includes('BINANCE')) {
-      return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">' + safeReason + '</span>';
+      return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#3b82f6]/12 text-[#8ab8ff] border border-[#3b82f6]/30">' + safeReason + '</span>';
     }
-    return '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">' + safeReason + '</span>';
+    return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#151c27] text-[#9fb0c5] border border-[#283446]">' + safeReason + '</span>';
   }
 
   function renderHistoryTable() {
@@ -422,8 +433,8 @@
     updateSortIndicators();
 
     if (rows.length === 0) {
-      histTbody.innerHTML = '<tr><td colspan="10" class="py-8 text-center text-slate-500">' +
-        (fullHistory.length === 0 ? '暂无开平仓流水记录' : '没有匹配的交易记录') + '</td></tr>';
+      histTbody.innerHTML = '<tr><td colspan="10" class="py-10 text-center text-[#9fb0c5] text-xs font-sans">' +
+        (fullHistory.length === 0 ? '暂无历史开平仓流水记录' : '当前筛选条件下无匹配交易记录') + '</td></tr>';
       return;
     }
 
@@ -435,13 +446,13 @@
       const safeSym = escapeHtml(sym);
       const side = h.side.trim().toUpperCase();
       const sideCls = side === 'SHORT'
-        ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+        ? 'bg-[#f25565]/12 text-[#f8717e] border-[#f25565]/30'
         : (side === 'LONG'
-          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-          : 'bg-slate-800 text-slate-300 border-slate-700');
+          ? 'bg-[#22c58b]/12 text-[#38d99f] border-[#22c58b]/30'
+          : 'bg-[#151c27] text-[#9fb0c5] border-[#283446]');
 
       const pnlVal = isFiniteNumber(h.net_pnl) ? Number(h.net_pnl) : null;
-      const pnlCls = pnlVal === null ? 'text-slate-400' : (pnlVal >= 0 ? 'text-emerald-400' : 'text-rose-400');
+      const pnlCls = pnlVal === null ? 'text-[#9fb0c5]' : (pnlVal >= 0 ? 'text-[#38d99f]' : 'text-[#f8717e]');
       const pctText = formatPct(h.pnl_pct);
       const cTime = escapeHtml(h.closed_at || '--');
       const eTime = escapeHtml(h.entry_time || '--');
@@ -454,27 +465,27 @@
       const notionalStr = isFiniteNumber(h.entry_notional) && Number(h.entry_notional) > 0 ? formatMoney(h.entry_notional) : '--';
 
       return (
-        '<tr class="trade-row hover:bg-slate-800/40 transition-colors border-b border-slate-800/60 font-mono text-[11px]">' +
-          '<td class="px-3 py-2.5 text-slate-400">' +
-            '<div class="text-white font-medium">' + cTime + '</div>' +
-            '<div class="text-[10px] text-slate-500">开仓: ' + eTime + '</div>' +
+        '<tr class="trade-row hover:bg-[#17202e] transition-colors font-mono tabular-nums text-[11px]">' +
+          '<td class="px-3.5 py-2.5 text-[#9fb0c5]">' +
+            '<div class="text-[#f1f5f9] font-medium">' + cTime + '</div>' +
+            '<div class="text-[10px] text-[#7f91a8]">开仓: ' + eTime + '</div>' +
           '</td>' +
-          '<td class="px-3 py-2.5 font-sans font-black text-white">' +
+          '<td class="px-3.5 py-2.5 font-sans font-bold text-[#f1f5f9]">' +
             '<div class="flex items-center gap-1.5">' +
-              '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" class="text-sky-400 hover:underline flex items-center gap-0.5">' +
-                '<span>' + safeSym + '</span><span class="text-[9px] text-slate-500">↗</span>' +
+              '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" class="text-[#f1f5f9] hover:text-[#8ab8ff] hover:underline inline-flex items-center gap-1">' +
+                '<span>' + safeSym + '</span>' + EXT_ARROW_SVG +
               '</a>' +
-              '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold border ' + sideCls + '">' + escapeHtml(side) + '</span>' +
+              '<span class="px-1.5 py-0.5 rounded-[3px] text-[9px] font-mono font-semibold border ' + sideCls + '">' + escapeHtml(side) + '</span>' +
             '</div>' +
           '</td>' +
-          '<td class="px-3 py-2.5 tabular-nums text-slate-300"><div>' + escapeHtml(notionalStr) + '</div><div class="text-[10px] text-slate-500">' + escapeHtml(amtStr) + '</div></td>' +
-          '<td class="px-3 py-2.5 tabular-nums text-slate-300">' + escapeHtml(entryStr) + '</td>' +
-          '<td class="px-3 py-2.5 tabular-nums text-white font-bold">' + escapeHtml(exitStr) + '</td>' +
-          '<td class="px-3 py-2.5 tabular-nums font-bold ' + pnlCls + '"><div>' + escapeHtml(formatMoney(pnlVal, { signed: true })) + '</div></td>' +
-          '<td class="px-3 py-2.5 tabular-nums font-bold ' + pnlCls + '"><div>' + escapeHtml(pctText) + '</div></td>' +
-          '<td class="px-3 py-2.5 text-slate-300">' + dur + '</td>' +
-          '<td class="px-3 py-2.5">' + renderCloseReasonBadge(h.close_reason) + '</td>' +
-          '<td class="px-3 py-2.5 text-slate-400">' + escapeHtml(h.trendline_label || '--') + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9]"><div>' + escapeHtml(notionalStr) + '</div><div class="text-[10px] text-[#7f91a8]">' + escapeHtml(amtStr) + '</div></td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#9fb0c5]">' + escapeHtml(entryStr) + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9] font-semibold">' + escapeHtml(exitStr) + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right font-bold ' + pnlCls + '">' + escapeHtml(formatMoney(pnlVal, { signed: true })) + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right font-bold ' + pnlCls + '">' + escapeHtml(pctText) + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#9fb0c5]">' + dur + '</td>' +
+          '<td class="px-3.5 py-2.5">' + renderCloseReasonBadge(h.close_reason) + '</td>' +
+          '<td class="px-3.5 py-2.5 text-[#9fb0c5]">' + escapeHtml(h.trendline_label || '--') + '</td>' +
         '</tr>'
       );
     }).join('');
@@ -482,11 +493,11 @@
 
   function ensureChartDefaults() {
     if (chartDefaultsConfigured || typeof Chart === 'undefined' || !Chart.defaults) return;
-    Chart.defaults.color = '#94a3b8';
+    Chart.defaults.color = '#8b9bb0';
     if (Chart.defaults.font) {
-      Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "JetBrains Mono", sans-serif';
+      Chart.defaults.font.family = '"JetBrains Mono", "Inter", -apple-system, BlinkMacSystemFont, sans-serif';
     }
-    Chart.defaults.borderColor = 'rgba(51, 65, 85, 0.35)';
+    Chart.defaults.borderColor = 'rgba(34, 43, 56, 0.7)';
     chartDefaultsConfigured = true;
   }
 
@@ -552,11 +563,12 @@
     ensureChartDefaults();
 
     const tooltipConfig = {
-      backgroundColor: 'rgba(15, 23, 42, 0.95)',
-      titleColor: '#f8fafc',
-      bodyColor: '#cbd5e1',
-      borderColor: 'rgba(51, 65, 85, 0.8)',
+      backgroundColor: 'rgba(16, 21, 29, 0.96)',
+      titleColor: '#f1f5f9',
+      bodyColor: '#c9d5e3',
+      borderColor: '#324055',
       borderWidth: 1,
+      cornerRadius: 4,
       padding: 10,
       boxPadding: 4,
       usePointStyle: true
@@ -570,7 +582,7 @@
       const datasets = [{
         label: '账户总资产 ($)',
         data: eqValues,
-        borderColor: '#38bdf8',
+        borderColor: '#3b82f6',
         backgroundColor: function(c) {
           const chart = c.chart;
           const ctx = chart.ctx;
@@ -587,26 +599,26 @@
             cachedEqGradientTop = chartArea.top;
             cachedEqGradientHeight = height;
             const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-            g.addColorStop(0, 'rgba(56, 189, 248, 0.25)');
-            g.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+            g.addColorStop(0, 'rgba(59, 130, 246, 0.22)');
+            g.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
             cachedEqGradient = g;
           }
           return cachedEqGradient;
         },
         fill: true,
-        tension: 0.25,
-        pointRadius: eqValues.length > 20 ? 1 : 4,
-        pointBackgroundColor: '#38bdf8',
-        borderWidth: 2.5
+        tension: 0.2,
+        pointRadius: eqValues.length > 20 ? 1 : 3,
+        pointBackgroundColor: '#3b82f6',
+        borderWidth: 2
       }];
       if (hasInitialCapital) {
         const cap = Number(summary.initial_capital);
         datasets.push({
           label: '本金基准线 ($)',
           data: equityCurve.map(() => cap),
-          borderColor: '#64748b',
-          borderDash: [5, 5],
-          borderWidth: 1.5,
+          borderColor: '#5c6f89',
+          borderDash: [4, 4],
+          borderWidth: 1.2,
           pointRadius: 0,
           fill: false
         });
@@ -624,11 +636,11 @@
                 label: c => c.dataset.label + ': ' + formatMoney(c.raw)
               }
             },
-            legend: { position: 'top', labels: { boxWidth: 12, font: { size: 11 } } }
+            legend: { position: 'top', align: 'end', labels: { boxWidth: 10, font: { size: 11 } } }
           },
           scales: {
             x: { grid: { display: false }, ticks: { maxTicksLimit: 8, font: { size: 10 } } },
-            y: { grid: { color: 'rgba(51, 65, 85, 0.25)' }, ticks: { font: { size: 10 }, callback: v => '$' + Number(v).toLocaleString('en-US') } }
+            y: { grid: { color: 'rgba(34, 43, 56, 0.7)' }, ticks: { font: { size: 10 }, callback: v => '$' + Number(v).toLocaleString('en-US') } }
           }
         }
       });
@@ -655,8 +667,8 @@
           datasets: [{
             label: '当日净盈亏 ($)',
             data: dValues,
-            backgroundColor: dValues.map(v => (v >= 0 ? '#10b981' : '#f43f5e')),
-            borderRadius: 4,
+            backgroundColor: dValues.map(v => (v >= 0 ? '#22c58b' : '#f25565')),
+            borderRadius: 2,
             borderSkipped: false
           }]
         },
@@ -679,7 +691,7 @@
           },
           scales: {
             x: { grid: { display: false }, ticks: { font: { size: 10 } } },
-            y: { grid: { color: 'rgba(51, 65, 85, 0.25)' }, ticks: { font: { size: 10 }, callback: v => '$' + v } }
+            y: { grid: { color: 'rgba(34, 43, 56, 0.7)' }, ticks: { font: { size: 10 }, callback: v => '$' + v } }
           }
         }
       });
@@ -693,18 +705,18 @@
           labels: ['盈利', '亏损', '保本'],
           datasets: [{
             data: [winCount, lossCount, beCount],
-            backgroundColor: ['#10b981', '#f43f5e', '#64748b'],
-            borderColor: '#0f172a',
+            backgroundColor: ['#22c58b', '#f25565', '#4b5c75'],
+            borderColor: '#10151d',
             borderWidth: 2
           }]
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
-          cutout: '62%',
+          cutout: '64%',
           plugins: {
             tooltip: tooltipConfig,
-            legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 11 } } }
+            legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } }
           }
         }
       });
@@ -715,9 +727,9 @@
       const binLabels = bins.map(b => b.label);
       const binCounts = bins.map(b => Number(b.count));
       const binColors = bins.map(b => {
-        if (isFiniteNumber(b.max) && Number(b.max) <= -0.0001) return '#f43f5e';
-        if (isFiniteNumber(b.min) && Number(b.min) >= 0.0001) return '#10b981';
-        return '#64748b';
+        if (isFiniteNumber(b.max) && Number(b.max) <= -0.0001) return '#f25565';
+        if (isFiniteNumber(b.min) && Number(b.min) >= 0.0001) return '#22c58b';
+        return '#4b5c75';
       });
       upsertChart('dist', distCanvas, {
         type: 'bar',
@@ -727,7 +739,7 @@
             label: '交易笔数',
             data: binCounts,
             backgroundColor: binColors,
-            borderRadius: 4,
+            borderRadius: 2,
             borderSkipped: false
           }]
         },
@@ -754,7 +766,7 @@
             x: { grid: { display: false }, ticks: { font: { size: 10 } } },
             y: {
               beginAtZero: true,
-              grid: { color: 'rgba(51, 65, 85, 0.25)' },
+              grid: { color: 'rgba(34, 43, 56, 0.7)' },
               ticks: { precision: 0, font: { size: 10 } }
             }
           }
@@ -798,6 +810,24 @@
     updateCharts(accountData);
   }
 
+  function triggerHistorySort(th) {
+    if (!th) return;
+    const col = th.dataset ? th.dataset.sort : th.getAttribute('data-sort');
+    if (!col) return;
+    if (HISTORY_SORT.column === col) {
+      HISTORY_SORT.asc = !HISTORY_SORT.asc;
+    } else {
+      HISTORY_SORT.column = col;
+      HISTORY_SORT.asc = col === 'symbol';
+    }
+    renderHistoryTable();
+    const sortStatus = document.getElementById('history-sort-status');
+    if (sortStatus && currentAccountData) {
+      const label = th.textContent ? th.textContent.trim() : col;
+      sortStatus.textContent = '历史流水已按 ' + label + (HISTORY_SORT.asc ? ' 升序' : ' 降序') + '排列';
+    }
+  }
+
   function bindControlsOnce() {
     const searchInput = document.getElementById('history-search-input');
     if (searchInput && !searchInput.dataset.bound) {
@@ -831,21 +861,26 @@
       });
     }
 
-    document.querySelectorAll('#trade-history-table th.sortable').forEach(th => {
-      if (th.dataset.bound) return;
-      th.dataset.bound = 'true';
-      th.addEventListener('click', function() {
-        const col = this.dataset.sort;
-        if (!col) return;
-        if (HISTORY_SORT.column === col) {
-          HISTORY_SORT.asc = !HISTORY_SORT.asc;
-        } else {
-          HISTORY_SORT.column = col;
-          HISTORY_SORT.asc = col === 'symbol';
+    const histTable = document.getElementById('trade-history-table');
+    const supportsInvokerCommands = typeof HTMLButtonElement !== 'undefined' && 'commandForElement' in HTMLButtonElement.prototype;
+    if (histTable && supportsInvokerCommands && !histTable.dataset.bound) {
+      histTable.dataset.bound = 'true';
+      histTable.addEventListener('command', function(e) {
+        if (e.command === '--sort' && e.source && typeof e.source.closest === 'function') {
+          triggerHistorySort(e.source.closest('th.sortable'));
         }
-        renderHistoryTable();
       });
-    });
+    } else {
+      document.querySelectorAll('#trade-history-table th.sortable').forEach(th => {
+        if (th.dataset.bound) return;
+        th.dataset.bound = 'true';
+        const btn = th.querySelector ? th.querySelector('button[command="--sort"]') : null;
+        const target = btn || th;
+        target.addEventListener('click', function() {
+          triggerHistorySort(th);
+        });
+      });
+    }
 
     const refreshBtn = document.getElementById('btn-manual-refresh');
     if (refreshBtn && !refreshBtn.dataset.bound) {
@@ -899,10 +934,10 @@
       updateApiStatusBadge(currentAccountData, true);
       if (status) {
         status.hidden = false;
-        status.className = 'px-3 py-2 text-sm rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300';
+        status.className = 'ledger-frame px-4 py-3 text-xs bg-[#f25565]/10 border-[#f25565]/30 text-[#f8717e]';
         status.textContent = latestSnapshot
           ? ('账户数据刷新失败 (' + error.message + ')，当前展示上次快照。')
-          : ('暂时无法加载账户数据 (' + error.message + ')，将自动重试。');
+          : ('暂时无法加载账户数据 (' + error.message + ')，请检查后台 API 服务，系统将自动重试。');
       }
     } finally {
       if (accountController === controller) {
