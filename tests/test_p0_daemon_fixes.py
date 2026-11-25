@@ -133,7 +133,11 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         # Missing open_time must be skipped with had_error=True rather than falling back to close_time
         bad_candle = {"symbol": "MICRO1USDT", "close_time": 50, "close": 0.00005}
         st_bad = {}
-        with patch.object(tad, "get_closed_15m_candle", side_effect=[bad_candle, {"symbol": "SAFE2USDT", "open_time": 50, "close_time": 949, "close": 1.2}]):
+        with patch.object(
+            tad,
+            "get_closed_15m_candle",
+            side_effect=lambda sym: bad_candle if sym == "MICRO1USDT" else {"symbol": "SAFE2USDT", "open_time": 50, "close_time": 949, "close": 1.2},
+        ):
             res_bad = tad.check_feature_3_stop_loss(self.notifier, pos_store, status=st_bad)
         self.assertEqual(res_bad, [])
         self.assertTrue(st_bad.get("had_error"))
@@ -149,7 +153,11 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             return False
 
         st_fail = {}
-        with patch.object(tad, "get_closed_15m_candle", side_effect=[hit_candle, safe_candle]), patch.object(
+        with patch.object(
+            tad,
+            "get_closed_15m_candle",
+            side_effect=lambda sym: hit_candle if sym == "MICRO1USDT" else safe_candle,
+        ), patch.object(
             self.notifier, "send_alert", side_effect=fake_send
         ):
             alerts = tad.check_feature_3_stop_loss(self.notifier, pos_store, status=st_fail)
@@ -242,11 +250,19 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         self.assertIn("tr.resonance-neg-row > td:first-child", css)
         self.assertIn("tr.resonance-gold-row > td:first-child", css)
 
+        index_html = (ROOT_DIR / "web/index.html").read_text(encoding="utf-8")
+        self.assertLess(
+            index_html.index("static/kline-modal.js"),
+            index_html.index("static/candidates.js"),
+        )
+
         cand_js = (ROOT_DIR / "web/candidates.js").read_text(encoding="utf-8")
         self.assertLess(cand_js.index("const prevTrText"), cand_js.index("c.turnover_ratio = trVal"))
         self.assertIn("toBeijingDate", cand_js)
-        self.assertIn("else if (modalHoverIndex !== -1)", cand_js)
         self.assertIn("checkSnapshotVersion().then", cand_js)
+
+        modal_js = (ROOT_DIR / "web/kline-modal.js").read_text(encoding="utf-8")
+        self.assertIn("else if (modalHoverIndex !== -1)", modal_js)
 
         acct_js = (ROOT_DIR / "web/account.js").read_text(encoding="utf-8")
         self.assertIn("mode === 'OFFLINE_FALLBACK'", acct_js)
@@ -399,6 +415,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
 
             const root = process.cwd();
             const commonCode = fs.readFileSync(path.join(root, 'web/common.js'), 'utf8');
+            const klineModalCode = fs.readFileSync(path.join(root, 'web/kline-modal.js'), 'utf8');
             const candCode = fs.readFileSync(path.join(root, 'web/candidates.js'), 'utf8');
             const acctCode = fs.readFileSync(path.join(root, 'web/account.js'), 'utf8');
 
@@ -474,6 +491,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               };
               win.window = win;
               vm.runInNewContext(commonCode, win);
+              vm.runInNewContext(klineModalCode, win);
               // Expose loadCandidateSnapshot via trigger or run directly by checking initial error path
               payloadToServe = {
                 updated_at: '2026-11-25T12:00:00+08:00',
@@ -508,6 +526,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               };
               win2.window = win2;
               vm.runInNewContext(commonCode, win2);
+              vm.runInNewContext(klineModalCode, win2);
               const candTestCode = candCode.replace(
                 /\\}\\)\\(\\);\\s*$/,
                 'window.__candTest = { updateKpiCards, loadCandidateSnapshot, getEffectiveSupply, formatUpdatedAtBeijing };})();'
@@ -600,6 +619,29 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
             check=False,
         )
         self.assertEqual(res.returncode, 0, msg=f"stdout={res.stdout}\nstderr={res.stderr}")
+
+    def test_serverchan_notifier_uses_http_client_and_is_configured(self):
+        import alert_notifier  # noqa: E402
+        from http_client import HttpError  # noqa: E402
+
+        empty = tad.ServerChanNotifier(sendkey="")
+        self.assertFalse(empty.is_configured())
+        self.assertTrue(empty.dry_run)
+
+        live = tad.ServerChanNotifier(sendkey="SCTtestkey1234", dry_run=False)
+        self.assertTrue(live.is_configured())
+        self.assertFalse(live.dry_run)
+
+        with patch.object(alert_notifier, "request_json", return_value={"code": 0}) as req_mock:
+            self.assertTrue(live.send_alert("T", "D"))
+            self.assertEqual(req_mock.call_count, 1)
+            self.assertEqual(req_mock.call_args.kwargs["method"], "POST")
+
+        with patch.object(alert_notifier, "request_json", return_value={"code": 40001}):
+            self.assertFalse(live.send_alert("T", "D"))
+
+        with patch.object(alert_notifier, "request_json", side_effect=HttpError("timeout")):
+            self.assertFalse(live.send_alert("T", "D"))
 
 
 if __name__ == "__main__":

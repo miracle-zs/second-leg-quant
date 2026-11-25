@@ -135,6 +135,10 @@
     }
   }
 
+  function toBeijingDate(tsMs) {
+    return new Date(tsMs + 8 * 3600 * 1000);
+  }
+
   global.SecondLegCommon = Object.freeze({
     TV_LAYOUT_ID,
     TV_INTERVAL_MAP,
@@ -146,5 +150,6 @@
     getTvSymbol,
     getTvUrl,
     fetchJsonWithTimeout,
+    toBeijingDate,
   });
 })(window);
