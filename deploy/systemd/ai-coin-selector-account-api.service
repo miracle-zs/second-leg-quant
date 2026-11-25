@@ -1,6 +1,5 @@
 [Unit]
 Description=AI Coin Selector dashboard API
-ConditionPathExists=/opt/ai-coin-selector/runs/account.sqlite3
 
 [Service]
 User=ai-coin-selector

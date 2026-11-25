@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-项目统一配置、路径、原子存储与跨进程文件锁中心 (Unified Config & Storage Helpers)
+项目统一配置、路径、原子存储、SQLite 连接与跨进程文件锁中心
 ==============================================================================
-收口所有脚本的根目录、.env 解析、SQLite 路径解析、币种名称规范化、北京时间格式化、
-原子 JSON 写入以及跨进程建议锁 (fcntl.flock)，消除各脚本重复实现与配置漂移。
+收口所有脚本的根目录、.env 解析、SQLite 路径与连接策略 (WAL + busy_timeout)、
+币种名称规范化、北京时间格式化、原子 JSON 写入以及跨进程建议锁 (fcntl.flock)。
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
+import sqlite3
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -31,27 +33,56 @@ DEFAULT_SUB30M_HISTORY_PATH = RUNS_DIR / "sub_30m_history.json"
 DEFAULT_POSITIONS_PATH = RUNS_DIR / "trade_positions.json"
 DEFAULT_RESONANCE_STATE_PATH = RUNS_DIR / "resonance_state.json"
 DEFAULT_ANALYTICS_PATH = RUNS_DIR / "account_analytics.json"
-DEFAULT_ALERTS_CONFIG_PATH = CONFIG_DIR / "alerts_config.json"
 DEFAULT_TV_LAYOUT_ID = "ig0LuDL8"
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 
 
+def _parse_dotenv_value(raw_val: str) -> str:
+    """解析单行 .env 值：引号内保留 #，无引号时剥离行内 # 注释。"""
+    val = raw_val.strip()
+    if not val:
+        return ""
+    if val[0] in ("'", '"'):
+        quote = val[0]
+        chars: list[str] = []
+        escaped = False
+        for ch in val[1:]:
+            if escaped:
+                chars.append(ch)
+                escaped = False
+                continue
+            if ch == "\\" and quote == '"':
+                escaped = True
+                continue
+            if ch == quote:
+                return "".join(chars)
+            chars.append(ch)
+        # 未闭合引号按无引号处理
+    if val.startswith("#"):
+        return ""
+    return re.split(r"\s+#", val, maxsplit=1)[0].strip()
+
+
 def load_dotenv(env_path: Optional[Path] = None) -> dict[str, str]:
-    """解析 .env 文件为字典（跳过空行与注释，剥离首尾引号）。"""
+    """解析 .env 文件为字典（跳过空行与注释，剥离引号与无引号行内注释）。"""
     target = Path(env_path) if env_path is not None else DEFAULT_ENV_PATH
     result: dict[str, str] = {}
     if not target.exists():
         return result
-    try:
-        with open(target, "r", encoding="utf-8") as f:
-            for line in f:
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#") and "=" in stripped:
-                    k, v = stripped.split("=", 1)
-                    result[k.strip()] = v.strip().strip("\"'")
-    except OSError:
-        pass
+    with open(target, "r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            if stripped.startswith("export "):
+                stripped = stripped[7:].strip()
+                if "=" not in stripped:
+                    continue
+            k, v = stripped.split("=", 1)
+            key = k.strip()
+            if key:
+                result[key] = _parse_dotenv_value(v)
     return result
 
 
@@ -80,6 +111,30 @@ def resolve_database_path(
     return Path(raw) if raw else None
 
 
+def open_sqlite_connection(
+    db_path: Path,
+    *,
+    readonly: bool = False,
+    timeout: float = 15.0,
+) -> sqlite3.Connection:
+    """统一打开 SQLite 连接（只读模式使用 mode=ro + busy_timeout；读写模式开启 WAL）。"""
+    target = Path(db_path)
+    if readonly:
+        conn = sqlite3.connect(f"{target.resolve().as_uri()}?mode=ro", uri=True, timeout=timeout)
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(target, timeout=timeout)
+    try:
+        if not readonly:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=15000")
+        return conn
+    except Exception:
+        conn.close()
+        raise
+
+
 def clean_symbol(raw: str) -> str:
     """标准化币种符号，去除交易所前缀 (如 BINANCE:) 与永续后缀 (.P)。"""
     if not raw:
@@ -98,14 +153,14 @@ def get_beijing_time_str(ts_sec: Optional[float] = None) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def atomic_write_json(filepath: Path, data: Any) -> None:
-    """原子化写入 JSON 文件（写临时文件 + fsync + os.replace），防止中断损坏或半写读。"""
+def atomic_write_json(filepath: Path, data: Any, *, allow_nan: bool = False) -> None:
+    """原子化写入 JSON 文件（写临时文件 + fsync + os.replace），默认禁止 NaN/Infinity。"""
     target = Path(filepath)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = target.with_name(f".{target.name}.tmp.{os.getpid()}.{time.time_ns()}")
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2, allow_nan=allow_nan)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, target)

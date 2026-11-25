@@ -1,55 +1,41 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Automated Test Suite for Account Quant Analytics Engine & Frontend HUD
-======================================================================
+Automated Test Suite for Account Quant Analytics Engine & Static Frontend Shell
+==============================================================================
 Covers:
 1. Trade & Position Data Enrichment:
-   - Notional, fee, realized PnL, PnL %, ROE %, outcome, holding duration
-   - Close reason mapping (dynamic trailing stop, trendline breakdown, manual close, binance)
-   - Trendline metadata parsing & tolerance for malformed/missing fields
-   - Active position mark-to-market, initial margin, and liquidation price estimation
-   - Duration formatting across various time scales
-
+   - LONG & SHORT PnL / PnL % / ROE %, negative fee rebates, strict no-fabrication on missing fields
+   - Active position Binance updateTime extraction & local trendline/trailing metadata preservation
 2. Quant Risk Metrics Rigor:
-   - Total Equity, Available Margin, Position Margin, Total Return %
-   - Win Rate %, Win Rate ex-breakeven, Profit Factor, Payoff Ratio
-   - Peak-to-trough Max Drawdown ($ and %) under complex multi-peak equity paths
-   - Annualized Sharpe Ratio and Sortino Ratio (daily returns vs trade returns)
-   - Edge cases: 0 trades, 100% win rate (infinite PF), 100% loss rate (0 PF)
-   - Consecutive win/loss streaks and holding duration stats
-
-3. Data Aggregation & Time Series:
-   - Equity curve timeseries: baseline origin, chronological trade events, current real-time point
-   - Daily PnL aggregation: date grouping, net PnL, return %, wins/losses counts
-
-4. Binance Live Futures API Integration & Offline Fallback:
-   - Mocking /fapi/v2/account, /fapi/v1/income, /fapi/v2/positionRisk
-   - Graceful degradation on HTTP 451, network timeout, connection error, unconfigured keys
-   - Safe handling of corrupted/malformed or missing trade_positions.json files without unhandled exceptions
-
-5. Account HTML Generation & Structural Integrity:
-   - Compilation of account.html via build_account_analytics
-   - Fallback compilation when runs/account_analytics.json is missing or corrupted
-   - Full DOM inspection: Key KPI cards, Chart.js canvas containers, table panels
-   - Embedded JSON data schema validation
-   - Global navigation bar and branding checks
-
-6. Engine End-to-End Execution & Atomic Writing:
-   - Atomic JSON output generation and validation against schema
-======================================================================
+   - Unified net-PnL basis across outcome, profit factor, streaks, daily PnL, Sharpe, Sortino
+   - Calendar-gap zero-return filling for daily Sharpe & standard N-period Sortino denominator
+   - Zero equity/margin non-coercion and None for undefined ratios
+3. Unified FIFO Trade Reconstruction:
+   - Multi-roundtrip, partial close, Hedge (LONG/SHORT) & One-Way (BOTH) modes
+   - Opening + closing USDT fee attribution & non-USDT (BNB) fee isolation
+   - Interleaved-symbol income-only reconstruction
+4. Binance Live Futures API Integration & DB Recording:
+   - Graceful degradation on BinanceAPIError (451/network) without swallowing logic bugs
+   - Corrupt trade_positions.json failing loudly
+   - SQLite WAL sync, compaction, and post-DB consistency
+5. Static Account HTML Shell Integrity:
+   - Pure static shell verification (static/styles.css, static/account.js, no inline CSS/JS/data)
+   - All KPI, chart, 9-column active positions, and history filter DOM IDs
 """
 
-import os
-import sys
+from contextlib import closing
 import json
 import math
-import tempfile
-import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+import re
+import sqlite3
+import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import MagicMock, patch
 
-# Setup import paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT_DIR / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
@@ -57,19 +43,18 @@ if str(SCRIPTS_DIR) not in sys.path:
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import account_analytics_engine as aae
-import binance_position_client as bpc
-import build_account_analytics as baa
+import account_analytics_engine as aae  # noqa: E402
+import binance_client as bc  # noqa: E402
+import build_account_analytics as baa  # noqa: E402
 
 
 class TestDataEnrichment(unittest.TestCase):
-    """1. 测试持仓与历史交易记录深度清洗补全逻辑"""
+    """1. 测试持仓与历史交易记录清洗及严格防伪造逻辑"""
 
     def setUp(self):
         self.engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
 
     def test_enrich_winning_trade_with_trailing_stop(self):
-        """测试盈利交易与移动止盈锁利状态清洗"""
         raw = {
             "symbol": "YBUSDT",
             "entry_price": 0.05,
@@ -79,7 +64,7 @@ class TestDataEnrichment(unittest.TestCase):
             "closed_at": "2026-11-21 22:17:29",
             "trailing_stop_triggered": True,
             "status": "STOP_LOSS_TRIGGERED",
-            "leverage": 5
+            "leverage": 5,
         }
         enriched = self.engine.enrich_trade_record(raw, 0)
         self.assertEqual(enriched["symbol"], "YBUSDT")
@@ -94,7 +79,6 @@ class TestDataEnrichment(unittest.TestCase):
         self.assertGreater(enriched["net_pnl"], 5.7)
 
     def test_enrich_losing_trade_trendline_breakdown(self):
-        """测试亏损交易与跌破趋势线止损清洗"""
         raw = {
             "symbol": "TESTUSDT",
             "entry_price": 10.0,
@@ -109,8 +93,8 @@ class TestDataEnrichment(unittest.TestCase):
                 "p1": 11.0,
                 "p2": 10.5,
                 "dt1_str": "2026-11-20 12:00",
-                "dt2_str": "2026-11-21 08:00"
-            }
+                "dt2_str": "2026-11-21 08:00",
+            },
         }
         enriched = self.engine.enrich_trade_record(raw, 1)
         self.assertEqual(enriched["outcome"], "LOSS")
@@ -121,36 +105,60 @@ class TestDataEnrichment(unittest.TestCase):
         self.assertEqual(enriched["trendline_id"], "TL99")
         self.assertIn("TL#TL99", enriched["trendline_label"])
 
-    def test_enrich_trade_missing_fields_tolerance(self):
-        """测试历史交易缺失字段时的容错与兜底能力"""
+    def test_enrich_short_trade_and_negative_fee_rebate(self):
         raw = {
             "symbol": "BINANCE:ETHUSDT.P",
+            "side": "SHORT",
+            "entry_price": 3000.0,
+            "exit_price": 2850.0,
+            "amount": 2.0,
+            "leverage": 5,
+            "fee": -0.5,
+            "entry_time": "2026-11-21 10:00:00",
+            "closed_at": "2026-11-21 10:10:00",
+            "status": "MANUAL_CLOSE",
+        }
+        enriched = self.engine.enrich_trade_record(raw, 0)
+        self.assertEqual(enriched["symbol"], "ETHUSDT")
+        self.assertEqual(enriched["side"], "SHORT")
+        self.assertAlmostEqual(enriched["realized_pnl"], 300.0, places=2)
+        self.assertAlmostEqual(enriched["fee"], -0.5, places=2)
+        self.assertAlmostEqual(enriched["net_pnl"], 300.5, places=2)
+        self.assertAlmostEqual(enriched["pnl_pct"], 5.0, places=2)
+        self.assertAlmostEqual(enriched["roe_pct"], 25.0, places=2)
+        self.assertEqual(enriched["outcome"], "WIN")
+
+    def test_enrich_trade_does_not_fabricate_missing_exit_or_time(self):
+        raw = {
+            "symbol": "ETHUSDT",
             "entry_price": 3000.0,
             "amount": 2.0,
-            # exit_price missing, current_price provided
             "current_price": 3150.0,
-            # missing closed_at, entry_time
+            "highest_price": 3200.0,
             "status": "MANUAL_CLOSE",
-            "trendline": "invalid_trendline_type_str"
+            "trendline": {"id": "TL1", "p1": "1.23", "p2": "1.11", "state": None},
         }
         enriched = self.engine.enrich_trade_record(raw, 2)
-        self.assertEqual(enriched["symbol"], "ETHUSDT")
-        self.assertEqual(enriched["exit_price"], 3150.0)
-        self.assertAlmostEqual(enriched["realized_pnl"], 300.0, places=2)
-        self.assertEqual(enriched["outcome"], "WIN")
-        self.assertEqual(enriched["close_reason"], "手动平仓")
-        self.assertIsNone(enriched["trendline_id"])
-        self.assertGreaterEqual(enriched["fee"], 0.0)
+        self.assertIsNone(enriched["exit_price"])
+        self.assertIsNone(enriched["realized_pnl"])
+        self.assertIsNone(enriched["net_pnl"])
+        self.assertIsNone(enriched["pnl_pct"])
+        self.assertEqual(enriched["outcome"], "UNKNOWN")
+        self.assertIsNone(enriched["entry_ts"])
+        self.assertIsNone(enriched["closed_ts"])
+        self.assertEqual(enriched["entry_time"], "--")
+        self.assertEqual(enriched["closed_at"], "--")
+        self.assertEqual(enriched["duration_str"], "--")
+        self.assertEqual(enriched["trendline_label"], "TL#TL1 (1.2300 -> 1.1100)")
 
     def test_enrich_active_position(self):
-        """测试活跃多头在途持仓清洗与强平价估算"""
         raw = {
             "symbol": "BTCUSDT",
             "entry_price": 90000.0,
             "amount": 0.5,
             "mark_price": 94500.0,
             "leverage": 10,
-            "entry_time": "2026-11-22 12:00:00"
+            "entry_time": "2026-11-22 12:00:00",
         }
         enriched = self.engine.enrich_active_position(raw, 0)
         self.assertEqual(enriched["symbol"], "BTCUSDT")
@@ -161,8 +169,44 @@ class TestDataEnrichment(unittest.TestCase):
         self.assertAlmostEqual(enriched["roe_pct"], 50.0, places=2)
         self.assertAlmostEqual(enriched["liquidation_price"], 81900.0, places=1)
 
+    def test_enrich_active_position_uses_update_time_and_merges_local_meta(self):
+        update_ms = int((time.time() - 600) * 1000)
+        binance_pos = [
+            {
+                "symbol": "SOLUSDT",
+                "positionAmt": "10",
+                "entryPrice": "150",
+                "markPrice": "165",
+                "unRealizedProfit": "150",
+                "leverage": "5",
+                "positionSide": "BOTH",
+                "updateTime": update_ms,
+            }
+        ]
+        local_pos = [
+            {
+                "symbol": "SOLUSDT",
+                "side": "LONG",
+                "amount": 10,
+                "trailing_stop_triggered": True,
+                "trailing_stop_price": 151.5,
+                "stop_loss_notified": False,
+                "highest_price": 168.0,
+                "trendline": {"id": "TL_SOL", "p1": 160, "p2": 152},
+            }
+        ]
+        merged = self.engine._merge_active_positions(binance_pos, local_pos, positions_available=True)
+        self.assertEqual(len(merged), 1)
+        pos = merged[0]
+        self.assertEqual(pos["symbol"], "SOLUSDT")
+        self.assertGreaterEqual(pos["holding_seconds"], 595)
+        self.assertNotEqual(pos["entry_time"], "--")
+        self.assertEqual(pos["trendline_id"], "TL_SOL")
+        self.assertTrue(pos["trailing_stop_triggered"])
+        self.assertEqual(pos["trailing_stop_price"], 151.5)
+        self.assertEqual(pos["highest_price"], 168.0)
+
     def test_format_duration_edge_cases(self):
-        """测试持仓周期文本格式化"""
         self.assertEqual(aae.format_duration(0), "0s")
         self.assertEqual(aae.format_duration(-10), "0s")
         self.assertEqual(aae.format_duration(45), "45s")
@@ -173,57 +217,49 @@ class TestDataEnrichment(unittest.TestCase):
 
 
 class TestQuantRiskCalculations(unittest.TestCase):
-    """2. 测试量化风控指标数学严谨性与边界情况"""
+    """2. 测试量化风控指标统一净盈亏口径、日历夏普与标准索提诺比率"""
 
     def setUp(self):
         self.engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
 
     def test_win_rate_and_profit_factor_standard(self):
-        """测试标准样本下的胜率、盈亏比与净值计算"""
         trades = [
-            {"realized_pnl": 100.0, "fee": 1.0, "net_pnl": 99.0, "pnl_pct": 10.0, "outcome": "WIN", "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
-            {"realized_pnl": -50.0, "fee": 1.0, "net_pnl": -51.0, "pnl_pct": -5.0, "outcome": "LOSS", "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 120, "symbol": "B", "close_reason": "SL"},
-            {"realized_pnl": 0.0, "fee": 0.5, "net_pnl": -0.5, "pnl_pct": 0.0, "outcome": "BREAKEVEN", "closed_ts": 3000, "closed_at": "2026-11-21 09:00:00", "duration_seconds": 30, "symbol": "C", "close_reason": "MC"},
-            {"realized_pnl": 150.0, "fee": 1.5, "net_pnl": 148.5, "pnl_pct": 15.0, "outcome": "WIN", "closed_ts": 4000, "closed_at": "2026-11-21 12:00:00", "duration_seconds": 90, "symbol": "D", "close_reason": "TP"}
+            {"realized_pnl": 100.0, "fee": 1.0, "net_pnl": 99.0, "pnl_pct": 10.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
+            {"realized_pnl": -50.0, "fee": 1.0, "net_pnl": -51.0, "pnl_pct": -5.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 120, "symbol": "B", "close_reason": "SL"},
+            {"realized_pnl": 0.0, "fee": 0.0, "net_pnl": 0.0, "pnl_pct": 0.0, "closed_ts": 3000, "closed_at": "2026-11-21 09:00:00", "duration_seconds": 30, "symbol": "C", "close_reason": "MC"},
+            {"realized_pnl": 150.0, "fee": 1.5, "net_pnl": 148.5, "pnl_pct": 15.0, "closed_ts": 4000, "closed_at": "2026-11-21 12:00:00", "duration_seconds": 90, "symbol": "D", "close_reason": "TP"},
         ]
-        summary, eq_curve, daily_pnl = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
 
-        self.assertEqual(summary["total_trades"], 4)
-        self.assertEqual(summary["winning_trades"], 2)
-        self.assertEqual(summary["losing_trades"], 1)
-        self.assertEqual(summary["breakeven_trades"], 1)
+        self.assertEqual(summary["closed_trades"], 4)
+        self.assertEqual(summary["win_count"], 2)
+        self.assertEqual(summary["loss_count"], 1)
+        self.assertEqual(summary["breakeven_count"], 1)
         self.assertEqual(summary["win_rate_pct"], 50.0)
         self.assertAlmostEqual(summary["win_rate_ex_breakeven_pct"], 66.67, places=1)
-
-        # Profit Factor: gross_profit (250) / gross_loss (50) = 5.0
-        self.assertEqual(summary["profit_factor"], 5.0)
-
-        # Cumulative PnL: 100 - 50 + 0 + 150 = 200.0
+        # 净盈亏口径: (99 + 148.5) / 51 = 4.85
+        self.assertAlmostEqual(summary["profit_factor"], 4.85, places=2)
         self.assertEqual(summary["cumulative_realized_pnl"], 200.0)
-        self.assertEqual(summary["total_fee"], 4.0)
-        self.assertEqual(summary["net_realized_pnl"], 196.0)
+        self.assertEqual(summary["total_fee"], 3.5)
+        self.assertEqual(summary["net_realized_pnl"], 196.5)
+        self.assertEqual(summary["total_equity"], 10196.5)
 
-        # Total Equity: 10000 + 196 = 10196.0
-        self.assertEqual(summary["total_equity"], 10196.0)
-        self.assertAlmostEqual(summary["total_return_pct"], 1.96, places=2)
-
-    def test_all_wins_infinite_profit_factor(self):
-        """测试全部盈利交易时获利因子设为 999.0 且不发生除零错误"""
+    def test_all_wins_returns_none_profit_factor_and_sortino(self):
         trades = [
-            {"realized_pnl": 50.0, "fee": 0.1, "net_pnl": 49.9, "pnl_pct": 5.0, "outcome": "WIN", "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
-            {"realized_pnl": 80.0, "fee": 0.1, "net_pnl": 79.9, "pnl_pct": 8.0, "outcome": "WIN", "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"}
+            {"realized_pnl": 50.0, "fee": 0.1, "net_pnl": 49.9, "pnl_pct": 5.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
+            {"realized_pnl": 80.0, "fee": 0.1, "net_pnl": 79.9, "pnl_pct": 8.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"},
         ]
         summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
         self.assertEqual(summary["win_rate_pct"], 100.0)
-        self.assertEqual(summary["profit_factor"], 999.0)
+        self.assertIsNone(summary["profit_factor"])
+        self.assertIsNone(summary["sortino_ratio"])
         self.assertEqual(summary["max_consecutive_wins"], 2)
         self.assertEqual(summary["max_consecutive_losses"], 0)
 
     def test_all_losses_zero_profit_factor(self):
-        """测试全部亏损交易时的风控指标"""
         trades = [
-            {"realized_pnl": -30.0, "fee": 0.1, "net_pnl": -30.1, "pnl_pct": -3.0, "outcome": "LOSS", "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "SL"},
-            {"realized_pnl": -70.0, "fee": 0.1, "net_pnl": -70.1, "pnl_pct": -7.0, "outcome": "LOSS", "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"}
+            {"realized_pnl": -30.0, "fee": 0.1, "net_pnl": -30.1, "pnl_pct": -3.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "SL"},
+            {"realized_pnl": -70.0, "fee": 0.1, "net_pnl": -70.1, "pnl_pct": -7.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
         ]
         summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
         self.assertEqual(summary["win_rate_pct"], 0.0)
@@ -232,39 +268,47 @@ class TestQuantRiskCalculations(unittest.TestCase):
         self.assertAlmostEqual(summary["max_drawdown_usd"], 100.2, places=1)
 
     def test_zero_trades_empty_state_robustness(self):
-        """测试零交易空状态时的稳健性，确保不抛出 ZeroDivisionError"""
         summary, eq_curve, daily_pnl = self.engine.calculate_quant_risk_metrics([], [], None)
-        self.assertEqual(summary["total_trades"], 0)
+        self.assertEqual(summary["closed_trades"], 0)
         self.assertEqual(summary["win_rate_pct"], 0.0)
-        self.assertEqual(summary["profit_factor"], 0.0)
+        self.assertIsNone(summary["profit_factor"])
         self.assertEqual(summary["max_drawdown_usd"], 0.0)
         self.assertEqual(summary["max_drawdown_pct"], 0.0)
-        self.assertEqual(summary["sharpe_ratio"], 0.0)
-        self.assertEqual(summary["sortino_ratio"], 0.0)
+        self.assertIsNone(summary["sharpe_ratio"])
+        self.assertIsNone(summary["sortino_ratio"])
+        self.assertEqual(summary["sharpe_method"], "NONE")
         self.assertEqual(summary["total_equity"], 10000.0)
         self.assertEqual(len(daily_pnl), 0)
-        self.assertGreaterEqual(len(eq_curve), 2)  # baseline + current real-time
+        self.assertGreaterEqual(len(eq_curve), 2)
+
+    def test_zero_equity_and_zero_margin_not_coerced(self):
+        account_info = {
+            "totalWalletBalance": "0.0",
+            "totalMarginBalance": "0.0",
+            "availableBalance": "0.0",
+        }
+        summary, _, _ = self.engine.calculate_quant_risk_metrics([], [], account_info)
+        self.assertEqual(summary["wallet_balance"], 0.0)
+        self.assertEqual(summary["total_equity"], 0.0)
+        self.assertEqual(summary["available_margin"], 0.0)
 
     def test_max_drawdown_calculation_complex(self):
-        """测试多峰值与深回撤路径下的最大回撤计算"""
-        # 初始 10000 -> +500 (10500) -> -300 (10200, DD=300, DD%=2.86%) -> -200 (10000, DD=500, DD%=4.76%) -> +1000 (11000)
         trades = [
-            {"realized_pnl": 500.0, "fee": 0.0, "net_pnl": 500.0, "pnl_pct": 5.0, "outcome": "WIN", "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
-            {"realized_pnl": -300.0, "fee": 0.0, "net_pnl": -300.0, "pnl_pct": -3.0, "outcome": "LOSS", "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
-            {"realized_pnl": -200.0, "fee": 0.0, "net_pnl": -200.0, "pnl_pct": -2.0, "outcome": "LOSS", "closed_ts": 3000, "closed_at": "2026-11-20 12:00:00", "duration_seconds": 60, "symbol": "C", "close_reason": "SL"},
-            {"realized_pnl": 1000.0, "fee": 0.0, "net_pnl": 1000.0, "pnl_pct": 10.0, "outcome": "WIN", "closed_ts": 4000, "closed_at": "2026-11-20 13:00:00", "duration_seconds": 60, "symbol": "D", "close_reason": "TP"},
+            {"realized_pnl": 500.0, "fee": 0.0, "net_pnl": 500.0, "pnl_pct": 5.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
+            {"realized_pnl": -300.0, "fee": 0.0, "net_pnl": -300.0, "pnl_pct": -3.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
+            {"realized_pnl": -200.0, "fee": 0.0, "net_pnl": -200.0, "pnl_pct": -2.0, "closed_ts": 3000, "closed_at": "2026-11-20 12:00:00", "duration_seconds": 60, "symbol": "C", "close_reason": "SL"},
+            {"realized_pnl": 1000.0, "fee": 0.0, "net_pnl": 1000.0, "pnl_pct": 10.0, "closed_ts": 4000, "closed_at": "2026-11-20 13:00:00", "duration_seconds": 60, "symbol": "D", "close_reason": "TP"},
         ]
-        summary, eq_curve, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
         self.assertEqual(summary["max_drawdown_usd"], 500.0)
         self.assertAlmostEqual(summary["max_drawdown_pct"], 4.76, places=2)
 
     def test_streaks_and_durations(self):
-        """测试连续连胜/连亏与持仓时长统计"""
         trades = [
-            {"realized_pnl": 10.0, "fee": 0.0, "net_pnl": 10.0, "pnl_pct": 1.0, "outcome": "WIN", "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 100, "symbol": "A", "close_reason": "TP"},
-            {"realized_pnl": 20.0, "fee": 0.0, "net_pnl": 20.0, "pnl_pct": 2.0, "outcome": "WIN", "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 200, "symbol": "B", "close_reason": "TP"},
-            {"realized_pnl": 30.0, "fee": 0.0, "net_pnl": 30.0, "pnl_pct": 3.0, "outcome": "WIN", "closed_ts": 3000, "closed_at": "2026-11-20 12:00:00", "duration_seconds": 300, "symbol": "C", "close_reason": "TP"},
-            {"realized_pnl": -5.0, "fee": 0.0, "net_pnl": -5.0, "pnl_pct": -0.5, "outcome": "LOSS", "closed_ts": 4000, "closed_at": "2026-11-20 13:00:00", "duration_seconds": 400, "symbol": "D", "close_reason": "SL"},
+            {"realized_pnl": 10.0, "fee": 0.0, "net_pnl": 10.0, "pnl_pct": 1.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 100, "symbol": "A", "close_reason": "TP"},
+            {"realized_pnl": 20.0, "fee": 0.0, "net_pnl": 20.0, "pnl_pct": 2.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 200, "symbol": "B", "close_reason": "TP"},
+            {"realized_pnl": 30.0, "fee": 0.0, "net_pnl": 30.0, "pnl_pct": 3.0, "closed_ts": 3000, "closed_at": "2026-11-20 12:00:00", "duration_seconds": 300, "symbol": "C", "close_reason": "TP"},
+            {"realized_pnl": -5.0, "fee": 0.0, "net_pnl": -5.0, "pnl_pct": -0.5, "closed_ts": 4000, "closed_at": "2026-11-20 13:00:00", "duration_seconds": 400, "symbol": "D", "close_reason": "SL"},
         ]
         summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
         self.assertEqual(summary["max_consecutive_wins"], 3)
@@ -274,18 +318,29 @@ class TestQuantRiskCalculations(unittest.TestCase):
         self.assertEqual(summary["min_hold_duration_seconds"], 100)
         self.assertEqual(summary["max_hold_duration_seconds"], 400)
 
-    def test_sharpe_and_sortino_daily_multi_day(self):
-        """测试多日交易下的日度收益年化夏普比率与索提诺比率"""
+    def test_sortino_denominator_and_calendar_gap_sharpe(self):
+        # 2026-11-01 (+200 on 10000 = +0.02), 3 idle days (0.0), 2026-11-05 (-102 on 10200 = -0.01)
         trades = [
-            {"realized_pnl": 100.0, "fee": 1.0, "net_pnl": 99.0, "pnl_pct": 1.0, "outcome": "WIN", "closed_ts": 1000, "closed_at": "2026-11-18 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
-            {"realized_pnl": -40.0, "fee": 1.0, "net_pnl": -41.0, "pnl_pct": -0.4, "outcome": "LOSS", "closed_ts": 2000, "closed_at": "2026-11-19 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
-            {"realized_pnl": 120.0, "fee": 1.0, "net_pnl": 119.0, "pnl_pct": 1.2, "outcome": "WIN", "closed_ts": 3000, "closed_at": "2026-11-20 12:00:00", "duration_seconds": 60, "symbol": "C", "close_reason": "TP"},
+            {"realized_pnl": 200.0, "fee": 0.0, "net_pnl": 200.0, "pnl_pct": 2.0, "closed_ts": 1000, "closed_at": "2026-11-01 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
+            {"realized_pnl": -102.0, "fee": 0.0, "net_pnl": -102.0, "pnl_pct": -1.0, "closed_ts": 2000, "closed_at": "2026-11-05 10:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
         ]
-        summary, _, daily_pnl = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        rets = [0.02, 0.0, 0.0, 0.0, -0.01]
+        mean_r = sum(rets) / 5
+        std_r = math.sqrt(sum((r - mean_r) ** 2 for r in rets) / 4)
+        down_std = math.sqrt((0.01 ** 2) / 5)  # 分母必须为总天数 5，而非亏损天数 1
+        self.assertAlmostEqual(summary["sharpe_ratio"], round(mean_r / std_r * math.sqrt(365), 2), places=2)
+        self.assertAlmostEqual(summary["sortino_ratio"], round(mean_r / down_std * math.sqrt(365), 2), places=2)
         self.assertEqual(summary["sharpe_method"], "DAILY_RETURNS")
-        self.assertGreater(summary["sharpe_ratio"], 0.0)
-        self.assertGreater(summary["sortino_ratio"], 0.0)
-        self.assertEqual(len(daily_pnl), 3)
+
+    def test_zero_variance_trades_returns_none_sharpe_instead_of_magic_2_5(self):
+        trades = [
+            {"realized_pnl": 100.0, "fee": 0.0, "net_pnl": 100.0, "pnl_pct": 1.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
+            {"realized_pnl": 100.0, "fee": 0.0, "net_pnl": 100.0, "pnl_pct": 1.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"},
+        ]
+        summary, _, _ = self.engine.calculate_quant_risk_metrics(trades, [], None)
+        self.assertIsNone(summary["sharpe_ratio"])
+        self.assertIsNone(summary["sortino_ratio"])
 
 
 class TestDataAggregation(unittest.TestCase):
@@ -295,103 +350,105 @@ class TestDataAggregation(unittest.TestCase):
         self.engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
 
     def test_equity_curve_timeseries_monotonicity_and_points(self):
-        """测试净值曲线时间序列的基准点、平仓记录点与当前点"""
+        now_ms = int(time.time() * 1000)
         trades = [
-            {"realized_pnl": 200.0, "fee": 2.0, "net_pnl": 198.0, "pnl_pct": 2.0, "outcome": "WIN", "entry_ts": 1795000000000, "closed_ts": 1795001000000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 1000, "symbol": "BTCUSDT", "close_reason": "TP"},
-            {"realized_pnl": -50.0, "fee": 1.0, "net_pnl": -51.0, "pnl_pct": -0.5, "outcome": "LOSS", "entry_ts": 1795002000000, "closed_ts": 1795003000000, "closed_at": "2026-11-20 12:00:00", "duration_seconds": 1000, "symbol": "ETHUSDT", "close_reason": "SL"},
+            {
+                "realized_pnl": 200.0,
+                "fee": 2.0,
+                "net_pnl": 198.0,
+                "pnl_pct": 2.0,
+                "entry_ts": now_ms - 7200_000,
+                "closed_ts": now_ms - 5400_000,
+                "closed_at": aae.get_beijing_time_str((now_ms - 5400_000) / 1000.0),
+                "duration_seconds": 1800,
+                "symbol": "BTCUSDT",
+                "close_reason": "TP",
+            },
+            {
+                "realized_pnl": -50.0,
+                "fee": 1.0,
+                "net_pnl": -51.0,
+                "pnl_pct": -0.5,
+                "entry_ts": now_ms - 3600_000,
+                "closed_ts": now_ms - 1800_000,
+                "closed_at": aae.get_beijing_time_str((now_ms - 1800_000) / 1000.0),
+                "duration_seconds": 1800,
+                "symbol": "ETHUSDT",
+                "close_reason": "SL",
+            },
         ]
-        active_positions = [
-            {"symbol": "SOLUSDT", "unrealized_pnl": 35.0, "initial_margin": 200.0}
-        ]
-        summary, eq_curve, daily_pnl = self.engine.calculate_quant_risk_metrics(trades, active_positions, None)
+        active_positions = [{"symbol": "SOLUSDT", "unrealized_pnl": 35.0, "initial_margin": 200.0}]
+        summary, eq_curve, _ = self.engine.calculate_quant_risk_metrics(trades, active_positions, None)
 
-        # 检查点数量: 1(基准) + 2(交易) + 1(实时) = 4
         self.assertEqual(len(eq_curve), 4)
-
-        # 检查第 1 点为初始本金
         self.assertEqual(eq_curve[0]["equity"], 10000.0)
         self.assertEqual(eq_curve[0]["cumulative_pnl"], 0.0)
-
-        # 检查第 2 点 (盈利后)
         self.assertEqual(eq_curve[1]["equity"], 10198.0)
         self.assertEqual(eq_curve[1]["cumulative_pnl"], 198.0)
-
-        # 检查第 3 点 (亏损后)
         self.assertEqual(eq_curve[2]["equity"], 10147.0)
         self.assertEqual(eq_curve[2]["drawdown_usd"], 51.0)
-
-        # 检查第 4 点 (当前净值含 35 浮盈)
         self.assertEqual(eq_curve[3]["equity"], 10182.0)
+        self.assertEqual(summary["open_trades"], 1)
 
-        # 时间戳单调递增
         for i in range(1, len(eq_curve)):
-            self.assertGreaterEqual(eq_curve[i]["timestamp"], eq_curve[i-1]["timestamp"])
+            self.assertGreaterEqual(eq_curve[i]["timestamp"], eq_curve[i - 1]["timestamp"])
 
     def test_daily_pnl_aggregation_grouping(self):
-        """测试按自然日分组统计盈亏与交易笔数"""
         trades = [
-            {"realized_pnl": 100.0, "fee": 1.0, "net_pnl": 99.0, "pnl_pct": 1.0, "outcome": "WIN", "closed_ts": 1000, "closed_at": "2026-11-20 09:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
-            {"realized_pnl": 50.0, "fee": 0.5, "net_pnl": 49.5, "pnl_pct": 0.5, "outcome": "WIN", "closed_ts": 2000, "closed_at": "2026-11-20 15:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"},
-            {"realized_pnl": -30.0, "fee": 0.3, "net_pnl": -30.3, "pnl_pct": -0.3, "outcome": "LOSS", "closed_ts": 3000, "closed_at": "2026-11-21 10:00:00", "duration_seconds": 60, "symbol": "C", "close_reason": "SL"},
+            {"realized_pnl": 100.0, "fee": 1.0, "net_pnl": 99.0, "pnl_pct": 1.0, "closed_ts": 1000, "closed_at": "2026-11-20 09:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
+            {"realized_pnl": 50.0, "fee": 0.5, "net_pnl": 49.5, "pnl_pct": 0.5, "closed_ts": 2000, "closed_at": "2026-11-20 15:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"},
+            {"realized_pnl": -30.0, "fee": 0.3, "net_pnl": -30.3, "pnl_pct": -0.3, "closed_ts": 3000, "closed_at": "2026-11-21 10:00:00", "duration_seconds": 60, "symbol": "C", "close_reason": "SL"},
         ]
         _, _, daily_pnl = self.engine.calculate_quant_risk_metrics(trades, [], None)
         self.assertEqual(len(daily_pnl), 2)
-
-        day1 = daily_pnl[0]
-        self.assertEqual(day1["date"], "2026-11-20")
-        self.assertEqual(day1["trades_count"], 2)
-        self.assertEqual(day1["wins"], 2)
-        self.assertEqual(day1["net_pnl"], 148.5)
-
-        day2 = daily_pnl[1]
-        self.assertEqual(day2["date"], "2026-11-21")
-        self.assertEqual(day2["trades_count"], 1)
-        self.assertEqual(day2["losses"], 1)
-        self.assertEqual(day2["net_pnl"], -30.3)
+        self.assertEqual(daily_pnl[0]["date"], "2026-11-20")
+        self.assertEqual(daily_pnl[0]["trades_count"], 2)
+        self.assertEqual(daily_pnl[0]["wins"], 2)
+        self.assertEqual(daily_pnl[0]["net_pnl"], 148.5)
+        self.assertEqual(daily_pnl[1]["date"], "2026-11-21")
+        self.assertEqual(daily_pnl[1]["losses"], 1)
+        self.assertEqual(daily_pnl[1]["net_pnl"], -30.3)
 
 
 class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
-    """4. 测试币安合约 API 请求、网络故障与本地离线回退机制"""
+    """4. 测试币安合约 API 请求、FIFO 交易重构、异常降级与 SQLite 增量同步"""
 
     def test_client_endpoints_success_mock(self):
-        """测试正常响应时 /fapi/v2/account 与 /fapi/v1/income 的解析"""
-        client = bpc.BinanceFuturesClient(api_key="mock_key", api_secret="mock_sec")
-
+        client = bc.BinanceFuturesClient(api_key="mock_key", api_secret="mock_sec")
         mock_acc_data = {
             "totalWalletBalance": "15420.50",
             "totalMarginBalance": "15600.80",
             "availableBalance": "14200.00",
-            "totalUnrealizedProfit": "180.30"
+            "totalUnrealizedProfit": "180.30",
         }
         mock_income_data = [
             {"symbol": "YBUSDT", "incomeType": "REALIZED_PNL", "income": "12.50", "time": 1795200000000},
             {"symbol": "YBUSDT", "incomeType": "COMMISSION", "income": "-0.05", "time": 1795200000000},
-            {"symbol": "YBUSDT", "incomeType": "FUNDING_FEE", "income": "-0.02", "time": 1795200000000}
+            {"symbol": "YBUSDT", "incomeType": "FUNDING_FEE", "income": "-0.02", "time": 1795200000000},
         ]
 
         def fake_send(endpoint, params=None):
             if endpoint == "/fapi/v2/account":
                 return mock_acc_data, None
-            elif endpoint == "/fapi/v1/income":
+            if endpoint == "/fapi/v1/income":
                 return mock_income_data, None
-            elif endpoint == "/fapi/v2/positionRisk":
+            if endpoint == "/fapi/v2/positionRisk":
                 return [], None
             return None, {"code": 404, "msg": "Not Found"}
 
         with patch.object(client, "_send_signed_request", side_effect=fake_send):
             acc = client.get_account_info()
             self.assertEqual(acc["totalWalletBalance"], "15420.50")
-
             income = client.get_income()
             self.assertEqual(len(income), 3)
 
             engine = aae.AccountAnalyticsEngine(client=client)
-            acc_info, inc_list, active_p, status = engine.fetch_binance_data()
+            _, _, _, status = engine.fetch_binance_data()
             self.assertTrue(status["connected"])
             self.assertEqual(status["status_code"], 200)
 
     def test_account_report_distinguishes_empty_positions_from_request_failure(self):
-        client = bpc.BinanceFuturesClient("test-key", "test-secret")
+        client = bc.BinanceFuturesClient("test-key", "test-secret")
         engine = aae.AccountAnalyticsEngine(client=client)
         local_positions = [{"symbol": "YBUSDT", "entry_price": 1, "amount": 1}]
         income = [{"symbol": "YBUSDT", "incomeType": "REALIZED_PNL", "income": "12.50", "time": 1795200000000}]
@@ -414,7 +471,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             self.assertEqual(coverage["raw_count"], 1)
 
             with patch.object(client, "_send_signed_request", side_effect=[
-                account_response, ([], None), (None, {"code": "NETWORK_ERROR"})
+                account_response, ([], None), (None, {"code": "NETWORK_ERROR", "msg": "err"})
             ]):
                 report = engine.run(path)
             self.assertEqual(report["active_positions"][0]["symbol"], "YBUSDT")
@@ -422,7 +479,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             self.assertEqual(report["api_status"]["mode"], "BINANCE_PARTIAL")
 
     def test_full_income_page_reports_coverage_without_inferring_principal(self):
-        client = bpc.BinanceFuturesClient("test-key", "test-secret")
+        client = bc.BinanceFuturesClient("test-key", "test-secret")
         engine = aae.AccountAnalyticsEngine(client=client)
         income = [
             {"incomeType": "TRANSFER", "income": "1", "time": 1795200000000 + i * 1000}
@@ -439,19 +496,14 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         self.assertTrue(coverage["page_full"])
         self.assertLess(coverage["coverage_start"], coverage["coverage_end"])
         self.assertEqual(coverage["principal_source"], "default")
-        dashboard = baa.render_account_html(baa.normalize_account_data(report))
-        self.assertIn("已达单页上限，更早流水未纳入", dashboard)
-        self.assertIn(coverage["coverage_start"], dashboard)
-        self.assertIn(coverage["coverage_end"], dashboard)
 
     def test_database_with_candidates_initializes_account_recording(self):
-        import sqlite3
-        client = bpc.BinanceFuturesClient("test", "test")
+        client = bc.BinanceFuturesClient("test", "test")
         engine = aae.AccountAnalyticsEngine(client=client)
         status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "account.sqlite3"
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection, connection:
                 connection.execute("CREATE TABLE candidate_snapshot (id INTEGER PRIMARY KEY, updated_at TEXT, payload TEXT)")
             with patch.object(engine, "fetch_binance_data", return_value=(
                 {"totalWalletBalance": "1000", "totalMarginBalance": "1000"}, [], [], status
@@ -461,10 +513,12 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
                 report = engine.run(database=database)
             self.assertEqual(report["recording"]["initial_equity"], 1000)
             self.assertGreater(report["recording"]["start_ms"], 0)
+            self.assertEqual(report["equity_curve"][0]["cash"], 1000)
 
     def test_recording_sync_persists_and_deduplicates_exchange_events(self):
         from account_dashboard_api import publish_report
-        client = bpc.BinanceFuturesClient("test", "test")
+
+        client = bc.BinanceFuturesClient("test", "test")
         engine = aae.AccountAnalyticsEngine(client=client)
         start = 1795200000000
         previous = {
@@ -490,11 +544,11 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             ):
                 report = engine.run(database=database)
                 engine.run(database=database)
-            import sqlite3
-            with sqlite3.connect(database) as connection:
+            with closing(sqlite3.connect(database)) as connection:
                 self.assertEqual(connection.execute("SELECT count(*) FROM income_ledger").fetchone()[0], 3)
                 self.assertEqual(connection.execute("SELECT count(*) FROM trade_fills").fetchone()[0], 1)
-                self.assertGreaterEqual(connection.execute("SELECT count(*) FROM equity_observations").fetchone()[0], 2)
+                # 5 分钟桶内重复快照就地刷新，避免无界增长
+                self.assertEqual(connection.execute("SELECT count(*) FROM equity_observations").fetchone()[0], 2)
                 self.assertEqual(connection.execute("SELECT count(*) FROM account_recording").fetchone()[0], 1)
             self.assertEqual(report["trade_history"][0]["exit_price"], 110)
             self.assertEqual(report["trade_history"][0]["fee"], 0.2)
@@ -503,98 +557,193 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             self.assertEqual(report["daily_pnl"][0]["net_pnl"], 9.8)
             self.assertEqual(report["summary"]["net_external_transfers"], 100)
             self.assertEqual(report["summary"]["total_return_pct"], 1)
+            self.assertEqual(report["equity_curve"][0]["equity"], 1000)
+            self.assertEqual(report["equity_curve"][-1]["cash"], 1110)
             self.assertEqual(report["equity_curve"][-1]["cumulative_pnl"], 10)
             self.assertEqual(report["equity_curve"][-1]["drawdown_usd"], 0)
 
     def test_multiple_fills_form_one_closed_order(self):
         from account_dashboard_api import publish_report
-        client = bpc.BinanceFuturesClient('test', 'test')
+
+        client = bc.BinanceFuturesClient("test", "test")
         engine = aae.AccountAnalyticsEngine(client=client)
         start = 1795200000000
-        previous = {'recording': {'start_ms': start, 'started_at': '2026-11-21 00:00:00', 'initial_equity': 1000}, 'equity_curve': []}
+        previous = {"recording": {"start_ms": start, "started_at": "2026-11-21 00:00:00", "initial_equity": 1000}, "equity_curve": []}
         income = [
-            {'incomeType': 'REALIZED_PNL', 'tranId': 1, 'tradeId': '2', 'time': start + 4000, 'income': '10', 'asset': 'USDT', 'symbol': 'BTCUSDT'},
-            {'incomeType': 'REALIZED_PNL', 'tranId': 2, 'tradeId': '3', 'time': start + 5000, 'income': '20', 'asset': 'USDT', 'symbol': 'BTCUSDT'},
+            {"incomeType": "REALIZED_PNL", "tranId": 1, "tradeId": "2", "time": start + 4000, "income": "10", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "REALIZED_PNL", "tranId": 2, "tradeId": "3", "time": start + 5000, "income": "20", "asset": "USDT", "symbol": "BTCUSDT"},
         ]
         fills = [
-            {'symbol': 'BTCUSDT', 'id': 1, 'orderId': 1, 'side': 'BUY', 'time': start + 1000, 'positionSide': 'LONG', 'price': '100', 'qty': '3', 'quoteQty': '300'},
-            {'symbol': 'BTCUSDT', 'id': 2, 'orderId': 2, 'side': 'SELL', 'time': start + 4000, 'positionSide': 'LONG', 'price': '110', 'qty': '1', 'quoteQty': '110'},
-            {'symbol': 'BTCUSDT', 'id': 3, 'orderId': 2, 'side': 'SELL', 'time': start + 5000, 'positionSide': 'LONG', 'price': '110', 'qty': '2', 'quoteQty': '220'},
+            {"symbol": "BTCUSDT", "id": 1, "orderId": 1, "side": "BUY", "time": start + 1000, "positionSide": "LONG", "price": "100", "qty": "3", "quoteQty": "300"},
+            {"symbol": "BTCUSDT", "id": 2, "orderId": 2, "side": "SELL", "time": start + 4000, "positionSide": "LONG", "price": "110", "qty": "1", "quoteQty": "110"},
+            {"symbol": "BTCUSDT", "id": 3, "orderId": 2, "side": "SELL", "time": start + 5000, "positionSide": "LONG", "price": "110", "qty": "2", "quoteQty": "220"},
         ]
-        status = {'connected': True, 'mode': 'BINANCE_REALTIME', 'positions_available': True, 'income_available': True}
+        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
         with tempfile.TemporaryDirectory() as directory:
-            database = Path(directory) / 'account.sqlite3'
+            database = Path(directory) / "account.sqlite3"
             publish_report(database, previous)
-            with patch.object(engine, 'fetch_binance_data', return_value=({'totalWalletBalance': '1030', 'totalMarginBalance': '1030'}, income, [], status)), patch.object(engine, 'load_local_positions_store', return_value=([], [])), patch.object(client, '_send_signed_request', side_effect=lambda endpoint, params: (income if endpoint == '/fapi/v1/income' else fills, None)):
+            with patch.object(
+                engine,
+                "fetch_binance_data",
+                return_value=({"totalWalletBalance": "1030", "totalMarginBalance": "1030"}, income, [], status),
+            ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
+                client,
+                "_send_signed_request",
+                side_effect=lambda endpoint, params: (income if endpoint == "/fapi/v1/income" else fills, None),
+            ):
                 report = engine.run(database=database)
-        self.assertEqual(report['summary']['closed_trades'], 1)
-        trade = report['trade_history'][0]
-        self.assertEqual(trade['amount'], 3)
-        self.assertEqual(trade['entry_price'], 100)
-        self.assertEqual(trade['exit_price'], 110)
-        self.assertEqual(trade['net_pnl'], 30)
-        self.assertEqual(trade['duration_seconds'], 4)
+        self.assertEqual(report["summary"]["closed_trades"], 1)
+        trade = report["trade_history"][0]
+        self.assertEqual(trade["amount"], 3)
+        self.assertEqual(trade["entry_price"], 100)
+        self.assertEqual(trade["exit_price"], 110)
+        self.assertEqual(trade["net_pnl"], 30)
+        self.assertEqual(trade["duration_seconds"], 4)
+
+    def test_multi_roundtrip_partial_close_short_and_bnb_fee_isolation_in_db_mode(self):
+        from account_dashboard_api import publish_report
+
+        client = bc.BinanceFuturesClient("test", "test")
+        engine = aae.AccountAnalyticsEngine(client=client)
+        day1 = 1795000000000  # 2026-11-18
+        day2 = day1 + 86400_000
+        previous = {"recording": {"start_ms": day1, "started_at": "2026-11-18 00:00:00", "initial_equity": 1000}, "equity_curve": []}
+        income = [
+            # Roundtrip 1: BTCUSDT LONG open 2 @100 (fee 0.2 USDT), partial close 1 @110 (fee 0.1), partial close 1 @120 (fee 0.1)
+            {"incomeType": "COMMISSION", "tranId": 1, "tradeId": "1", "time": day1 + 1000, "income": "-0.2", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "REALIZED_PNL", "tranId": 2, "tradeId": "2", "time": day1 + 2000, "income": "10", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "COMMISSION", "tranId": 3, "tradeId": "2", "time": day1 + 2000, "income": "-0.1", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "REALIZED_PNL", "tranId": 4, "tradeId": "3", "time": day1 + 4000, "income": "20", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "COMMISSION", "tranId": 5, "tradeId": "3", "time": day1 + 4000, "income": "-0.1", "asset": "USDT", "symbol": "BTCUSDT"},
+            # Roundtrip 2: BTCUSDT LONG open 4 @130, close 4 @125 (BNB fee must NOT pollute USDT fee)
+            {"incomeType": "COMMISSION", "tranId": 6, "tradeId": "4", "time": day2 + 1000, "income": "-0.002", "asset": "BNB", "symbol": "BTCUSDT"},
+            {"incomeType": "REALIZED_PNL", "tranId": 7, "tradeId": "5", "time": day2 + 5000, "income": "-20", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "COMMISSION", "tranId": 8, "tradeId": "5", "time": day2 + 5000, "income": "-0.002", "asset": "BNB", "symbol": "BTCUSDT"},
+            # Roundtrip 3: ETHUSDT SHORT open 1 @3000 (fee 0.3), close 1 @2900 (fee 0.3), plus funding +1.4
+            {"incomeType": "COMMISSION", "tranId": 9, "tradeId": "11", "time": day2 + 10000, "income": "-0.3", "asset": "USDT", "symbol": "ETHUSDT"},
+            {"incomeType": "REALIZED_PNL", "tranId": 10, "tradeId": "12", "time": day2 + 16000, "income": "100", "asset": "USDT", "symbol": "ETHUSDT"},
+            {"incomeType": "COMMISSION", "tranId": 11, "tradeId": "12", "time": day2 + 16000, "income": "-0.3", "asset": "USDT", "symbol": "ETHUSDT"},
+            {"incomeType": "FUNDING_FEE", "tranId": 12, "time": day2 + 18000, "income": "1.4", "asset": "USDT", "symbol": "ETHUSDT"},
+        ]
+        btc_fills = [
+            {"symbol": "BTCUSDT", "id": 1, "orderId": 1, "side": "BUY", "time": day1 + 1000, "positionSide": "LONG", "price": "100", "qty": "2", "quoteQty": "200"},
+            {"symbol": "BTCUSDT", "id": 2, "orderId": 2, "side": "SELL", "time": day1 + 2000, "positionSide": "LONG", "price": "110", "qty": "1", "quoteQty": "110"},
+            {"symbol": "BTCUSDT", "id": 3, "orderId": 3, "side": "SELL", "time": day1 + 4000, "positionSide": "LONG", "price": "120", "qty": "1", "quoteQty": "120"},
+            {"symbol": "BTCUSDT", "id": 4, "orderId": 4, "side": "BUY", "time": day2 + 1000, "positionSide": "LONG", "price": "130", "qty": "4", "quoteQty": "520"},
+            {"symbol": "BTCUSDT", "id": 5, "orderId": 5, "side": "SELL", "time": day2 + 5000, "positionSide": "LONG", "price": "125", "qty": "4", "quoteQty": "500"},
+        ]
+        eth_fills = [
+            {"symbol": "ETHUSDT", "id": 11, "orderId": 11, "side": "SELL", "time": day2 + 10000, "positionSide": "SHORT", "price": "3000", "qty": "1", "quoteQty": "3000"},
+            {"symbol": "ETHUSDT", "id": 12, "orderId": 12, "side": "BUY", "time": day2 + 16000, "positionSide": "SHORT", "price": "2900", "qty": "1", "quoteQty": "2900"},
+        ]
+        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+
+        def fake_signed(endpoint, params=None):
+            if endpoint == "/fapi/v1/income":
+                return income, None
+            sym = (params or {}).get("symbol")
+            return (btc_fills if sym == "BTCUSDT" else eth_fills), None
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "account.sqlite3"
+            publish_report(database, previous)
+            with patch.object(
+                engine,
+                "fetch_binance_data",
+                return_value=({"totalWalletBalance": "1110.4", "totalMarginBalance": "1110.4"}, [], [], status),
+            ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
+                client, "_send_signed_request", side_effect=fake_signed
+            ):
+                report = engine.run(database=database)
+
+        trades = report["trade_history"]
+        self.assertEqual(len(trades), 4)
+        # 1st & 2nd partial closes split opening fee (0.1 each) + closing fee (0.1 each) = 0.2 each
+        self.assertAlmostEqual(trades[0]["entry_price"], 100.0)
+        self.assertAlmostEqual(trades[0]["fee"], 0.2)
+        self.assertEqual(trades[0]["duration_seconds"], 1)
+        self.assertAlmostEqual(trades[1]["entry_price"], 100.0)
+        self.assertAlmostEqual(trades[1]["fee"], 0.2)
+        self.assertEqual(trades[1]["duration_seconds"], 3)
+        # 2nd BTCUSDT roundtrip
+        self.assertAlmostEqual(trades[2]["entry_price"], 130.0)
+        self.assertAlmostEqual(trades[2]["exit_price"], 125.0)
+        self.assertEqual(trades[2]["fee"], 0.0)
+        self.assertEqual(trades[2]["non_usdt_fees"], {"BNB": 0.004})
+        self.assertEqual(trades[2]["duration_seconds"], 4)
+        # ETHUSDT SHORT
+        self.assertEqual(trades[3]["side"], "SHORT")
+        self.assertAlmostEqual(trades[3]["entry_price"], 3000.0)
+        self.assertAlmostEqual(trades[3]["exit_price"], 2900.0)
+        self.assertAlmostEqual(trades[3]["fee"], 0.6)
+        self.assertAlmostEqual(trades[3]["net_pnl"], 99.4)
+        self.assertEqual(trades[3]["duration_seconds"], 6)
+
+        self.assertAlmostEqual(sum(t["fee"] for t in trades), report["summary"]["total_fee"], places=4)
+        self.assertAlmostEqual(report["summary"]["total_funding_fee"], 1.4, places=2)
+        self.assertEqual(report["income_breakdown"]["non_usdt_fees"], {"BNB": 0.004})
+        # Sharpe must reflect post-DB daily_pnl (not stale None)
+        self.assertIsNotNone(report["summary"]["sharpe_ratio"])
+
+    def test_reconstruct_binance_trades_interleaved_symbols_and_bnb_fees(self):
+        engine = aae.AccountAnalyticsEngine(offline_mode=True)
+        income = [
+            {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "income": "10", "tradeId": "1", "time": 1000, "asset": "USDT"},
+            {"symbol": "ETHUSDT", "incomeType": "REALIZED_PNL", "income": "-5", "tradeId": "2", "time": 1200, "asset": "USDT"},
+            {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "income": "15", "tradeId": "3", "time": 1500, "asset": "USDT"},
+            {"symbol": "BTCUSDT", "incomeType": "COMMISSION", "income": "-0.001", "tradeId": "1", "time": 1000, "asset": "BNB"},
+        ]
+        trades, open_fee = engine.reconstruct_binance_trades(income, [])
+        self.assertEqual(open_fee, 0.0)
+        self.assertEqual(len(trades), 2)
+        btc_trade = [t for t in trades if t["symbol"] == "BTCUSDT"][0]
+        self.assertEqual(btc_trade["realized_pnl"], 25.0)
+        self.assertEqual(btc_trade["fee"], 0.0)
+        self.assertEqual(btc_trade["non_usdt_fees"], {"BNB": 0.001})
 
     def test_client_http_451_graceful_fallback(self):
-        """测试遇到 HTTP 451 区域受限时平滑降级至本地离线模式"""
-        client = bpc.BinanceFuturesClient(api_key="mock_key", api_secret="mock_sec")
-
-        def fake_send_451(endpoint, params=None):
-            return None, {"code": 451, "msg": "Service unavailable from a restricted location"}
-
-        with patch.object(client, "_send_signed_request", side_effect=fake_send_451):
+        client = bc.BinanceFuturesClient(api_key="mock_key", api_secret="mock_sec")
+        with patch.object(
+            client,
+            "_send_signed_request",
+            return_value=(None, {"code": 451, "msg": "Service unavailable from a restricted location"}),
+        ):
             engine = aae.AccountAnalyticsEngine(client=client)
-            acc_info, inc_list, active_p, status = engine.fetch_binance_data()
+            acc_info, _, _, status = engine.fetch_binance_data()
             self.assertFalse(status["connected"])
             self.assertEqual(status["status_code"], 451)
             self.assertEqual(status["mode"], "OFFLINE_FALLBACK")
             self.assertIsNone(acc_info)
 
-    def test_client_network_timeout_and_exceptions_graceful_fallback(self):
-        """测试网络超时或未捕获连接异常时优雅降级，不抛出异常"""
-        client = bpc.BinanceFuturesClient(api_key="mock_key", api_secret="mock_sec")
-
+    def test_client_network_timeout_graceful_fallback(self):
+        client = bc.BinanceFuturesClient(api_key="mock_key", api_secret="mock_sec")
         with patch.object(client, "_send_signed_request", side_effect=TimeoutError("Connection timed out")):
             engine = aae.AccountAnalyticsEngine(client=client)
-            acc_info, inc_list, active_p, status = engine.fetch_binance_data()
+            _, _, _, status = engine.fetch_binance_data()
             self.assertFalse(status["connected"])
             self.assertEqual(status["status_code"], -1)
             self.assertEqual(status["mode"], "OFFLINE_FALLBACK")
             self.assertIn("timed out", status["message"])
 
     def test_offline_mode_flag_bypasses_network(self):
-        """测试 offline_mode=True 时直接绕过网络请求"""
         mock_client = MagicMock()
         engine = aae.AccountAnalyticsEngine(client=mock_client, offline_mode=True)
-        acc_info, inc_list, active_p, status = engine.fetch_binance_data()
+        _, _, _, status = engine.fetch_binance_data()
         self.assertFalse(status["connected"])
         self.assertEqual(status["mode"], "OFFLINE_FALLBACK")
-        mock_client._send_signed_request.assert_not_called()
+        mock_client.get_account_info.assert_not_called()
 
-    def test_corrupted_positions_file_handling(self):
-        """测试当 trade_positions.json 损坏或格式错误时，降级读取不抛出异常"""
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
-            tf.write("CORRUPTED_JSON_DATA {{{}}")
-            corrupt_path = Path(tf.name)
-
-        try:
+    def test_corrupted_positions_file_raises_loudly(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            corrupt_path = Path(tmp_dir) / "corrupt.json"
+            corrupt_path.write_text("CORRUPTED_JSON_DATA {{{}}", encoding="utf-8")
             engine = aae.AccountAnalyticsEngine(positions_path=corrupt_path, offline_mode=True)
-            pos, hist = engine.load_local_positions_store()
-            self.assertEqual(pos, [])
-            self.assertEqual(hist, [])
-
-            # run() 端到端执行亦不应崩溃
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                out_json = Path(tmp_dir) / "output.json"
-                report = engine.run(output_path=out_json)
-                self.assertIsNotNone(report)
-                self.assertEqual(report["summary"]["total_trades"], 0)
-        finally:
-            if corrupt_path.exists():
-                corrupt_path.unlink()
+            with self.assertRaises(json.JSONDecodeError):
+                engine.load_local_positions_store()
+            with self.assertRaises(json.JSONDecodeError):
+                engine.run(output_path=Path(tmp_dir) / "out.json")
 
     def test_missing_positions_file_handling(self):
-        """测试当 trade_positions.json 文件不存在时的容错"""
         missing_path = Path("/tmp/definitely_non_existent_file_12345.json")
         engine = aae.AccountAnalyticsEngine(positions_path=missing_path, offline_mode=True)
         pos, hist = engine.load_local_positions_store()
@@ -603,154 +752,164 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
 
 
 class TestAccountHTMLGenerationAndIntegrity(unittest.TestCase):
-    """5. 测试 account.html 生成物与 DOM 结构完整性"""
+    """5. 测试纯静态 account.html 外壳与 DOM 契约完整性"""
 
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp_dir.cleanup)
-        self.html_path = Path(self.temp_dir.name) / "account.html"
-        self.html_path.write_text(baa.render_account_html(), encoding="utf-8")
-        self.analytics_path = Path(self.temp_dir.name) / "account_analytics.json"
+        self.html = baa.render_account_html()
 
-    def test_build_account_analytics_execution(self):
-        """测试 build_account_analytics 主构建函数正常执行并产出文件"""
+    def test_build_account_analytics_execution_and_size(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            temp_out = Path(tmp_dir) / "test_account.html"
+            temp_out = Path(tmp_dir) / "account.html"
             out = baa.build_account_analytics(output_path=temp_out)
+            self.assertEqual(out, temp_out)
             self.assertTrue(temp_out.exists())
-            self.assertGreater(temp_out.stat().st_size, 5000)
+            size = temp_out.stat().st_size
+            self.assertGreater(size, 5000)
+            self.assertLess(size, 35000)
 
-    def test_account_html_exists_and_valid_size(self):
-        """测试主工程根目录下 account.html 存在且体积充分 (> 20KB)"""
-        self.assertTrue(self.html_path.exists(), "account.html 必须存在于项目根目录")
-        size = self.html_path.stat().st_size
-        self.assertGreater(size, 20480, f"account.html 体积过小 ({size} bytes)，可能未正确渲染")
+    def test_html_is_pure_static_shell_without_inline_assets_or_data(self):
+        self.assertIn('href="static/styles.css"', self.html)
+        self.assertIn('src="static/account.js"', self.html)
+        self.assertIn("chart.js", self.html.lower())
+        self.assertNotIn("<style>", self.html)
+        self.assertNotIn('id="account-data"', self.html)
+        self.assertNotIn("顶级稳健", self.html)
+        self.assertNotIn("$10,000", self.html)
 
-    def test_html_contains_all_key_kpis(self):
-        """验证 HTML 包含所有 10 项核心 KPI 矩阵卡片 ID"""
-        content = self.html_path.read_text(encoding="utf-8")
-        expected_kpis = [
+    def test_html_contains_all_kpi_and_submetric_ids(self):
+        expected_ids = [
+            "sync-time-text",
+            "api-status-badge",
+            "btn-manual-refresh",
+            "refresh-spinner",
+            "account-load-status",
+            "account-report",
+            "kpi-matrix-section",
             "kpi-total-equity",
+            "kpi-initial-capital",
+            "kpi-total-return",
             "kpi-available-margin",
-            "kpi-realized-pnl",
+            "kpi-position-margin",
+            "kpi-margin-badge",
+            "kpi-net-realized-pnl",
+            "kpi-total-fee",
+            "kpi-funding-fee",
             "kpi-unrealized-pnl",
+            "kpi-open-trades",
             "kpi-win-rate",
+            "kpi-wl-record",
+            "kpi-total-trades",
             "kpi-profit-factor",
-            "kpi-max-drawdown",
-            "kpi-sharpe-ratio",
-            "kpi-sortino-ratio",
-            "kpi-total-trades"
+            "kpi-avg-win",
+            "kpi-avg-loss",
+            "kpi-max-dd-pct",
+            "kpi-max-dd-usd",
+            "kpi-sharpe",
+            "kpi-sharpe-rating",
+            "kpi-sortino",
+            "kpi-sortino-rating",
+            "kpi-max-streak",
+            "kpi-avg-hold",
         ]
-        for kpi_id in expected_kpis:
-            self.assertIn(f'id="{kpi_id}"', content, f"account.html 缺少关键 KPI 元素: {kpi_id}")
+        for dom_id in expected_ids:
+            self.assertIn(f'id="{dom_id}"', self.html, f"account.html 缺少元素: {dom_id}")
 
-    def test_html_contains_all_chart_containers(self):
-        """验证 HTML 包含所有 4 个核心图表 canvas 容器及 Chart.js 引入"""
-        content = self.html_path.read_text(encoding="utf-8")
-        expected_charts = [
+    def test_html_contains_all_chart_containers_and_badges(self):
+        expected_ids = [
             "chart-equity-curve",
-            "chart-pnl-drawdown",
             "chart-daily-pnl",
-            "chart-pnl-dist"
+            "chart-win-loss",
+            "chart-pnl-dist",
+            "equity-range-label",
+            "equity-peak-label",
+            "equity-current-label",
+            "daily-days-badge",
+            "win-loss-summary-badge",
+            "dist-summary-badge",
         ]
-        for chart_id in expected_charts:
-            self.assertIn(f'id="{chart_id}"', content, f"account.html 缺少图表容器: {chart_id}")
-        self.assertIn("chart.js", content.lower(), "account.html 缺少 Chart.js 库引用")
+        for dom_id in expected_ids:
+            self.assertIn(f'id="{dom_id}"', self.html, f"account.html 缺少图表或标签: {dom_id}")
 
-    def test_html_contains_active_positions_and_history_tables(self):
-        """验证活跃持仓与历史开平仓全量流水表格结构"""
-        content = self.html_path.read_text(encoding="utf-8")
-        self.assertIn('id="active-positions-panel"', content)
-        self.assertIn('id="active-positions-tbody"', content)
-        self.assertIn('id="trade-history-table"', content)
-        self.assertIn('id="trade-history-tbody"', content)
-        self.assertIn('id="search-input"', content)
+    def test_html_contains_active_positions_9_cols_and_history_controls(self):
+        for dom_id in (
+            "active-positions-panel",
+            "active-pos-count-badge",
+            "short-position-warning",
+            "active-positions-empty",
+            "active-positions-table-wrap",
+            "active-positions-tbody",
+            "trade-history-table",
+            "history-tbody",
+            "history-search-input",
+            "history-outcome-filter",
+            "history-count-badge",
+            "btn-reset-history-filter",
+        ):
+            self.assertIn(f'id="{dom_id}"', self.html)
 
-    def test_html_embedded_json_integrity(self):
-        """验证 account.html 内部嵌入的 JSON 状态数据完整合法"""
-        content = self.html_path.read_text(encoding="utf-8")
-        start_tag = '<script id="account-data" type="application/json">'
-        end_tag = '</script>'
-        self.assertIn(start_tag, content)
+        pos_section = self.html.split('id="active-positions-table-wrap"')[1].split("</table>")[0]
+        self.assertEqual(len(re.findall(r"<th\b", pos_section)), 9)
 
-        start_idx = content.find(start_tag) + len(start_tag)
-        end_idx = content.find(end_tag, start_idx)
-        raw_json = content[start_idx:end_idx].strip()
-
-        data = json.loads(raw_json)
-        self.assertIsInstance(data, dict)
-        self.assertIn("summary", data)
-        self.assertIn("active_positions", data)
-        self.assertIn("trade_history", data)
-        self.assertIn("equity_curve", data)
-        self.assertIn("daily_pnl", data)
-
-        s = data["summary"]
-        self.assertIn("total_equity", s)
-        self.assertIn("win_rate_pct", s)
-        self.assertIn("profit_factor", s)
-        self.assertIn("max_drawdown_pct", s)
+        for sort_col in ("closed_ts", "symbol", "net_pnl", "pnl_pct"):
+            self.assertIn(f'data-sort="{sort_col}"', self.html)
 
     def test_html_global_nav_header_links(self):
-        """验证统一导航栏包含所有三个核心视图链接并高亮账户页面"""
-        content = self.html_path.read_text(encoding="utf-8")
-        self.assertIn('href="index.html"', content)
-        self.assertIn('href="account.html"', content)
-        self.assertIn("strategy_second_leg_playbook.html", content)
-        self.assertIn("账户数据分析", content)
-
-    def test_build_fallback_when_analytics_json_missing(self):
-        """测试当 runs/account_analytics.json 不存在时，build 脚本仍能降级生成有效 HTML"""
-        missing_analytics = Path("/tmp/non_existent_analytics_9999.json")
-        with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as tf:
-            fallback_html_path = Path(tf.name)
-
-        try:
-            baa.build_account_analytics(
-                analytics_path=missing_analytics,
-                output_path=fallback_html_path
-            )
-            self.assertTrue(fallback_html_path.exists())
-            html_text = fallback_html_path.read_text(encoding="utf-8")
-            self.assertIn("kpi-total-equity", html_text)
-            self.assertIn("chart-equity-curve", html_text)
-        finally:
-            if fallback_html_path.exists():
-                fallback_html_path.unlink()
+        self.assertIn('href="index.html"', self.html)
+        self.assertIn('href="account.html"', self.html)
+        self.assertIn("strategy_second_leg_playbook.html", self.html)
+        self.assertIn("账户数据分析", self.html)
 
 
 class TestFullEngineExecution(unittest.TestCase):
     """6. 测试引擎端到端执行、文件输出与原子化写入"""
 
     def test_run_generates_valid_json(self):
-        """测试 AccountAnalyticsEngine.run() 生成符合规范的 JSON 文件"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             out_file = Path(tmp_dir) / "account_analytics.json"
             engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
-            report = engine.run(output_path=out_file)
+            engine.run(output_path=out_file)
 
             self.assertTrue(out_file.exists())
             with open(out_file, "r", encoding="utf-8") as f:
                 saved_data = json.load(f)
 
             self.assertEqual(saved_data["version"], 1)
-            self.assertIn("summary", saved_data)
-            self.assertIn("equity_curve", saved_data)
-            self.assertIn("daily_pnl", saved_data)
-            self.assertIn("trade_history", saved_data)
-            self.assertIn("active_positions", saved_data)
-            self.assertIn("income_breakdown", saved_data)
+            for key in ("summary", "equity_curve", "daily_pnl", "trade_history", "active_positions", "income_breakdown"):
+                self.assertIn(key, saved_data)
 
-            # 验证 summary 必含指标
             s = saved_data["summary"]
-            for field in [
-                "total_equity", "wallet_balance", "available_margin", "cumulative_realized_pnl",
-                "win_rate_pct", "profit_factor", "max_drawdown_pct", "sharpe_ratio", "sortino_ratio"
-            ]:
+            for field in (
+                "initial_capital",
+                "total_equity",
+                "wallet_balance",
+                "available_margin",
+                "position_margin",
+                "net_realized_pnl",
+                "total_unrealized_pnl",
+                "total_funding_fee",
+                "total_fee",
+                "total_return_pct",
+                "open_trades",
+                "closed_trades",
+                "win_count",
+                "loss_count",
+                "breakeven_count",
+                "win_rate_pct",
+                "profit_factor",
+                "avg_win",
+                "avg_loss",
+                "max_drawdown_pct",
+                "max_drawdown_usd",
+                "sharpe_ratio",
+                "sortino_ratio",
+                "sharpe_method",
+                "max_consecutive_wins",
+                "max_consecutive_losses",
+                "avg_hold_duration_str",
+            ):
                 self.assertIn(field, s)
 
     def test_atomic_write_json_atomicity(self):
-        """测试 atomic_write_json 原子化写入"""
         with tempfile.TemporaryDirectory() as tmp_dir:
             target = Path(tmp_dir) / "data.json"
             aae.atomic_write_json(target, {"status": "ok", "step": 1})

@@ -4,206 +4,161 @@
 “突破追多与移动保本系统”实盘风控与信号预警守护进程 (Trade Alert & Risk Management Daemon)
 ==============================================================================
 核心风控四重闭环架构:
-1. Feature 1 (新共振标的提醒): 
-   监控 runs/second_leg_candidates_pool.json，比对 runs/resonance_state.json，
-   当新币种进入共振区 (三重共振或双核黄金共振)，触发 Server酱 微信提醒，
-   指引用户在 TradingView 专属布局 ig0LuDL8 上绘制 15m 下行趋势线。
+1. Feature 1 (新共振标的提醒):
+   监控候选池 (SQLite candidate_snapshot 或 JSON)，比对 runs/resonance_state.json，
+   当新币种进入共振区，触发 Server酱 微信提醒，指引在 TradingView 绘制 15m 下行趋势线。
 2. Feature 2 (15m 突破开多提醒):
-   调用 scripts/tv_trendline_engine.py 读取 TV 云端画线，
-   对已有画线的共振标的，于每个 15m 根 K 线收盘后校验是否实体突破对数阻力线。
-   突破即发 Server酱 开多买点②提醒。
+   调用 tv_trendline_engine 读取 TV 云端画线，
+   对已有画线的共振标的，于每个 15m K 线收盘后校验是否实体突破对数阻力线。
 3. Feature 3 (持仓破线无条件止损):
    针对 runs/trade_positions.json 中的开仓持仓，
    若 15m 收盘价跌破对应趋势线支撑，立即发出最高级别紧急平多止损通知。
 4. Feature 4 (持仓动态移动止盈保护):
-   针对开仓持仓，实时追踪币安最新成交价。
-   当价格涨幅达到 +6% (>= entry_price * 1.06) 时，自动将止损线上移至 +1% (entry_price * 1.01)，
-   锁定保本利润并推送通知；后续价格若回踩 <= 移动止损线，发出止盈离场平仓通知。
+   针对开仓持仓，批量实时追踪币安最新成交价。
+   当价格涨幅达到 +6% 时自动上移止损至 +1%，回踩触线发出止盈离场通知。
 ==============================================================================
 """
 
+from __future__ import annotations
+
+import argparse
+import json
+import logging
 import os
+import signal
+import sqlite3
 import sys
 import time
-import json
-import math
-import signal
-import logging
-import argparse
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
-import urllib.request
 import urllib.error
-import urllib.parse
+import urllib.request
+from contextlib import closing, contextmanager
+from functools import wraps
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
 
-# 路径基准
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
-RUNS_DIR = PROJECT_ROOT / "runs"
-CONFIG_DIR = PROJECT_ROOT / "config"
 
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 尝试导入 TV 画线引擎模块
-try:
-    import tv_trendline_engine as tve
-except ImportError:
-    try:
-        from scripts import tv_trendline_engine as tve
-    except ImportError:
-        tve = None
-
-# 尝试导入币安实盘持仓客户端
-try:
-    import binance_position_client as bpc
-except ImportError:
-    try:
-        from scripts import binance_position_client as bpc
-    except ImportError:
-        bpc = None
-
-# 日志初始化
-LOG_FILE = RUNS_DIR / "trade_alert_daemon.log"
-RUNS_DIR.mkdir(parents=True, exist_ok=True)
-CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler(str(LOG_FILE), encoding="utf-8")
-    ]
+from binance_client import (  # noqa: E402
+    BinanceAPIError,
+    BinanceFuturesClient,
+    fetch_ticker_prices,
+    get_closed_15m_candle,
 )
+import binance_position_client as bpc  # noqa: E402
+from config import (  # noqa: E402
+    BEIJING_TZ,
+    DEFAULT_ENV_PATH,
+    DEFAULT_POOL_PATH,
+    DEFAULT_POSITIONS_PATH,
+    DEFAULT_RESONANCE_STATE_PATH,
+    DEFAULT_TV_LAYOUT_ID,
+    RUNS_DIR,
+    atomic_write_json,
+    clean_symbol,
+    file_lock,
+    get_beijing_time_str,
+    load_dotenv,
+    open_sqlite_connection,
+    resolve_database_path,
+)
+import tv_trendline_engine as tve  # noqa: E402
+from tv_trendline_engine import (  # noqa: E402
+    calculate_log_resistance,
+    is_valid_15m_trendline,
+)
+
+LOG_FILE = RUNS_DIR / "trade_alert_daemon.log"
 logger = logging.getLogger("trade_alert_daemon")
-
-# 默认配置路径
-DEFAULT_CONFIG_PATH = CONFIG_DIR / "alerts_config.json"
-DEFAULT_POSITIONS_PATH = RUNS_DIR / "trade_positions.json"
-DEFAULT_RESONANCE_STATE_PATH = RUNS_DIR / "resonance_state.json"
-DEFAULT_POOL_PATH = RUNS_DIR / "second_leg_candidates_pool.json"
-DEFAULT_TV_LAYOUT_ID = "ig0LuDL8"
+_NOTIFIED_KEY_MAX_AGE_SEC = 30 * 86400
 
 
-# ==============================================================================
-# 0. 配置与安全存取实用工具
-# ==============================================================================
+def configure_logging(log_file: Optional[Path] = LOG_FILE) -> list[logging.Handler]:
+    """配置标准输出与文件日志处理器（显式返回文件处理器便于退出时关闭）。"""
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
-def load_dotenv(env_path: Path) -> dict:
-    """解析 .env 环境变量文件"""
-    res = {}
-    if env_path and env_path.exists():
+    managed_handlers: list[logging.Handler] = []
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
+        sh = logging.StreamHandler(sys.stdout)
+        sh.setFormatter(fmt)
+        root.addHandler(sh)
+        managed_handlers.append(sh)
+
+    if log_file is not None:
+        target = Path(log_file)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        resolved = str(target.resolve())
+        already = any(
+            isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == resolved
+            for h in root.handlers
+        )
+        if not already:
+            fh = logging.FileHandler(str(target), encoding="utf-8")
+            fh.setFormatter(fmt)
+            root.addHandler(fh)
+            managed_handlers.append(fh)
+
+    return managed_handlers
+
+
+def close_managed_handlers(handlers: list[logging.Handler]) -> None:
+    """刷新并关闭日志处理器，避免文件描述符泄漏。"""
+    root = logging.getLogger()
+    for h in handlers:
         try:
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        res[k.strip()] = v.strip().strip("\"'")
-        except Exception as e:
-            logger.debug(f"读取 .env 异常: {e}")
-    return res
+            h.flush()
+            h.close()
+        finally:
+            if h in root.handlers:
+                root.removeHandler(h)
 
 
-def load_config(
-    config_path: Path = DEFAULT_CONFIG_PATH,
-    env_path: Optional[Path] = None,
-) -> dict:
+def _normalize_futures_symbol(symbol: str) -> str:
+    sym = clean_symbol(symbol)
+    if sym and not sym.endswith(("USDT", "USDC", "BUSD")):
+        sym = f"{sym}USDT"
+    return sym
+
+
+# ==============================================================================
+# 0. 配置加载
+# ==============================================================================
+
+def load_config(env_path: Optional[Path] = None) -> dict[str, Any]:
     """
-    统一加载系统配置与密钥。
-    主配置源: 项目根目录 .env 文件
-    加载优先级: OS环境变量 > .env 文件 > config/alerts_config.json > 代码内置默认值
+    统一从环境变量与 .env 文件加载守护进程配置与密钥。
+    优先级：OS 环境变量 > .env 文件 > 内置默认值。
     """
-    cfg = {
-        "serverchan_sendkey": "",
-        "binance_api_key": "",
-        "binance_api_secret": "",
-        "tradingview_layout_id": DEFAULT_TV_LAYOUT_ID,
-        "check_interval_seconds": 10,
+    target_env = Path(env_path) if env_path is not None else DEFAULT_ENV_PATH
+    dotenv_map = load_dotenv(target_env) if target_env else {}
+
+    def _setting(key: str, default: str = "") -> str:
+        val = os.environ.get(key)
+        if val is not None and val != "":
+            return val
+        if key in dotenv_map and dotenv_map[key] != "":
+            return dotenv_map[key]
+        return default
+
+    return {
+        "serverchan_sendkey": _setting("SERVERCHAN_SENDKEY", ""),
+        "binance_api_key": _setting("BINANCE_API_KEY", ""),
+        "binance_api_secret": _setting("BINANCE_API_SECRET", ""),
+        "tradingview_layout_id": _setting("TRADINGVIEW_LAYOUT_ID", DEFAULT_TV_LAYOUT_ID),
         "resonance_pool_file": str(DEFAULT_POOL_PATH),
         "resonance_state_file": str(DEFAULT_RESONANCE_STATE_PATH),
         "positions_file": str(DEFAULT_POSITIONS_PATH),
-        "trailing_activation_pct": 6.0,
-        "trailing_lock_pct": 1.0,
+        "trailing_activation_pct": float(_setting("TRAILING_ACTIVATION_PCT", "6.0")),
+        "trailing_lock_pct": float(_setting("TRAILING_LOCK_PCT", "1.0")),
+        "database_path": resolve_database_path(env_path=target_env),
     }
-
-    # 1. 尝试从 config/alerts_config.json 读取基础配置 (向下兼容)
-    if config_path and config_path.exists():
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    cfg.update(loaded)
-        except Exception as e:
-            logger.warning(f"读取配置文件 {config_path} 异常，采用默认值: {e}")
-
-    # 2. 统一从根目录 .env 文件合并读取密钥与配置 (主配置中心)
-    target_env = env_path if env_path is not None else (PROJECT_ROOT / ".env")
-    dotenv_map = load_dotenv(target_env) if target_env else {}
-    if dotenv_map:
-        if "CMC_API_KEY" in dotenv_map and dotenv_map["CMC_API_KEY"]:
-            cfg["cmc_api_key"] = dotenv_map["CMC_API_KEY"]
-        if "SERVERCHAN_SENDKEY" in dotenv_map and dotenv_map["SERVERCHAN_SENDKEY"]:
-            cfg["serverchan_sendkey"] = dotenv_map["SERVERCHAN_SENDKEY"]
-        if "BINANCE_API_KEY" in dotenv_map and dotenv_map["BINANCE_API_KEY"]:
-            cfg["binance_api_key"] = dotenv_map["BINANCE_API_KEY"]
-        if "BINANCE_API_SECRET" in dotenv_map and dotenv_map["BINANCE_API_SECRET"]:
-            cfg["binance_api_secret"] = dotenv_map["BINANCE_API_SECRET"]
-        if "TRADINGVIEW_LAYOUT_ID" in dotenv_map and dotenv_map["TRADINGVIEW_LAYOUT_ID"]:
-            cfg["tradingview_layout_id"] = dotenv_map["TRADINGVIEW_LAYOUT_ID"]
-        elif "TV_LAYOUT_ID" in dotenv_map and dotenv_map["TV_LAYOUT_ID"]:
-            cfg["tradingview_layout_id"] = dotenv_map["TV_LAYOUT_ID"]
-        if "TRAILING_ACTIVATION_PCT" in dotenv_map and dotenv_map["TRAILING_ACTIVATION_PCT"]:
-            try:
-                cfg["trailing_activation_pct"] = float(dotenv_map["TRAILING_ACTIVATION_PCT"])
-            except ValueError:
-                pass
-        if "TRAILING_LOCK_PCT" in dotenv_map and dotenv_map["TRAILING_LOCK_PCT"]:
-            try:
-                cfg["trailing_lock_pct"] = float(dotenv_map["TRAILING_LOCK_PCT"])
-            except ValueError:
-                pass
-
-    # 3. 环境变量优先级最高
-    env_cmc = os.environ.get("CMC_API_KEY")
-    if env_cmc:
-        cfg["cmc_api_key"] = env_cmc
-    env_sendkey = os.environ.get("SERVERCHAN_SENDKEY")
-    if env_sendkey:
-        cfg["serverchan_sendkey"] = env_sendkey
-    env_layout = os.environ.get("TRADINGVIEW_LAYOUT_ID") or os.environ.get("TV_LAYOUT_ID")
-    if env_layout:
-        cfg["tradingview_layout_id"] = env_layout
-    env_b_key = os.environ.get("BINANCE_API_KEY")
-    if env_b_key:
-        cfg["binance_api_key"] = env_b_key
-    env_b_sec = os.environ.get("BINANCE_API_SECRET")
-    if env_b_sec:
-        cfg["binance_api_secret"] = env_b_sec
-
-    return cfg
-
-
-def atomic_write_json(filepath: Path, data: Any):
-    """安全原子写入 JSON 文件，避免写入中断破坏文件"""
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = filepath.with_suffix(f".tmp.{os.getpid()}.{int(time.time()*1000)}")
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, filepath)
-
-
-def get_beijing_time_str(ts_sec: Optional[float] = None) -> str:
-    """格式化东八区北京时间"""
-    tz_bj = timezone(timedelta(hours=8))
-    dt = datetime.fromtimestamp(ts_sec if ts_sec is not None else time.time(), tz=tz_bj)
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ==============================================================================
@@ -211,7 +166,7 @@ def get_beijing_time_str(ts_sec: Optional[float] = None) -> str:
 # ==============================================================================
 
 class ServerChanNotifier:
-    """Server酱推送服务客户端，支持真实推送与优雅 Dry-Run / Log-Only 模式"""
+    """Server酱推送服务客户端，支持真实推送与 Dry-Run / 日志模式"""
 
     def __init__(self, sendkey: str = "", dry_run: bool = False):
         self.sendkey = (sendkey or "").strip()
@@ -245,9 +200,9 @@ class ServerChanNotifier:
             data=payload,
             headers={
                 "Content-Type": "application/json; charset=utf-8",
-                "User-Agent": "TradeAlertDaemon/1.0"
+                "User-Agent": "TradeAlertDaemon/1.0",
             },
-            method="POST"
+            method="POST",
         )
 
         for attempt in range(2):
@@ -257,225 +212,59 @@ class ServerChanNotifier:
                     if resp_data.get("code") == 0 or resp_data.get("errno") == 0:
                         logger.info(f"    ✓ Server酱推送成功: {title}")
                         return True
-                    else:
-                        logger.error(f"    ✗ Server酱接口返回错误: {resp_data}")
-                        return False
-            except Exception as e:
-                logger.warning(f"    ⚠️ Server酱网络请求异常 (尝试 {attempt+1}/2): {e}")
-                time.sleep(1.0)
+                    logger.error(f"    ✗ Server酱接口返回错误: {resp_data}")
+                    return False
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+                logger.warning(f"    ⚠️ Server酱网络请求异常 (尝试 {attempt + 1}/2): {e}")
+                if attempt == 0:
+                    time.sleep(1.0)
         return False
 
 
 # ==============================================================================
-# 2. 币安合约行情与 15m K线接口
+# 2. 画线缓存接入
 # ==============================================================================
 
-def get_binance_ticker_price(symbol: str) -> float:
-    """获取币安永续合约当前价格"""
-    sym = symbol.upper()
-    if not sym.endswith("USDT"):
-        sym = f"{sym}USDT"
-    url = f"https://www.binance.com/fapi/v1/ticker/price?symbol={sym}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return float(data.get("price", 0.0))
-    except Exception as e:
-        logger.warning(f"获取 {sym} 实时价格失败: {e}")
-        return 0.0
-
-
-def get_binance_closed_15m_candle(symbol: str) -> Optional[dict]:
-    """
-    拉取币安永续合约最新已收盘的 15m K 线，同时附带倒数第二根已收盘 K 线 (prev_candle)，
-    供 15m 严格 Crossover (下穿或线上穿越) 突破判定使用。
-    """
-    sym = symbol.upper()
-    if not sym.endswith("USDT"):
-        sym = f"{sym}USDT"
-    url = f"https://www.binance.com/fapi/v1/klines?symbol={sym}&interval=15m&limit=5"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=6) as resp:
-            klines = json.loads(resp.read().decode("utf-8"))
-            if not klines or len(klines) < 2:
-                return None
-            
-            now_ms = int(time.time() * 1000)
-            # 倒数第一根通常是正在进行的未闭合K线，倒数第二根为确定闭合的K线
-            if klines[-1][6] < now_ms:
-                # 倒数第一根也已收盘
-                candle = klines[-1]
-                prev_candle_raw = klines[-2] if len(klines) >= 2 else None
-            else:
-                candle = klines[-2]
-                prev_candle_raw = klines[-3] if len(klines) >= 3 else None
-
-            open_dt = datetime.fromtimestamp(candle[0] / 1000.0, tz=timezone(timedelta(hours=8)))
-            close_dt = datetime.fromtimestamp(candle[6] / 1000.0, tz=timezone(timedelta(hours=8)))
-
-            prev_candle_dict = None
-            if prev_candle_raw:
-                p_open_dt = datetime.fromtimestamp(prev_candle_raw[0] / 1000.0, tz=timezone(timedelta(hours=8)))
-                p_close_dt = datetime.fromtimestamp(prev_candle_raw[6] / 1000.0, tz=timezone(timedelta(hours=8)))
-                prev_candle_dict = {
-                    "symbol": sym,
-                    "open_time": int(prev_candle_raw[0] // 1000),
-                    "close_time": int(prev_candle_raw[6] // 1000),
-                    "open": float(prev_candle_raw[1]),
-                    "high": float(prev_candle_raw[2]),
-                    "low": float(prev_candle_raw[3]),
-                    "close": float(prev_candle_raw[4]),
-                    "volume": float(prev_candle_raw[5]),
-                    "candle_time": p_open_dt.strftime("%Y-%m-%d %H:%M"),
-                    "candle_timestamp": int(prev_candle_raw[0] // 1000),
-                    "is_closed": True
-                }
-
-            return {
-                "symbol": sym,
-                "open_time": int(candle[0] // 1000),
-                "close_time": int(candle[6] // 1000),
-                "open": float(candle[1]),
-                "high": float(candle[2]),
-                "low": float(candle[3]),
-                "close": float(candle[4]),
-                "volume": float(candle[5]),
-                "candle_time": open_dt.strftime("%Y-%m-%d %H:%M"),
-                "candle_timestamp": int(candle[0] // 1000),
-                "is_closed": True,
-                "prev_candle": prev_candle_dict
-            }
-    except Exception as e:
-        logger.warning(f"拉取 {sym} 15m K线失败: {e}")
-        return None
-
-
-def is_valid_15m_trendline(line: dict, current_time: Optional[float] = None) -> bool:
-    """
-    趋势线有效性与过滤规则校验:
-    1. 周期过滤: 仅允许 15m 画线 (line.get('interval') == '15' 或 point interval == '15' 或缺失默认15m)。
-       严格忽略非15m画线 (例如 '240', 'D', '1D', '60', '1W' 等)。
-    2. 新鲜度过滤: 趋势线第二个锚点 t2 或 server_update_time 必须为近期有效 (72小时以内)。
-    """
-    # 1. 周期过滤
-    line_iv = line.get("interval")
-    if not line_iv and "state" in line and isinstance(line["state"], dict):
-        line_iv = line["state"].get("interval")
-    if not line_iv and "points" in line and isinstance(line["points"], list):
-        for pt in line["points"]:
-            if isinstance(pt, dict) and pt.get("interval"):
-                line_iv = pt.get("interval")
-                break
-
-    if line_iv is not None:
-        iv_str = str(line_iv).strip().upper()
-        if iv_str and iv_str not in ("15", "15M"):
-            return False
-
-    # 2. 新鲜度过滤 (72 小时以内 = 259,200 秒)
-    MAX_AGE_SEC = 72 * 3600
-    now_ts = current_time if current_time is not None else time.time()
-
-    t2 = line.get("t2")
-    if t2 is None and "points" in line and len(line["points"]) >= 2:
-        t2 = line["points"][1].get("time_t") or line["points"][1].get("time")
-
-    s_time = line.get("server_update_time")
-    if s_time is not None:
-        try:
-            s_time_sec = float(s_time) / 1000.0 if float(s_time) > 1e11 else float(s_time)
-        except (ValueError, TypeError):
-            s_time_sec = None
-    else:
-        s_time_sec = None
-
-    is_recent = False
-    if t2 is not None:
-        try:
-            t2_sec = float(t2)
-            if (now_ts - t2_sec) <= MAX_AGE_SEC:
-                is_recent = True
-        except (ValueError, TypeError):
-            pass
-
-    if not is_recent and s_time_sec is not None:
-        if (now_ts - s_time_sec) <= MAX_AGE_SEC:
-            is_recent = True
-
-    return is_recent
-
-
-# ==============================================================================
-# 3. 对数坐标趋势线计算与画线引擎接入
-# ==============================================================================
-
-_DRAWINGS_CACHE = {"data": None, "ts": 0, "layout_id": ""}
-
-
-def calculate_log_resistance(p1: float, t1: float, p2: float, t2: float, target_t: float) -> float:
-    """
-    计算 TradingView 对数坐标系下的趋势线阻力/支撑投影价:
-    数学公式: P(t) = P1 * (P2 / P1) ** ((t - t1) / (t2 - t1))
-    """
-    if tve and hasattr(tve, "calculate_log_resistance"):
-        try:
-            return float(tve.calculate_log_resistance(p1, t1, p2, t2, target_t))
-        except Exception as e:
-            logger.debug(f"调用 tv_trendline_engine 计算异常，回退内置算法: {e}")
-
-    if p1 <= 0 or p2 <= 0 or t2 == t1:
-        return 0.0
-    try:
-        return float(p1 * ((p2 / p1) ** ((target_t - t1) / (t2 - t1))))
-    except Exception:
-        return 0.0
+_DRAWINGS_CACHE: dict[str, Any] = {"data": None, "ts": 0.0, "layout_id": ""}
 
 
 def fetch_layout_drawings(
     layout_id: str = DEFAULT_TV_LAYOUT_ID,
     ttl_sec: int = 60,
-    filter_15m: bool = False
+    filter_15m: bool = False,
 ) -> Dict[str, Any]:
     """
-    从 tv_trendline_engine 获取 TradingView 布局中的画线数据 (支持内存与本地缓存)。
-    若 filter_15m=True，则自动过滤剔除非15m周期或超过72小时未更新的陈旧失效画线。
+    从 tv_trendline_engine 获取 TradingView 布局中的画线数据 (支持内存与近期快照缓存)。
+    在线拉取失败时显式抛出异常，避免覆盖有效状态或误判 15m 窗口完成。
     """
     global _DRAWINGS_CACHE
     now = time.time()
-    raw_drawings = None
+    raw_drawings: Optional[dict[str, Any]] = None
 
     if (
         _DRAWINGS_CACHE["data"] is not None
         and _DRAWINGS_CACHE["layout_id"] == layout_id
-        and (now - _DRAWINGS_CACHE["ts"]) < ttl_sec
+        and (now - float(_DRAWINGS_CACHE["ts"])) < ttl_sec
     ):
         raw_drawings = _DRAWINGS_CACHE["data"]
     else:
-        # 优先检测本地近期生成的快照缓存 (有效窗口 180s)
         local_cache_file = RUNS_DIR / f"tradingview_drawings_{layout_id}.json"
         if local_cache_file.exists():
-            try:
-                mtime = local_cache_file.stat().st_mtime
-                if now - mtime < 180:
-                    with open(local_cache_file, "r", encoding="utf-8") as f:
-                        cdata = json.load(f)
-                        drawings = cdata.get("drawings_by_symbol", {})
-                        if drawings:
-                            _DRAWINGS_CACHE = {"data": drawings, "ts": now, "layout_id": layout_id}
-                            raw_drawings = drawings
-            except Exception:
-                pass
-
-        if raw_drawings is None and tve and hasattr(tve, "get_layout_drawings"):
-            try:
-                drawings = tve.get_layout_drawings(layout_id)
-                if isinstance(drawings, dict):
+            mtime = local_cache_file.stat().st_mtime
+            if now - mtime < 180:
+                with open(local_cache_file, "r", encoding="utf-8") as f:
+                    cdata = json.load(f)
+                drawings = cdata.get("drawings_by_symbol") if isinstance(cdata, dict) else None
+                if isinstance(drawings, dict) and drawings:
                     _DRAWINGS_CACHE = {"data": drawings, "ts": now, "layout_id": layout_id}
                     raw_drawings = drawings
-            except Exception as e:
-                logger.warning(f"获取 TV 布局画线异常: {e}")
+
+        if raw_drawings is None:
+            drawings = tve.get_layout_drawings(layout_id)
+            if not isinstance(drawings, dict):
+                raise RuntimeError(f"Unexpected drawings payload for {layout_id}: {type(drawings).__name__}")
+            _DRAWINGS_CACHE = {"data": drawings, "ts": now, "layout_id": layout_id}
+            raw_drawings = drawings
 
     if not raw_drawings:
         return {}
@@ -483,7 +272,7 @@ def fetch_layout_drawings(
     if not filter_15m:
         return raw_drawings
 
-    filtered_map = {}
+    filtered_map: dict[str, Any] = {}
     for sym, lines in raw_drawings.items():
         line_list = lines if isinstance(lines, list) else [lines]
         valid_lines = [l for l in line_list if is_valid_15m_trendline(l, current_time=now)]
@@ -493,47 +282,93 @@ def fetch_layout_drawings(
 
 
 # ==============================================================================
-# 4. 持仓状态与共振状态存储管理器
+# 3. 持仓状态与共振状态存储管理器 (共享事务基类)
 # ==============================================================================
 
-class PositionStore:
+class JsonStateStore:
+    """支持跨进程 fcntl 独占锁与可重入事务的 JSON 状态存储基类（损坏 JSON 显式失败，绝不静默清空）。"""
+
+    def __init__(
+        self,
+        filepath: Path,
+        *,
+        timestamp_key: str,
+        default_factory: Callable[[], Dict[str, Any]],
+    ):
+        self.filepath = Path(filepath)
+        self._timestamp_key = timestamp_key
+        self._default_factory = default_factory
+        self.data: Dict[str, Any] = default_factory()
+        self._last_mtime_ns: int = 0
+        self._lock_depth: int = 0
+        self.load(force=True)
+
+    @contextmanager
+    def transaction(self):
+        """跨进程独占读-改-写事务上下文：加锁后强制从磁盘重载最新状态，支持同实例嵌套重入。"""
+        if self._lock_depth > 0:
+            self._lock_depth += 1
+            try:
+                yield
+            finally:
+                self._lock_depth -= 1
+            return
+        with file_lock(self.filepath):
+            self._lock_depth += 1
+            try:
+                self.load(force=True)
+                yield
+            finally:
+                self._lock_depth -= 1
+
+    def _normalize_loaded(self, content: Dict[str, Any]) -> Dict[str, Any]:
+        return content
+
+    def load(self, force: bool = False) -> None:
+        if not self.filepath.exists():
+            if self._last_mtime_ns != 0:
+                self.data = self._default_factory()
+                self._last_mtime_ns = 0
+            return
+
+        mtime_ns = self.filepath.stat().st_mtime_ns
+        if force or mtime_ns != self._last_mtime_ns:
+            with open(self.filepath, "r", encoding="utf-8") as f:
+                content = json.load(f)
+            if not isinstance(content, dict):
+                raise ValueError(f"State file {self.filepath} must contain a JSON object")
+            self.data = self._normalize_loaded(content)
+            self._last_mtime_ns = mtime_ns
+
+    def save(self) -> None:
+        self.data[self._timestamp_key] = get_beijing_time_str()
+        if self._lock_depth > 0:
+            atomic_write_json(self.filepath, self.data)
+            self._last_mtime_ns = self.filepath.stat().st_mtime_ns
+        else:
+            with file_lock(self.filepath):
+                atomic_write_json(self.filepath, self.data)
+                self._last_mtime_ns = self.filepath.stat().st_mtime_ns
+
+
+class PositionStore(JsonStateStore):
     """管理 runs/trade_positions.json 持仓状态数据"""
 
     def __init__(self, filepath: Path = DEFAULT_POSITIONS_PATH):
-        self.filepath = Path(filepath)
-        self.data: Dict[str, Any] = {"version": 1, "positions": [], "history": []}
-        self._last_mtime: float = 0.0
-        self.load(force=True)
+        super().__init__(
+            filepath,
+            timestamp_key="updated_at",
+            default_factory=lambda: {"version": 1, "positions": [], "history": []},
+        )
 
-    def load(self, force: bool = False):
-        if self.filepath.exists():
-            try:
-                mtime = self.filepath.stat().st_mtime
-                if force or mtime > self._last_mtime:
-                    with open(self.filepath, "r", encoding="utf-8") as f:
-                        content = json.load(f)
-                        if isinstance(content, dict):
-                            self.data = content
-                            if "positions" not in self.data:
-                                self.data["positions"] = []
-                            if "history" not in self.data:
-                                self.data["history"] = []
-                            self._last_mtime = mtime
-            except Exception as e:
-                logger.error(f"加载持仓文件失败: {e}")
-
-    def save(self):
-        from config import file_lock
-        self.data["updated_at"] = get_beijing_time_str()
-        with file_lock(self.filepath):
-            atomic_write_json(self.filepath, self.data)
-            try:
-                self._last_mtime = self.filepath.stat().st_mtime
-            except Exception:
-                pass
+    def _normalize_loaded(self, content: Dict[str, Any]) -> Dict[str, Any]:
+        content.setdefault("positions", [])
+        content.setdefault("history", [])
+        return content
 
     def get_open_positions(self) -> List[Dict[str, Any]]:
-        self.load()
+        if self._lock_depth == 0:
+            self.load()
         return [p for p in self.data.get("positions", []) if p.get("status") == "OPEN"]
 
     def add_position(
@@ -543,148 +378,235 @@ class PositionStore:
         amount: float = 0.0,
         trendline: Optional[dict] = None,
         notes: str = "",
-        **kwargs
+        *,
+        auto_save: bool = True,
+        **kwargs: Any,
     ) -> dict:
-        self.load()
-        sym = symbol.upper()
-        if not sym.endswith("USDT"):
-            sym = f"{sym}USDT"
-        
-        # 检查是否已存在同币种未平仓仓位
-        for p in self.get_open_positions():
-            if p["symbol"] == sym:
-                logger.info(f"仓位 {sym} 已存在，正在更新开仓价 {entry_price}...")
-                p["entry_price"] = float(entry_price)
-                if amount > 0:
-                    p["amount"] = float(amount)
-                if trendline:
-                    p["trendline"] = trendline
-                if notes:
-                    p["notes"] = notes
-                p.update(kwargs)
-                p["updated_at"] = get_beijing_time_str()
+        entry_val = float(entry_price)
+        if entry_val <= 0:
+            raise ValueError(f"entry_price must be positive for {symbol}: {entry_price}")
+        if not auto_save and self._lock_depth == 0:
+            raise RuntimeError("auto_save=False requires an active transaction()")
+
+        with self.transaction():
+            sym = _normalize_futures_symbol(symbol)
+            for p in self.get_open_positions():
+                if p["symbol"] == sym:
+                    logger.info(f"仓位 {sym} 已存在，正在更新开仓价 {entry_val}...")
+                    p["entry_price"] = entry_val
+                    if amount > 0:
+                        p["amount"] = float(amount)
+                    if trendline:
+                        p["trendline"] = trendline
+                    if notes:
+                        p["notes"] = notes
+                    p.update(kwargs)
+                    p["updated_at"] = get_beijing_time_str()
+                    if auto_save:
+                        self.save()
+                    return p
+
+            pos = {
+                "symbol": sym,
+                "entry_price": entry_val,
+                "amount": float(amount),
+                "entry_time": get_beijing_time_str(),
+                "highest_price": entry_val,
+                "current_price": entry_val,
+                "trailing_stop_triggered": False,
+                "trailing_stop_price": None,
+                "stop_loss_notified": False,
+                "profit_lock_notified": False,
+                "trendline": trendline,
+                "status": "OPEN",
+                "notes": notes or "Manual / Signal Entry",
+            }
+            pos.update(kwargs)
+            self.data["positions"].append(pos)
+            if auto_save:
                 self.save()
-                return p
+            logger.info(f"✅ 成功录入新持仓: {sym} @ {entry_val} (数量: {amount})")
+            return pos
 
-        pos = {
-            "symbol": sym,
-            "entry_price": float(entry_price),
-            "amount": float(amount),
-            "entry_time": get_beijing_time_str(),
-            "highest_price": float(entry_price),
-            "current_price": float(entry_price),
-            "trailing_stop_triggered": False,
-            "trailing_stop_price": None,
-            "stop_loss_notified": False,
-            "profit_lock_notified": False,
-            "trendline": trendline,
-            "status": "OPEN",
-            "notes": notes or "Manual / Signal Entry"
-        }
-        pos.update(kwargs)
-        self.data["positions"].append(pos)
-        self.save()
-        logger.info(f"✅ 成功录入新持仓: {sym} @ {entry_price} (数量: {amount})")
-        return pos
+    def close_position(
+        self,
+        symbol: str,
+        reason: str = "MANUAL_CLOSE",
+        exit_price: Optional[float] = None,
+        *,
+        auto_save: bool = True,
+    ) -> Optional[dict]:
+        if not auto_save and self._lock_depth == 0:
+            raise RuntimeError("auto_save=False requires an active transaction()")
+        with self.transaction():
+            sym = _normalize_futures_symbol(symbol)
+            target_pos = None
+            for p in self.data.get("positions", []):
+                if p["symbol"] == sym and p.get("status") == "OPEN":
+                    target_pos = p
+                    break
 
-    def close_position(self, symbol: str, reason: str = "MANUAL_CLOSE", exit_price: Optional[float] = None) -> Optional[dict]:
-        self.load()
-        sym = symbol.upper()
-        if not sym.endswith("USDT"):
-            sym = f"{sym}USDT"
+            if not target_pos:
+                logger.warning(f"未找到 {sym} 的开仓记录")
+                return None
 
-        target_pos = None
-        for p in self.data.get("positions", []):
-            if p["symbol"] == sym and p.get("status") == "OPEN":
-                target_pos = p
-                break
+            target_pos["status"] = reason
+            target_pos["closed_at"] = get_beijing_time_str()
+            if exit_price is not None and float(exit_price) > 0:
+                target_pos["exit_price"] = float(exit_price)
+                entry_val = float(target_pos["entry_price"])
+                if entry_val > 0:
+                    pnl_pct = (target_pos["exit_price"] - entry_val) / entry_val * 100.0
+                    target_pos["realized_pnl_pct"] = round(pnl_pct, 2)
 
-        if not target_pos:
-            logger.warning(f"未找到 {sym} 的开仓记录")
-            return None
-
-        target_pos["status"] = reason
-        target_pos["closed_at"] = get_beijing_time_str()
-        if exit_price:
-            target_pos["exit_price"] = float(exit_price)
-            pnl_pct = (target_pos["exit_price"] - target_pos["entry_price"]) / target_pos["entry_price"] * 100.0
-            target_pos["realized_pnl_pct"] = round(pnl_pct, 2)
-
-        # 移动至历史
-        self.data["positions"].remove(target_pos)
-        self.data["history"].append(target_pos)
-        self.save()
-        logger.info(f"✅ 成功平仓/移除持仓: {sym} (原因: {reason})")
-        return target_pos
+            self.data["positions"].remove(target_pos)
+            self.data["history"].append(target_pos)
+            if auto_save:
+                self.save()
+            logger.info(f"✅ 成功平仓/移除持仓: {sym} (原因: {reason})")
+            return target_pos
 
 
-class ResonanceStateStore:
+class ResonanceStateStore(JsonStateStore):
     """管理 runs/resonance_state.json 共振状态记忆"""
 
     def __init__(self, filepath: Path = DEFAULT_RESONANCE_STATE_PATH):
-        self.filepath = Path(filepath)
-        self.data: Dict[str, Any] = {
-            "version": 1,
-            "last_updated": "",
-            "active_resonance_symbols": [],
-            "notified_breakout_keys": [],
-            "history": {}
-        }
-        self._last_mtime: float = 0.0
-        self.load(force=True)
+        super().__init__(
+            filepath,
+            timestamp_key="last_updated",
+            default_factory=lambda: {
+                "version": 1,
+                "initialized": False,
+                "last_updated": "",
+                "active_resonance_symbols": [],
+                "notified_breakout_keys": [],
+                "notified_breakout_times": {},
+                "history": {},
+            },
+        )
 
-    def load(self, force: bool = False):
-        if self.filepath.exists():
-            try:
-                mtime = self.filepath.stat().st_mtime
-                if force or mtime > self._last_mtime:
-                    with open(self.filepath, "r", encoding="utf-8") as f:
-                        content = json.load(f)
-                        if isinstance(content, dict):
-                            self.data = content
-                            if "active_resonance_symbols" not in self.data:
-                                self.data["active_resonance_symbols"] = []
-                            if "notified_breakout_keys" not in self.data:
-                                self.data["notified_breakout_keys"] = []
-                            if "history" not in self.data:
-                                self.data["history"] = {}
-                            self._last_mtime = mtime
-            except Exception as e:
-                logger.error(f"加载共振状态文件失败: {e}")
+    def _normalize_loaded(self, content: Dict[str, Any]) -> Dict[str, Any]:
+        content.setdefault("active_resonance_symbols", [])
+        content.setdefault("notified_breakout_keys", [])
+        content.setdefault("notified_breakout_times", {})
+        content.setdefault("history", {})
+        if "initialized" not in content:
+            content["initialized"] = bool(
+                content.get("last_updated")
+                or content["active_resonance_symbols"]
+                or content["history"]
+            )
+        return content
 
-    def save(self):
-        from config import file_lock
-        self.data["last_updated"] = get_beijing_time_str()
-        with file_lock(self.filepath):
-            atomic_write_json(self.filepath, self.data)
-            try:
-                self._last_mtime = self.filepath.stat().st_mtime
-            except Exception:
-                pass
-
-    def get_active_symbols(self) -> set:
-        self.load()
+    def get_active_symbols(self) -> set[str]:
+        if self._lock_depth == 0:
+            self.load()
         return set(self.data.get("active_resonance_symbols", []))
 
     def has_breakout_notified(self, key: str) -> bool:
-        self.load()
+        if self._lock_depth == 0:
+            self.load()
         return key in self.data.get("notified_breakout_keys", [])
 
-    def mark_breakout_notified(self, key: str):
-        self.load()
-        keys = self.data.setdefault("notified_breakout_keys", [])
-        if key not in keys:
-            keys.append(key)
-            # 保持最近 200 个防重记录
-            if len(keys) > 200:
-                self.data["notified_breakout_keys"] = keys[-200:]
-            self.save()
+    def mark_breakout_notified(
+        self,
+        key: str,
+        *,
+        timestamp_sec: Optional[int] = None,
+        active_line_keys: Optional[set[str]] = None,
+        auto_save: bool = True,
+    ) -> None:
+        if not auto_save and self._lock_depth == 0:
+            raise RuntimeError("auto_save=False requires an active transaction()")
+        with self.transaction():
+            now_sec = int(timestamp_sec if timestamp_sec is not None else time.time())
+            keys: list[str] = self.data.setdefault("notified_breakout_keys", [])
+            times: dict[str, int] = self.data.setdefault("notified_breakout_times", {})
+            if key not in keys:
+                keys.append(key)
+            times[key] = now_sec
+            self._prune_expired_breakout_keys(now_sec=now_sec, active_line_keys=active_line_keys)
+            if auto_save:
+                self.save()
+
+    def _prune_expired_breakout_keys(
+        self,
+        *,
+        now_sec: Optional[int] = None,
+        active_line_keys: Optional[set[str]] = None,
+    ) -> None:
+        cutoff = int(now_sec if now_sec is not None else time.time()) - _NOTIFIED_KEY_MAX_AGE_SEC
+        keys: list[str] = self.data.get("notified_breakout_keys", [])
+        times: dict[str, int] = self.data.get("notified_breakout_times", {})
+        protected = active_line_keys or set()
+        kept: list[str] = []
+        for k in keys:
+            recorded_ts = times.get(k)
+            if k in protected or recorded_ts is None or recorded_ts >= cutoff:
+                kept.append(k)
+            else:
+                times.pop(k, None)
+        self.data["notified_breakout_keys"] = kept
 
 
 # ==============================================================================
-# 5. 四大核心业务功能实现 (Feature 1 ~ Feature 4)
+# 4. 四大核心业务功能实现 (Feature 1 ~ Feature 4)
 # ==============================================================================
 
+def _with_store_tx(store_kwarg: str):
+    """确保风控评测函数的完整读-改-写周期在跨进程独占事务锁内执行。"""
+    from contextlib import nullcontext
+
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            store = kwargs.get(store_kwarg) if store_kwarg in kwargs else (args[1] if len(args) > 1 else None)
+            ctx = store.transaction() if (store is not None and hasattr(store, "transaction")) else nullcontext()
+            with ctx:
+                return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def _load_candidate_pool(
+    pool_file: Path,
+    database_path: Optional[Path] = None,
+) -> Optional[list[dict[str, Any]]]:
+    db_path = database_path if database_path is not None else resolve_database_path()
+    if db_path is not None:
+        db_target = Path(db_path)
+        if not db_target.exists():
+            logger.warning(f"候选池数据库尚未生成: {db_target}")
+            return None
+        try:
+            with closing(open_sqlite_connection(db_target, readonly=True)) as connection:
+                snapshot = connection.execute(
+                    "SELECT payload FROM candidate_snapshot WHERE id = 1"
+                ).fetchone()
+        except sqlite3.OperationalError as e:
+            if "no such table" in str(e).lower():
+                logger.warning("候选池数据表 candidate_snapshot 尚未初始化")
+                return None
+            raise
+        if snapshot is None:
+            logger.warning("候选池尚未生成")
+            return None
+        payload = json.loads(snapshot[0])
+        if not isinstance(payload, list):
+            raise ValueError(f"Invalid candidate_snapshot payload type: {type(payload).__name__}")
+        return payload
+
+    if not pool_file.exists():
+        logger.warning(f"候选池文件不存在: {pool_file}")
+        return None
+    with open(pool_file, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, list):
+        raise ValueError(f"Invalid candidate pool JSON in {pool_file}: {type(payload).__name__}")
+    return payload
+
+
+@_with_store_tx("state_store")
 def check_feature_1_resonance(
     notifier: ServerChanNotifier,
     state_store: ResonanceStateStore,
@@ -692,113 +614,97 @@ def check_feature_1_resonance(
     layout_id: str = DEFAULT_TV_LAYOUT_ID,
     cold_start: bool = True,
     debounce_hours: float = 24.0,
+    database_path: Optional[Path] = None,
 ) -> List[dict]:
     """
     Feature 1 (新共振标的提醒):
-    比对 runs/second_leg_candidates_pool.json 与 runs/resonance_state.json。
-    新进入三重共振或双核黄金共振的标的，触发 Server酱 微信提醒，指引画线。
-    风控机制:
-    1. 冷启动基准建立: 当 state_store 中暂无活跃标的或首次启动时，直接记录当前标的为基准，不向 Server酱 泛洪发信。
-    2. 24小时防抖: 标的若在 24 小时内已通知过，在共振分数边界上下波动时不重复发信。
+    1. 冷启动基准建立: 仅当 state_store 从未初始化过时记录初始基准，市场共振归零后再出现新标的不会重新触发冷启动抑制。
+    2. 失败不吞掉: 仅当 Server酱 发送成功或处于 24h 防抖期内才将标的计入 active_resonance_symbols，发信失败时下轮自动重试。
+    3. 24h 防抖: 标的掉出后重新进入时重置 first_detected，但 24 小时内不重复打扰。
     """
-    # 强制在校验前从磁盘拉取最新共振状态，防止多进程 (如 hourly sync) 写入后内存未同步
-    state_store.load()
+    candidates = _load_candidate_pool(pool_file, database_path=database_path)
+    if candidates is None:
+        return []
 
-    database = os.environ.get("COIN_DATABASE")
-    if database:
-        import sqlite3
-        from contextlib import closing
-
-        with closing(sqlite3.connect(Path(database).resolve().as_uri() + "?mode=ro", uri=True)) as connection:
-            snapshot = connection.execute(
-                "SELECT payload FROM candidate_snapshot WHERE id = 1"
-            ).fetchone()
-        if snapshot is None:
-            logger.warning("候选池尚未生成")
-            return []
-        candidates = json.loads(snapshot[0])
-    else:
-        if not pool_file.exists():
-            logger.warning(f"候选池文件不存在: {pool_file}")
-            return []
-        with open(pool_file, "r", encoding="utf-8") as f:
-            candidates = json.load(f)
-
-    # 提取当前处于共振状态的标的 (三重共振 或 双核黄金共振)
-    current_resonance_coins = {}
+    current_resonance_coins: dict[str, dict[str, Any]] = {}
     for c in candidates:
-        is_res = (
+        sym = _normalize_futures_symbol(c["symbol"])
+        is_res = bool(
             c.get("is_resonance")
             or c.get("resonance_score", 0) >= 2
             or (c.get("is_ema_bull") and c.get("turnover_ratio", 0) >= 1.5)
         )
-        if is_res:
-            current_resonance_coins[c["symbol"]] = c
+        if is_res and sym:
+            current_resonance_coins[sym] = c
 
     active_symbols = state_store.get_active_symbols()
     current_symbols = set(current_resonance_coins.keys())
-
     now_ts = time.time()
-    now_str = get_beijing_time_str()
+    now_str = get_beijing_time_str(now_ts)
 
-    # 1. 冷启动基准建立: 当 state_store 暂无活跃标的，直接记录当前标的，不发送微信通知
-    if cold_start and not active_symbols:
+    is_initialized = bool(
+        state_store.data.get("initialized")
+        or state_store.data.get("last_updated")
+        or state_store.data.get("history")
+        or active_symbols
+    )
+    if cold_start and not is_initialized:
         logger.info(
-            f"冷启动基准建立: state_store 中暂无活跃标的，直接记录当前 {len(current_symbols)} 个共振标的为初始基准，不发送微信通知。"
+            f"冷启动基准建立: 记录当前 {len(current_symbols)} 个共振标的为初始基准，不发送微信通知。"
         )
-        state_store.data["active_resonance_symbols"] = sorted(list(current_symbols))
+        state_store.data["initialized"] = True
+        state_store.data["active_resonance_symbols"] = sorted(current_symbols)
+        history = state_store.data.setdefault("history", {})
         for sym in current_symbols:
             coin = current_resonance_coins[sym]
-            res_score = coin.get("resonance_score", 2)
             tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
-            if sym not in state_store.data.setdefault("history", {}):
-                state_store.data["history"][sym] = {
+            if sym not in history:
+                history[sym] = {
                     "symbol": sym,
                     "first_detected": now_str,
                     "last_notified_at": now_str,
                     "last_notified_time": int(now_ts),
-                    "res_score": res_score,
+                    "res_score": coin.get("resonance_score", 2),
                     "zones": coin.get("zones", []),
                     "tv_link": tv_link,
                 }
         state_store.save()
         return []
 
-    # 计算新进入共振的标的
     new_entered = current_symbols - active_symbols
-    alerted_list = []
+    next_active = set(active_symbols & current_symbols)
+    alerted_list: list[dict[str, Any]] = []
 
     if new_entered:
-        logger.info(f"⚡ 检测到 {len(new_entered)} 个新进入共振区标的: {list(new_entered)}")
+        logger.info(f"⚡ 检测到 {len(new_entered)} 个新进入共振区标的: {sorted(new_entered)}")
 
+    history = state_store.data.setdefault("history", {})
     for sym in sorted(new_entered):
         coin = current_resonance_coins[sym]
         res_score = coin.get("resonance_score", 2)
-        is_neg_fr = coin.get("is_neg_funding") or coin.get("funding_rate_4h_pct", 0) < 0
+        fr_pct = float(coin["funding_rate_4h_pct"]) if coin.get("funding_rate_4h_pct") is not None else 0.0
+        is_neg_fr = bool(coin.get("is_neg_funding") or fr_pct < 0)
 
-        # 2. 24小时防抖校验: 若 24 小时内已通知过，分数边界波动不重复提醒
-        hist = state_store.data.get("history", {}).get(sym, {})
+        hist = history.get(sym, {})
         last_notified_ts = hist.get("last_notified_time")
         if last_notified_ts is None and "first_detected" in hist:
-            try:
-                dt = datetime.strptime(hist["first_detected"], "%Y-%m-%d %H:%M:%S")
-                last_notified_ts = dt.replace(tzinfo=timezone(timedelta(hours=8))).timestamp()
-            except Exception:
-                last_notified_ts = None
+            dt = datetime.strptime(hist["first_detected"], "%Y-%m-%d %H:%M:%S")
+            last_notified_ts = dt.replace(tzinfo=BEIJING_TZ).timestamp()
 
         if debounce_hours > 0 and last_notified_ts is not None:
-            age_sec = now_ts - last_notified_ts
-            if age_sec < (debounce_hours * 3600):
+            age_sec = now_ts - float(last_notified_ts)
+            if age_sec < (debounce_hours * 3600.0):
                 logger.info(
                     f"24h防抖拦截: {sym} 在前 24 小时内 ({age_sec / 3600:.1f}h 前) 已通知过，跳过重复打扰。"
                 )
+                next_active.add(sym)
                 continue
 
         if is_neg_fr:
             res_tag = "⚠️ 贴水双核 (1h顺势+高换手，但合约深度贴水/空头拥挤)"
             res_badge = "⚠️ 贴水双核"
             guidance_block = f"""> ⚠️ **风控严正警示 (合约深度折价/空头拥挤)**:
-> 该标的 4h 资金费率为 `{coin.get('funding_rate_4h_pct', 0):+.4f}%` (合约价格贴水于现货)。
+> 该标的 4h 资金费率为 `{fr_pct:+.4f}%` (合约价格贴水于现货)。
 > 负费率反映衍生品市场做空情绪过度堆积，往往顺应趋势继续阴跌，极少为真逼空！
 > 若绘制 15m 趋势线，**必须极度警惕假突破与诱多**，坚决以 15m 阳线实体收盘突破为准，开仓必须以趋势线严设止损！"""
         else:
@@ -809,14 +715,16 @@ def check_feature_1_resonance(
 > 系统将持续监控该线，在 15m K 线收盘放量突破时发出买点②开多提醒。"""
 
         tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
+        price_val = float(coin.get("price") or 0.0)
+        turnover_val = float(coin.get("turnover_ratio") or 0.0)
 
         title = f"{res_badge} 提醒: {sym} 进入共振区，请画 15m 趋势线"
         desp = f"""### {res_tag} 选币确认！
 
 - **标的代码**: `BINANCE:{sym}.P`
-- **当前市价**: `${coin.get('price', 0):.4f}`
-- **24h换手率**: `{coin.get('turnover_ratio', 0):.1f}x`
-- **4h资金费率**: `{coin.get('funding_rate_4h_pct', 0):+.4f}%`
+- **当前市价**: `${price_val:.4f}`
+- **24h换手率**: `{turnover_val:.1f}x`
+- **4h资金费率**: `{fr_pct:+.4f}%`
 - **机会区标签**: {', '.join(coin.get('zones', [])) or '共振区'}
 - **形态状态**: {coin.get('status', '多周期趋势共振')}
 - **触发时间**: {now_str}
@@ -826,205 +734,32 @@ def check_feature_1_resonance(
 
 👉 **[点击立即前往 TradingView 专属画线图表]({tv_link})**
 """
-        sent_ok = notifier.send_alert(title, desp)
-        if sent_ok:
+        if notifier.send_alert(title, desp):
+            next_active.add(sym)
             alerted_list.append(coin)
-            # 记录/更新历史
-            state_store.data.setdefault("history", {})[sym] = {
+            history[sym] = {
                 "symbol": sym,
-                "first_detected": hist.get("first_detected", now_str),
+                "first_detected": now_str,
                 "last_notified_at": now_str,
                 "last_notified_time": int(now_ts),
                 "res_score": res_score,
                 "zones": coin.get("zones", []),
-                "tv_link": tv_link
+                "tv_link": tv_link,
             }
+        else:
+            logger.warning(f"Server酱发送失败，保留 {sym} 待下轮重试。")
 
-    # 更新状态：当前共振标的存入，掉出共振的移除以便下次重新触发
-    state_store.data["active_resonance_symbols"] = sorted(list(current_symbols))
-    state_store.save()
+    new_active_sorted = sorted(next_active)
+    if (
+        new_active_sorted != sorted(active_symbols)
+        or alerted_list
+        or not state_store.data.get("initialized")
+    ):
+        state_store.data["initialized"] = True
+        state_store.data["active_resonance_symbols"] = new_active_sorted
+        state_store.save()
+
     return alerted_list
-
-
-def check_feature_2_breakout(
-    notifier: ServerChanNotifier,
-    state_store: ResonanceStateStore,
-    layout_id: str = DEFAULT_TV_LAYOUT_ID,
-    *,
-    retry_only: bool = False,
-) -> List[dict]:
-    """
-    Feature 2 (15m 突破开多提醒):
-    针对处于共振区的标的，若在 TradingView ig0LuDL8 中存在下行趋势线，
-    校验最新 15m 已收盘 K 线是否实体突破该对数趋势线。突破即发送 Server酱 开多买点②提醒。
-    风控与去重规则:
-    1. 严格 Crossover 逻辑: 上一根 15m 收盘价 <= 上一根对数阻力位，且当前 15m 收盘价 > 当前对数阻力位。
-       若上一根 K 线已在线上方，说明属于已突破运行中状态，坚决不触发重复预警。
-    2. 单线消费去重: 每条趋势线 ID (Key: f"{sym}_{line_id}") 突破仅提醒一次，触发后即标记为已消费。
-       后续所有 15m K 线绝不重复针对同一条趋势线发信。
-    3. 趋势线有效性与过滤: 仅监控 15m 趋势线 (严格忽略 '240', 'D' 等)，第二个锚点 t2 或更新时间须在 72 小时以内。
-       阻力价 <= 0 或 当前价 > 阻力价 * 1.25 (失控/陈旧衰减死线) 强制跳过。
-    """
-    state_store.load()
-    pending = state_store.data.setdefault("pending_breakouts", {})
-    for key, event in list(pending.items()):
-        if _send_breakout_notification(
-            notifier, event["symbol"], event["res_price"], event["close_price"],
-            event["pct"], event["candle"], event["layout_id"]
-        ):
-            keys = state_store.data.setdefault("notified_breakout_keys", [])
-            keys.extend(k for k in event["keys"] if k not in keys)
-            state_store.data["notified_breakout_keys"] = keys[-200:]
-            del pending[key]
-            state_store.save()
-
-    if retry_only:
-        return []
-
-    drawings_map = fetch_layout_drawings(layout_id)
-    if not drawings_map:
-        logger.debug(f"TV 布局 {layout_id} 暂无可用画线数据")
-        return []
-
-    active_symbols = state_store.get_active_symbols()
-    breakout_alerts = []
-
-    # 遍历当前共振币种
-    for sym in active_symbols:
-        # 严格按标准化币种名称精确匹配，杜绝短币名子串串线 (如 HUSDT 误匹配 ETHUSDT)
-        matched_lines = None
-        sym_clean = sym.upper().replace(".P", "").replace("BINANCE:", "")
-        for k, lines in drawings_map.items():
-            k_clean = k.upper().replace(".P", "").replace("BINANCE:", "")
-            if sym_clean == k_clean:
-                matched_lines = lines
-                break
-
-        if not matched_lines:
-            continue
-
-        # 单币种拉取最新已收盘 15m K线 (含 prev_candle)
-        candle = get_binance_closed_15m_candle(sym)
-        if not candle:
-            continue
-
-        c_ts = candle.get("candle_timestamp") or candle.get("close_time", 0)
-        lines_to_check = matched_lines if isinstance(matched_lines, list) else [matched_lines]
-        ref_now = c_ts if c_ts else time.time()
-
-        # 遍历该币种的所有趋势线
-        for line in lines_to_check:
-            line_id = line.get("id", "custom_line")
-            trendline_key = f"{sym}_{line_id}"
-
-            # 1. 单线消费去重: 一条线 ID 仅触发一次
-            if trendline_key in pending or state_store.has_breakout_notified(trendline_key):
-                logger.debug(f"趋势线 {trendline_key} 已触发消费，跳过重复检测。")
-                continue
-
-            # 2. 趋势线周期与时效过滤: 仅限 15m 且 72h 内画线
-            if not is_valid_15m_trendline(line, current_time=ref_now):
-                logger.debug(f"趋势线 {trendline_key} 已被过滤 (非 15m 或创建/更新超过 72 小时)。")
-                continue
-
-            # 兼容不同数据格式: points 或 p1/p2
-            p1_price, p1_time, p2_price, p2_time = None, None, None, None
-            if "p1" in line and "p2" in line and "t1" in line and "t2" in line:
-                p1_time, p1_price = int(line["t1"]), float(line["p1"])
-                p2_time, p2_price = int(line["t2"]), float(line["p2"])
-            elif "points" in line and len(line["points"]) >= 2:
-                pt1 = line["points"][0]
-                pt2 = line["points"][1]
-                p1_time = int(pt1.get("time_t") or pt1.get("time") or 0)
-                p1_price = float(pt1.get("price") or 0)
-                p2_time = int(pt2.get("time_t") or pt2.get("time") or 0)
-                p2_price = float(pt2.get("price") or 0)
-
-            if p1_price is None or p2_price is None or p1_time is None or p2_time is None:
-                continue
-
-            # 仅处理下行趋势线 (阻力线: p1_price >= p2_price)
-            if p1_price < p2_price:
-                continue
-
-            close_time = candle.get("close_time", c_ts + 900)
-            close_price = float(candle["close"])
-            is_breakout = False
-            res_price = 0.0
-            pct = 0.0
-            candle_info = {}
-
-            # 优先调用 tve.check_symbol_breakout (内置严格 Crossover 与 runaway 校验)
-            if tve and hasattr(tve, "check_symbol_breakout"):
-                try:
-                    res = tve.check_symbol_breakout(sym, line, candle=candle)
-                    if res:
-                        is_breakout = bool(res.get("is_breakout"))
-                        close_price = float(res.get("close_price", 0))
-                        res_price = float(res.get("res_price", 0))
-                        pct = float(res.get("pct", 0))
-                        candle_info = res
-                except Exception as e:
-                    logger.debug(f"tve.check_symbol_breakout 运行异常，回退内置算法: {e}")
-
-            if not candle_info:
-                eval_t = candle.get("candle_timestamp") or candle.get("open_time") or close_time
-                res_price = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, eval_t)
-
-                # 3. 严格 Crossover 逻辑判定
-                if res_price > 0 and close_price <= res_price * 1.25:
-                    prev_c = candle.get("prev_candle")
-                    if prev_c:
-                        prev_close = float(prev_c["close"])
-                        prev_t = int(prev_c.get("candle_timestamp") or prev_c.get("open_time", eval_t - 900))
-                        prev_res = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, prev_t)
-                        if prev_close <= prev_res and close_price > res_price:
-                            is_breakout = True
-                    else:
-                        prev_t = eval_t - 900
-                        prev_res = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, prev_t)
-                        open_p = candle.get("open")
-                        if open_p is not None and float(open_p) > prev_res:
-                            is_breakout = False
-                        elif close_price > res_price:
-                            is_breakout = True
-
-                    if is_breakout:
-                        pct = (close_price - res_price) / res_price * 100.0
-                        candle_info = candle
-
-            # 4. 双重防御: 阻力位非法或当前价格严重偏离阻力位 (runaway/decay) 则绝不触发
-            if res_price <= 0 or close_price > res_price * 1.25:
-                continue
-
-            if is_breakout:
-                info = {
-                    "symbol": sym,
-                    "close_price": close_price,
-                    "res_price": res_price,
-                    "pct": pct,
-                    "candle_time": candle_info.get("candle_time") or candle_info.get("close_time"),
-                    "trendline": line,
-                    "trendline_id": line_id
-                }
-                keys = [trendline_key]
-                if c_ts:
-                    keys.append(f"{sym}_{c_ts}")
-                pending[trendline_key] = {
-                    "symbol": sym, "res_price": res_price, "close_price": close_price,
-                    "pct": pct, "candle": candle_info, "layout_id": layout_id, "keys": keys
-                }
-                state_store.save()
-                if _send_breakout_notification(notifier, sym, res_price, close_price, pct, candle_info, layout_id):
-                    notified = state_store.data.setdefault("notified_breakout_keys", [])
-                    notified.extend(key for key in keys if key not in notified)
-                    state_store.data["notified_breakout_keys"] = notified[-200:]
-                    del pending[trendline_key]
-                    state_store.save()
-                    breakout_alerts.append(info)
-                break  # 单标的单轮巡检最多发出一次突破提醒
-
-    return breakout_alerts
 
 
 def _send_breakout_notification(
@@ -1034,15 +769,14 @@ def _send_breakout_notification(
     close_price: float,
     pct: float,
     candle_or_res: dict,
-    layout_id: str
-):
+    layout_id: str,
+) -> bool:
     """发送突破买点②开多通知"""
     tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
     candle_time_str = candle_or_res.get("candle_time")
-    if not candle_time_str and "close_time" in candle_or_res:
-        candle_time_str = get_beijing_time_str(candle_or_res["close_time"])
     if not candle_time_str:
-        candle_time_str = get_beijing_time_str()
+        ts_val = candle_or_res.get("open_time") or candle_or_res.get("close_time")
+        candle_time_str = get_beijing_time_str(float(ts_val)) if ts_val else "--"
 
     title = f"🚀 突破开多信号: {sym} 突破 15m 对数趋势线 (+{pct:.2f}%)"
     desp = f"""### 🚀 【买点②确认】15m 阳线实体收盘放量突破！
@@ -1065,83 +799,228 @@ def _send_breakout_notification(
     return notifier.send_alert(title, desp)
 
 
+@_with_store_tx("state_store")
+def check_feature_2_breakout(
+    notifier: ServerChanNotifier,
+    state_store: ResonanceStateStore,
+    layout_id: str = DEFAULT_TV_LAYOUT_ID,
+    *,
+    retry_only: bool = False,
+    candle_cache: Optional[Dict[str, dict]] = None,
+    status: Optional[Dict[str, Any]] = None,
+) -> List[dict]:
+    """
+    Feature 2 (15m 突破开多提醒):
+    直接复用 tv_trendline_engine 校验严格 Crossover、15m 周期与 72h 时效。
+    """
+    pending = state_store.data.setdefault("pending_breakouts", {})
+    pending_dirty = False
+    for key, event in list(pending.items()):
+        if _send_breakout_notification(
+            notifier,
+            event["symbol"],
+            event["res_price"],
+            event["close_price"],
+            event["pct"],
+            event["candle"],
+            event["layout_id"],
+        ):
+            for k in event["keys"]:
+                state_store.mark_breakout_notified(k, auto_save=False)
+            del pending[key]
+            pending_dirty = True
+    if pending_dirty:
+        state_store.save()
+
+    if retry_only:
+        return []
+
+    try:
+        drawings_map = fetch_layout_drawings(layout_id)
+    except (BinanceAPIError, RuntimeError, TimeoutError, urllib.error.URLError) as e:
+        logger.warning(f"获取 TV 布局画线异常，跳过本轮突破扫描: {e}")
+        if status is not None:
+            status["had_error"] = True
+        return []
+
+    if not drawings_map:
+        logger.debug(f"TV 布局 {layout_id} 暂无可用画线数据")
+        return []
+
+    norm_drawings: dict[str, list[dict[str, Any]]] = {}
+    active_line_keys: set[str] = set()
+    for k, lines in drawings_map.items():
+        norm_k = clean_symbol(k)
+        if not norm_k:
+            continue
+        line_list = lines if isinstance(lines, list) else [lines]
+        norm_drawings.setdefault(norm_k, []).extend(line_list)
+        for line in line_list:
+            if isinstance(line, dict) and line.get("id"):
+                active_line_keys.add(f"{norm_k}_{line['id']}")
+
+    active_symbols = state_store.get_active_symbols()
+    breakout_alerts: list[dict[str, Any]] = []
+
+    for sym in sorted(active_symbols):
+        sym_clean = clean_symbol(sym)
+        matched_lines = norm_drawings.get(sym_clean)
+        if not matched_lines:
+            continue
+
+        candle = candle_cache.get(sym_clean) if candle_cache is not None else None
+        if candle is None:
+            try:
+                candle = get_closed_15m_candle(sym_clean)
+            except BinanceAPIError as e:
+                logger.warning(f"拉取 {sym_clean} 15m K线失败: {e}")
+                if status is not None:
+                    status["had_error"] = True
+                continue
+            if candle_cache is not None:
+                candle_cache[sym_clean] = candle
+
+        c_ts = int(candle["open_time"])
+        for line in matched_lines:
+            line_id = line.get("id")
+            if not line_id:
+                continue
+            trendline_key = f"{sym}_{line_id}"
+
+            if trendline_key in pending or state_store.has_breakout_notified(trendline_key):
+                continue
+            if not is_valid_15m_trendline(line, current_time=c_ts):
+                continue
+            if float(line["p1"]) < float(line["p2"]):
+                continue
+
+            res = tve.check_symbol_breakout(sym_clean, line, candle=candle)
+            if not res.get("is_breakout"):
+                continue
+
+            res_price = float(res["res_price"])
+            close_price = float(res["close_price"])
+            pct = float(res["pct"])
+            if res_price <= 0 or close_price > res_price * 1.25:
+                continue
+
+            info = {
+                "symbol": sym,
+                "close_price": close_price,
+                "res_price": res_price,
+                "pct": pct,
+                "candle_time": res["candle_time"],
+                "trendline": line,
+                "trendline_id": line_id,
+            }
+            keys = [trendline_key, f"{sym}_{c_ts}"]
+            pending[trendline_key] = {
+                "symbol": sym,
+                "res_price": res_price,
+                "close_price": close_price,
+                "pct": pct,
+                "candle": res,
+                "layout_id": layout_id,
+                "keys": keys,
+            }
+            state_store.save()
+
+            if _send_breakout_notification(notifier, sym, res_price, close_price, pct, res, layout_id):
+                for k in keys:
+                    state_store.mark_breakout_notified(
+                        k,
+                        active_line_keys=active_line_keys,
+                        auto_save=False,
+                    )
+                del pending[trendline_key]
+                state_store.save()
+                breakout_alerts.append(info)
+            break
+
+    return breakout_alerts
+
+
+@_with_store_tx("pos_store")
 def check_feature_3_stop_loss(
     notifier: ServerChanNotifier,
     pos_store: PositionStore,
-    layout_id: str = DEFAULT_TV_LAYOUT_ID
+    layout_id: str = DEFAULT_TV_LAYOUT_ID,
+    *,
+    candle_cache: Optional[Dict[str, dict]] = None,
 ) -> List[dict]:
     """
     Feature 3 (持仓破线无条件止损):
-    针对 runs/trade_positions.json 中的开仓持仓，
-    在每个 15m K 线收盘后，校验收盘价是否跌破趋势线支撑位。
-    若跌破，立即发出最高级别紧急平多止损通知。
+    在每个 15m K 线收盘后校验收盘价是否跌破趋势线支撑位；新匹配到的趋势线自动持久化。
     """
-    pos_store.load()
     open_positions = pos_store.get_open_positions()
     if not open_positions:
         return []
 
-    drawings_map = fetch_layout_drawings(layout_id) if any(not p.get("trendline") for p in open_positions) else {}
-    stop_loss_alerts = []
+    norm_drawings: dict[str, list[dict[str, Any]]] = {}
+    if any(not p.get("trendline") for p in open_positions):
+        try:
+            drawings_map = fetch_layout_drawings(layout_id)
+            for k, lines in drawings_map.items():
+                norm_k = clean_symbol(k)
+                if norm_k:
+                    norm_drawings.setdefault(norm_k, []).extend(lines if isinstance(lines, list) else [lines])
+        except (BinanceAPIError, RuntimeError, TimeoutError, urllib.error.URLError) as e:
+            logger.warning(f"获取 TV 画线失败，仅校验已缓存趋势线的持仓: {e}")
+
+    stop_loss_alerts: list[dict[str, Any]] = []
+    dirty = False
 
     for pos in open_positions:
         if pos.get("stop_loss_notified", False):
             continue
 
         sym = pos["symbol"]
-        candle = pos.get("pending_stop_loss_candle") or get_binance_closed_15m_candle(sym)
-        if not candle:
-            continue
+        sym_clean = clean_symbol(sym)
+        candle = pos.get("pending_stop_loss_candle")
+        if candle is None and candle_cache is not None:
+            candle = candle_cache.get(sym_clean)
+        if candle is None:
+            try:
+                candle = get_closed_15m_candle(sym_clean)
+            except BinanceAPIError as e:
+                logger.warning(f"拉取 {sym_clean} 止损校验 15m K线失败: {e}")
+                continue
+            if candle_cache is not None:
+                candle_cache[sym_clean] = candle
 
-        close_time = candle["close_time"]
-        close_price = candle["close"]
+        close_time = int(candle["close_time"])
+        candle_open_time = int(candle.get("open_time", close_time))
+        close_price = float(candle["close"])
         entry_price = float(pos["entry_price"])
 
-        # 寻找对应的趋势线：优先持仓中缓存的线，其次从 TV 画线严格精确匹配并过滤有效 15m 线
         line = pos.get("trendline")
-        if not line and drawings_map:
-            sym_clean = sym.upper().replace(".P", "").replace("BINANCE:", "")
-            for k, lines in drawings_map.items():
-                k_clean = k.upper().replace(".P", "").replace("BINANCE:", "")
-                if sym_clean == k_clean:
-                    if bpc and hasattr(bpc, "select_best_position_trendline"):
-                        line = bpc.select_best_position_trendline(lines, current_time=candle.get("candle_timestamp", close_time))
-                    else:
-                        line = lines[0] if isinstance(lines, list) and lines else lines
-                    if line:
-                        pos["trendline"] = line
-                    break
+        if not line and norm_drawings:
+            matched = norm_drawings.get(sym_clean)
+            if matched:
+                line = bpc.select_best_position_trendline(matched, current_time=candle_open_time)
+                if line:
+                    pos["trendline"] = line
+                    dirty = True
 
         if not line:
             continue
 
-        p1_price, p1_time, p2_price, p2_time = None, None, None, None
-        if "p1" in line and "p2" in line and "t1" in line and "t2" in line:
-            p1_time, p1_price = int(line["t1"]), float(line["p1"])
-            p2_time, p2_price = int(line["t2"]), float(line["p2"])
-        elif "points" in line and len(line["points"]) >= 2:
-            pt1 = line["points"][0]
-            pt2 = line["points"][1]
-            p1_time = int(pt1.get("time_t") or pt1.get("time") or 0)
-            p1_price = float(pt1.get("price") or 0)
-            p2_time = int(pt2.get("time_t") or pt2.get("time") or 0)
-            p2_price = float(pt2.get("price") or 0)
-
-        if p1_price is None or p2_price is None or p1_time is None or p2_time is None:
+        try:
+            p1_price = float(line["p1"])
+            p1_time = int(line["t1"])
+            p2_price = float(line["p2"])
+            p2_time = int(line["t2"])
+            support_price = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, candle_open_time)
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning(f"跳过 {sym} 无效止损趋势线: {e}")
             continue
 
-        # TradingView 的趋势线锚点使用 K 线开盘时间作为横坐标。
-        candle_time = candle.get("candle_timestamp", candle.get("open_time", close_time))
-        support_price = calculate_log_resistance(p1_price, p1_time, p2_price, p2_time, candle_time)
-        if support_price <= 0:
-            continue
-
-        if close_price >= support_price:
+        if support_price <= 0 or close_price >= support_price:
             continue
 
         drop_pct = (support_price - close_price) / support_price * 100.0
-        pnl_pct = (close_price - entry_price) / entry_price * 100.0
-        tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym}.P&interval=15"
+        pnl_pct = ((close_price - entry_price) / entry_price * 100.0) if entry_price > 0 else 0.0
+        tv_link = f"https://cn.tradingview.com/chart/{layout_id}/?symbol=BINANCE:{sym_clean}.P&interval=15"
 
         title = f"🚨 【破线止损预警】{sym} 15m 跌破趋势线，请立即平多止损！"
         desp = f"""### 🚨 【破线无条件止损】纪律执行警报！
@@ -1153,7 +1032,7 @@ def check_feature_3_stop_loss(
 - **跌破幅度**: `-{drop_pct:.2f}%`
 - **持仓盈亏**: `{pnl_pct:+.2f}%`
 - **持仓数量**: `{pos.get('amount', 0)}`
-- **收盘时间**: {get_beijing_time_str(candle['close_time'])}
+- **收盘时间**: {get_beijing_time_str(close_time)}
 
 ---
 > ⚠️ **风控铁律提醒**:
@@ -1165,7 +1044,7 @@ def check_feature_3_stop_loss(
         if not notifier.send_alert(title, desp):
             if "pending_stop_loss_candle" not in pos:
                 pos["pending_stop_loss_candle"] = candle
-                pos_store.save()
+                dirty = True
             continue
 
         pos.pop("pending_stop_loss_candle", None)
@@ -1177,12 +1056,17 @@ def check_feature_3_stop_loss(
             pos_store.data["positions"].remove(pos)
             pos_store.data["history"].append(pos)
         pos_store.save()
+        dirty = False
         stop_loss_alerts.append(pos)
         logger.warning(f"🚨 标的 {sym} 跌破趋势线，已发送止损警报！")
+
+    if dirty:
+        pos_store.save()
 
     return stop_loss_alerts
 
 
+@_with_store_tx("pos_store")
 def check_feature_4_trailing_stops(
     notifier: ServerChanNotifier,
     pos_store: PositionStore,
@@ -1192,34 +1076,57 @@ def check_feature_4_trailing_stops(
 ) -> List[dict]:
     """
     Feature 4 (持仓动态移动止盈保护):
-    实时跟踪持仓市价（优先复用刚同步的 mark_price 缓存，避免每 10 秒重复逐币请求）。
-    1. 当现价涨幅 >= entry_price * (1 + activation_pct/100) (默认 +6%) 时:
-       自动将止损线上移至 entry_price * (1 + lock_pct/100) (默认 +1%)，锁定保本收益。
-    2. 若后续价格回踩 <= 移动止损价:
-       发出平仓锁利离场通知。
+    使用批量 ticker 接口获取缺失现价，持久化 highest_price/current_price/pnl_pct 状态变更。
     """
-    pos_store.load()
     open_positions = pos_store.get_open_positions()
     if not open_positions:
         return []
 
-    events = []
+    resolved_prices: dict[str, float] = dict(price_cache) if price_cache else {}
+    missing_syms = [
+        clean_symbol(p["symbol"])
+        for p in open_positions
+        if not resolved_prices.get(p["symbol"]) and not resolved_prices.get(clean_symbol(p["symbol"]))
+    ]
+    if missing_syms:
+        try:
+            fetched = fetch_ticker_prices(missing_syms)
+            resolved_prices.update(fetched)
+        except BinanceAPIError as e:
+            logger.warning(f"批量获取移动止盈实时价格失败: {e}")
+
+    events: list[dict[str, Any]] = []
+    dirty = False
 
     for pos in open_positions:
         sym = pos["symbol"]
-        cached_p = price_cache.get(sym, 0.0) if price_cache else 0.0
-        curr_price = float(cached_p) if cached_p and cached_p > 0 else get_binance_ticker_price(sym)
+        sym_clean = clean_symbol(sym)
+        curr_price = float(resolved_prices.get(sym) or resolved_prices.get(sym_clean) or 0.0)
         if curr_price <= 0 and not (
             "pending_trailing_activation_price" in pos or "pending_profit_lock_price" in pos
         ):
             continue
 
         entry_price = float(pos["entry_price"])
-        highest_price = max(pos.get("highest_price", entry_price), curr_price)
-        pos["highest_price"] = highest_price
+        if entry_price <= 0:
+            logger.error(f"持仓 {sym} entry_price={entry_price} 非法，跳过移动止盈计算")
+            continue
+
         if curr_price > 0:
-            pos["current_price"] = curr_price
-            pos["pnl_pct"] = round((curr_price - entry_price) / entry_price * 100.0, 2)
+            prev_highest = float(pos.get("highest_price", entry_price))
+            highest_price = max(prev_highest, curr_price)
+            new_pnl_pct = round((curr_price - entry_price) / entry_price * 100.0, 2)
+            if (
+                highest_price != pos.get("highest_price")
+                or curr_price != pos.get("current_price")
+                or new_pnl_pct != pos.get("pnl_pct")
+            ):
+                pos["highest_price"] = highest_price
+                pos["current_price"] = curr_price
+                pos["pnl_pct"] = new_pnl_pct
+                dirty = True
+        else:
+            highest_price = float(pos.get("highest_price", entry_price))
 
         target_activation_price = entry_price * (1.0 + activation_pct / 100.0)
         if not pos.get("trailing_stop_triggered", False) and curr_price >= target_activation_price:
@@ -1228,11 +1135,12 @@ def check_feature_4_trailing_stops(
             pos["trailing_stop_activated_at"] = get_beijing_time_str()
             pos["pending_trailing_activation_price"] = curr_price
             pos_store.save()
+            dirty = False
 
         if "pending_trailing_activation_price" in pos:
-            activation_price = pos["pending_trailing_activation_price"]
+            activation_price = float(pos["pending_trailing_activation_price"])
             activation_gain = (activation_price - entry_price) / entry_price * 100.0
-            lock_price = pos["trailing_stop_price"]
+            lock_price = float(pos["trailing_stop_price"])
             title = f"🎯 【移动止盈锁定】{sym} 浮盈达 +{activation_gain:.1f}%，已启动 +{lock_pct:.0f}% 保本锁利！"
             desp = f"""### 🎯 【动态移动止盈启动】移动锁利提醒
 
@@ -1249,14 +1157,14 @@ def check_feature_4_trailing_stops(
             if notifier.send_alert(title, desp):
                 del pos["pending_trailing_activation_price"]
                 pos_store.save()
+                dirty = False
                 events.append({"type": "TRAILING_ACTIVATED", "pos": pos})
                 logger.info(f"🎯 {sym} 已发送移动止损激活通知: {lock_price}")
 
-        # 检查是否跌破移动止盈线 (已激活移动止盈的状态下)
         if pos.get("trailing_stop_triggered", False) and not pos.get("profit_lock_notified", False):
             lock_price = float(pos["trailing_stop_price"])
             if "pending_profit_lock_price" in pos or 0 < curr_price <= lock_price:
-                trigger_price = pos.get("pending_profit_lock_price", curr_price)
+                trigger_price = float(pos.get("pending_profit_lock_price", curr_price))
                 trigger_pct = (trigger_price - entry_price) / entry_price * 100.0
 
                 title = f"🔔 【移动止盈离场】{sym} 触及移动止盈线，请平仓锁利离场！"
@@ -1277,6 +1185,7 @@ def check_feature_4_trailing_stops(
                     if "pending_profit_lock_price" not in pos:
                         pos["pending_profit_lock_price"] = trigger_price
                         pos_store.save()
+                        dirty = False
                     continue
 
                 pos.pop("pending_profit_lock_price", None)
@@ -1288,58 +1197,63 @@ def check_feature_4_trailing_stops(
                     pos_store.data["positions"].remove(pos)
                     pos_store.data["history"].append(pos)
                 pos_store.save()
+                dirty = False
                 events.append({"type": "PROFIT_LOCK_EXIT", "pos": pos})
                 logger.info(f"🔔 {sym} 触及移动止盈线 {lock_price}，已通知平仓锁利离场！")
+
+    if dirty:
+        pos_store.save()
 
     return events
 
 
 # ==============================================================================
-# 6. 单次循环评测 (用于 CLI --check-once 及每小时 cron 集成)
+# 5. 单次循环评测 (用于 CLI --check-once 及每小时 cron 集成)
 # ==============================================================================
 
 def run_evaluation_cycle(
     notifier: ServerChanNotifier,
     state_store: ResonanceStateStore,
     pos_store: PositionStore,
-    cfg: dict
-) -> dict:
+    cfg: dict[str, Any],
+) -> dict[str, Any]:
     """运行全套风控四重闭环评测"""
     pool_file = Path(cfg.get("resonance_pool_file", DEFAULT_POOL_PATH))
     layout_id = cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
     act_pct = float(cfg.get("trailing_activation_pct", 6.0))
     lock_pct = float(cfg.get("trailing_lock_pct", 1.0))
+    db_path = cfg.get("database_path")
 
     logger.info("--- 开始执行交易风控与预警循环评测 ---")
-    
-    # 0. 自动同步币安实盘活跃持仓 (若已配置凭据)
+
     binance_sync_info = None
-    if bpc:
-        b_client = bpc.BinanceFuturesClient(
-            cfg.get("binance_api_key", ""),
-            cfg.get("binance_api_secret", "")
+    b_client = BinanceFuturesClient(
+        cfg.get("binance_api_key", ""),
+        cfg.get("binance_api_secret", ""),
+    )
+    if b_client.is_configured():
+        binance_sync_info = bpc.sync_binance_positions(
+            b_client, pos_store, layout_id, load_drawings=fetch_layout_drawings
         )
-        if b_client.is_configured():
-            binance_sync_info = bpc.sync_binance_positions(
-                b_client, pos_store, layout_id, load_drawings=fetch_layout_drawings
-            )
 
-    # 1. Feature 1: 新共振标的检测
-    res_alerts = check_feature_1_resonance(notifier, state_store, pool_file, layout_id)
-    
-    # 2. Feature 2: 15m 趋势线突破开多检测
-    bo_alerts = check_feature_2_breakout(notifier, state_store, layout_id)
-
-    # 3. Feature 3: 持仓 15m 破线无条件止损检测
-    sl_alerts = check_feature_3_stop_loss(notifier, pos_store, layout_id)
-
-    # 4. Feature 4: 持仓动态移动止盈保护检测
+    candle_cache: dict[str, dict] = {}
+    f2_status: dict[str, Any] = {}
+    res_alerts = check_feature_1_resonance(
+        notifier, state_store, pool_file, layout_id, database_path=db_path
+    )
+    bo_alerts = check_feature_2_breakout(
+        notifier, state_store, layout_id, candle_cache=candle_cache, status=f2_status
+    )
+    sl_alerts = check_feature_3_stop_loss(
+        notifier, pos_store, layout_id, candle_cache=candle_cache
+    )
     ts_events = check_feature_4_trailing_stops(notifier, pos_store, act_pct, lock_pct)
 
     result = {
         "timestamp": get_beijing_time_str(),
         "feature_1_resonance_new": len(res_alerts),
         "feature_2_breakout_signals": len(bo_alerts),
+        "feature_2_had_error": bool(f2_status.get("had_error")),
         "feature_3_stop_loss_signals": len(sl_alerts),
         "feature_4_trailing_stop_events": len(ts_events),
         "active_resonance_count": len(state_store.get_active_symbols()),
@@ -1355,35 +1269,109 @@ def run_evaluation_cycle(
 
 
 # ==============================================================================
-# 7. 持续守护进程模式 (--daemon)
+# 6. 持续守护进程模式 (--daemon)
 # ==============================================================================
 
 class TradeAlertDaemon:
     """持续后台守护进程"""
 
-    def __init__(self, cfg: dict, dry_run: bool = False):
+    def __init__(self, cfg: dict[str, Any], dry_run: bool = False):
         self.cfg = cfg
         self.notifier = ServerChanNotifier(cfg.get("serverchan_sendkey", ""), dry_run=dry_run)
         self.state_store = ResonanceStateStore(Path(cfg.get("resonance_state_file", DEFAULT_RESONANCE_STATE_PATH)))
         self.pos_store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
         self.running = True
         self.last_evaluated_15m_bucket = 0
-        self.binance_client = None
-        if bpc:
-            self.binance_client = bpc.BinanceFuturesClient(
-                cfg.get("binance_api_key", ""),
-                cfg.get("binance_api_secret", "")
-            )
-            if self.binance_client.is_configured():
-                logger.info("✅ 币安合约 API 凭证已就绪，实盘持仓自动同步已激活。")
-            else:
-                logger.info("ℹ️ 币安 API 凭据未配置，采用本地/手动持仓模式。")
+        self.binance_client = BinanceFuturesClient(
+            cfg.get("binance_api_key", ""),
+            cfg.get("binance_api_secret", ""),
+        )
+        if self.binance_client.is_configured():
+            logger.info("✅ 币安合约 API 凭证已就绪，实盘持仓自动同步已激活。")
+        else:
+            logger.info("ℹ️ 币安 API 凭据未配置，采用本地/手动持仓模式。")
 
     def handle_signal(self, signum, frame):
         logger.info(f"收到终止信号 ({signum})，正在优雅关闭守护进程...")
         self.running = False
 
-    def start(self):
+    def run_iteration(self, now: Optional[float] = None) -> None:
+        """执行单次守护主循环节拍。"""
+        now_ts = now if now is not None else time.time()
+        layout_id = self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
+        pool_file = Path(self.cfg.get("resonance_pool_file", DEFAULT_POOL_PATH))
+        db_path = self.cfg.get("database_path")
+
+        price_cache: Dict[str, float] = {}
+        if self.binance_client.is_configured():
+            try:
+                sync_res = bpc.sync_binance_positions(
+                    self.binance_client,
+                    self.pos_store,
+                    layout_id,
+                    load_drawings=fetch_layout_drawings,
+                )
+                if sync_res.get("synced"):
+                    for p in sync_res.get("active_positions", []):
+                        if p.get("mark_price"):
+                            price_cache[p["symbol"]] = float(p["mark_price"])
+            except Exception as e:
+                logger.warning(f"后台自动同步币安持仓异常: {e}")
+
+        current_bucket = int(now_ts // 900) * 900
+        seconds_into_bucket = now_ts - current_bucket
+        candle_cache: dict[str, dict] = {}
+
+        if seconds_into_bucket >= 10 and self.last_evaluated_15m_bucket != current_bucket:
+            logger.info(f"⏰ 进入 15m K线收盘确认窗口 ({get_beijing_time_str(now_ts)})，启动 Feature 1/2/3 联合校验...")
+            check_feature_1_resonance(
+                self.notifier,
+                self.state_store,
+                pool_file,
+                layout_id,
+                database_path=db_path,
+            )
+            f2_status: dict[str, Any] = {}
+            check_feature_2_breakout(
+                self.notifier,
+                self.state_store,
+                layout_id,
+                candle_cache=candle_cache,
+                status=f2_status,
+            )
+            if not f2_status.get("had_error"):
+                self.last_evaluated_15m_bucket = current_bucket
+            evaluate_stop_loss = True
+        else:
+            self.state_store.load()
+            if self.state_store.data.get("pending_breakouts"):
+                check_feature_2_breakout(
+                    self.notifier,
+                    self.state_store,
+                    layout_id,
+                    retry_only=True,
+                )
+            evaluate_stop_loss = any(
+                "pending_stop_loss_candle" in pos for pos in self.pos_store.get_open_positions()
+            )
+
+        if evaluate_stop_loss:
+            check_feature_3_stop_loss(
+                self.notifier,
+                self.pos_store,
+                layout_id,
+                candle_cache=candle_cache,
+            )
+
+        check_feature_4_trailing_stops(
+            self.notifier,
+            self.pos_store,
+            float(self.cfg.get("trailing_activation_pct", 6.0)),
+            float(self.cfg.get("trailing_lock_pct", 1.0)),
+            price_cache=price_cache or None,
+        )
+
+    def start(self) -> None:
         signal.signal(signal.SIGINT, self.handle_signal)
         signal.signal(signal.SIGTERM, self.handle_signal)
 
@@ -1393,87 +1381,24 @@ class TradeAlertDaemon:
         logger.info(f"   • 移动止盈策略: +{self.cfg.get('trailing_activation_pct')}% 启动，锁定 +{self.cfg.get('trailing_lock_pct')}%")
         logger.info("   • 15m K线判定窗口: mm:00+10s, mm:15+10s, mm:30+10s, mm:45+10s")
         logger.info("   • 动态移动止盈刷新周期: 每 10 秒")
-        if self.binance_client and self.binance_client.is_configured():
+        if self.binance_client.is_configured():
             logger.info("   • 币安实盘自动同步: 已开启 (自动感知新开仓与平仓)")
         else:
             logger.info("   • 币安实盘自动同步: 未配置 (手动持仓模式)")
         logger.info("=======================================================")
 
-        # 启动时执行一次全量初检
+        startup_ts = time.time()
         try:
-            run_evaluation_cycle(self.notifier, self.state_store, self.pos_store, self.cfg)
+            cycle_res = run_evaluation_cycle(self.notifier, self.state_store, self.pos_store, self.cfg)
+            startup_bucket = int(startup_ts // 900) * 900
+            if (startup_ts - startup_bucket) >= 10 and not cycle_res.get("feature_2_had_error"):
+                self.last_evaluated_15m_bucket = startup_bucket
         except Exception as e:
             logger.error(f"初始初检异常: {e}")
 
         while self.running:
             try:
-                now = time.time()
-
-                # 自动双向同步币安实盘活跃持仓，并缓存本次 mark_price 供 Feature 4 复用
-                price_cache: Dict[str, float] = {}
-                if self.binance_client and self.binance_client.is_configured():
-                    try:
-                        sync_res = bpc.sync_binance_positions(
-                            self.binance_client,
-                            self.pos_store,
-                            self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID),
-                            load_drawings=fetch_layout_drawings,
-                        )
-                        if sync_res and sync_res.get("synced"):
-                            for p in sync_res.get("active_positions", []):
-                                if p.get("mark_price"):
-                                    price_cache[p["symbol"]] = float(p["mark_price"])
-                    except Exception as e:
-                        logger.debug(f"后台自动同步币安持仓异常: {e}")
-
-                # 15m 周期判定逻辑 (900秒 = 15分钟)
-                current_bucket = int(now // 900) * 900
-                seconds_into_bucket = now - current_bucket
-
-                # 在每个 15m 刚刚收盘后的 10s~30s 窗口执行 15m K线突破与破线止损判定
-                if seconds_into_bucket >= 10 and self.last_evaluated_15m_bucket != current_bucket:
-                    logger.info(f"⏰ 进入 15m K线收盘确认窗口 ({get_beijing_time_str()})，启动 Feature 1/2/3 联合校验...")
-                    check_feature_1_resonance(
-                        self.notifier,
-                        self.state_store,
-                        Path(self.cfg.get("resonance_pool_file", DEFAULT_POOL_PATH)),
-                        self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
-                    )
-                    check_feature_2_breakout(
-                        self.notifier,
-                        self.state_store,
-                        self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
-                    )
-                    self.last_evaluated_15m_bucket = current_bucket
-                    evaluate_stop_loss = True
-                else:
-                    self.state_store.load()
-                    if self.state_store.data.get("pending_breakouts"):
-                        check_feature_2_breakout(
-                            self.notifier, self.state_store,
-                            self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID),
-                            retry_only=True,
-                        )
-                    evaluate_stop_loss = any(
-                        "pending_stop_loss_candle" in pos for pos in self.pos_store.get_open_positions()
-                    )
-
-                if evaluate_stop_loss:
-                    check_feature_3_stop_loss(
-                        self.notifier,
-                        self.pos_store,
-                        self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
-                    )
-
-                # 每 10 秒高频巡检 Feature 4: 持仓动态移动止盈（优先复用 mark_price 减少 HTTP 轮询）
-                check_feature_4_trailing_stops(
-                    self.notifier,
-                    self.pos_store,
-                    float(self.cfg.get("trailing_activation_pct", 6.0)),
-                    float(self.cfg.get("trailing_lock_pct", 1.0)),
-                    price_cache=price_cache or None,
-                )
-
+                self.run_iteration()
                 time.sleep(10)
             except Exception as e:
                 logger.error(f"守护主循环异常: {e}", exc_info=True)
@@ -1483,7 +1408,7 @@ class TradeAlertDaemon:
 
 
 # ==============================================================================
-# 8. 命令行入口 (CLI Interface)
+# 7. 命令行入口 (CLI Interface)
 # ==============================================================================
 
 def format_positions_table(positions: List[dict]) -> str:
@@ -1508,114 +1433,118 @@ def format_positions_table(positions: List[dict]) -> str:
     return "\n".join(lines)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="“突破追多与移动保本系统”四重闭环守护体系 (Trade Alert & Risk Management Daemon)"
-    )
-    parser.add_argument("--sync-binance", action="store_true", help="立即从币安合约拉取实盘活跃持仓并自动同步")
-    parser.add_argument("--check-once", "--evaluate-once", action="store_true", dest="check_once", help="执行单次全量评测并输出汇总 (适用于 cron / hourly_sync)")
-    parser.add_argument("--daemon", action="store_true", help="启动持续后台守护进程 (10s 移动止盈巡检 + 15m 整点收盘突破/止损)")
-    parser.add_argument("--add-pos", nargs=2, metavar=("SYMBOL", "ENTRY_PRICE"), help="手动录入新持仓 (例如: --add-pos YBUSDT 0.54)")
-    parser.add_argument("--amount", type=float, default=0.0, help="持仓数量 (与 --add-pos 配合使用)")
-    parser.add_argument("--list-pos", action="store_true", help="打印当前未平仓持仓清单与动态止盈状态")
-    parser.add_argument("--close-pos", metavar="SYMBOL", help="平仓并归档指定持仓 (例如: --close-pos YBUSDT)")
-    parser.add_argument("--dry-run", action="store_true", help="强制以模拟/日志模式运行，不发送真实 Server酱 微信通知")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="指定配置文件路径")
-
-    args = parser.parse_args()
-    cfg = load_config(args.config)
-
-    # 0. 币安实盘持仓同步指令: --sync-binance
-    if args.sync_binance:
-        if not bpc:
-            logger.error("未找到 binance_position_client 模块。")
-            return
-        b_client = bpc.BinanceFuturesClient(
-            cfg.get("binance_api_key", ""),
-            cfg.get("binance_api_secret", "")
+def main() -> None:
+    managed_handlers = configure_logging()
+    try:
+        parser = argparse.ArgumentParser(
+            description="“突破追多与移动保本系统”四重闭环守护体系 (Trade Alert & Risk Management Daemon)"
         )
-        if not b_client.is_configured():
-            print("\n⚠️ 币安 API Key / Secret 未配置，系统运行于手动/离线模式。")
-            print("如需启用币安实盘自动同步，请在项目根目录 .env 或环境变量 (BINANCE_API_KEY, BINANCE_API_SECRET) 中配置凭据。\n")
+        parser.add_argument("--sync-binance", action="store_true", help="立即从币安合约拉取实盘活跃持仓并自动同步")
+        parser.add_argument("--check-once", "--evaluate-once", action="store_true", dest="check_once", help="执行单次全量评测并输出汇总 (适用于 cron / hourly_sync)")
+        parser.add_argument("--daemon", action="store_true", help="启动持续后台守护进程 (10s 移动止盈巡检 + 15m 整点收盘突破/止损)")
+        parser.add_argument("--add-pos", nargs=2, metavar=("SYMBOL", "ENTRY_PRICE"), help="手动录入新持仓 (例如: --add-pos YBUSDT 0.54)")
+        parser.add_argument("--amount", type=float, default=0.0, help="持仓数量 (与 --add-pos 配合使用)")
+        parser.add_argument("--list-pos", action="store_true", help="打印当前未平仓持仓清单与动态止盈状态")
+        parser.add_argument("--close-pos", metavar="SYMBOL", help="平仓并归档指定持仓 (例如: --close-pos YBUSDT)")
+        parser.add_argument("--dry-run", action="store_true", help="强制以模拟/日志模式运行，不发送真实 Server酱 微信通知")
+
+        args = parser.parse_args()
+        cfg = load_config()
+
+        if args.sync_binance:
+            b_client = BinanceFuturesClient(
+                cfg.get("binance_api_key", ""),
+                cfg.get("binance_api_secret", ""),
+            )
+            if not b_client.is_configured():
+                print("\n⚠️ 币安 API Key / Secret 未配置，系统运行于手动/离线模式。")
+                print("如需启用币安实盘自动同步，请在项目根目录 .env 或环境变量 (BINANCE_API_KEY, BINANCE_API_SECRET) 中配置凭据。\n")
+                return
+
+            store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
+            res = bpc.sync_binance_positions(
+                b_client,
+                store,
+                cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID),
+                load_drawings=fetch_layout_drawings,
+            )
+            print("\n========================= 币安实盘持仓同步结果 =========================")
+            print(f"• 同步状态: {'成功' if res['synced'] else '失败'} ({res['reason']})")
+            count_label = "币安多头持仓数" if res["synced"] else "保留的本地持仓数"
+            print(f"• {count_label}: {res['active_count']}")
+            print(f"• 新增同步标的: {', '.join(res['new_added']) if res['new_added'] else '无'}")
+            print(f"• 自动归档平仓: {', '.join(res['auto_closed']) if res['auto_closed'] else '无'}")
+            if res.get("active_positions"):
+                print("-" * 72)
+                print("币安实时活跃多头列表:")
+                for p in res["active_positions"]:
+                    print(
+                        f"  - {p['symbol']}: 均价 {p['entry_price']} | 数量 {p['amount']} | "
+                        f"标记价 {p['mark_price']} | 未实现盈亏 {p['unrealized_pnl']} USDT ({p['leverage']}x)"
+                    )
+            print("========================================================================\n")
             return
 
-        store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
-        res = bpc.sync_binance_positions(
-            b_client, store, cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID),
-            load_drawings=fetch_layout_drawings,
-        )
-        print("\n========================= 币安实盘持仓同步结果 =========================")
-        print(f"• 同步状态: {'成功' if res['synced'] else '失败'} ({res['reason']})")
-        count_label = "币安多头持仓数" if res["synced"] else "保留的本地持仓数"
-        print(f"• {count_label}: {res['active_count']}")
-        print(f"• 新增同步标的: {', '.join(res['new_added']) if res['new_added'] else '无'}")
-        print(f"• 自动归档平仓: {', '.join(res['auto_closed']) if res['auto_closed'] else '无'}")
-        if res.get("active_positions"):
-            print("-" * 72)
-            print("币安实时活跃多头列表:")
-            for p in res["active_positions"]:
-                print(f"  - {p['symbol']}: 均价 {p['entry_price']} | 数量 {p['amount']} | 标记价 {p['mark_price']} | 未实现盈亏 {p['unrealized_pnl']} USDT ({p['leverage']}x)")
-        print("========================================================================\n")
-        return
+        if args.add_pos:
+            sym, price_str = args.add_pos
+            try:
+                entry_price = float(price_str)
+            except ValueError:
+                logger.error(f"无效的开仓价格: {price_str}")
+                sys.exit(1)
+            store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
+            store.add_position(sym, entry_price, amount=args.amount)
+            print(f"✅ 持仓 {clean_symbol(sym)} 录入成功！")
+            return
 
-    # 1. 持仓管理指令: --add-pos
-    if args.add_pos:
-        sym, price_str = args.add_pos
-        try:
-            entry_price = float(price_str)
-        except ValueError:
-            logger.error(f"无效的开仓价格: {price_str}")
-            sys.exit(1)
-        store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
-        store.add_position(sym, entry_price, amount=args.amount)
-        print(f"✅ 持仓 {sym.upper()} 录入成功！")
-        return
+        if args.close_pos:
+            sym = args.close_pos
+            store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
+            res = store.close_position(sym, reason="MANUAL_CLOSE")
+            if res:
+                print(f"✅ 持仓 {clean_symbol(sym)} 已手动平仓并归档！")
+            else:
+                print(f"⚠️ 未找到 {clean_symbol(sym)} 的开仓记录。")
+            return
 
-    # 2. 持仓管理指令: --close-pos
-    if args.close_pos:
-        sym = args.close_pos
-        store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
-        res = store.close_position(sym, reason="MANUAL_CLOSE")
-        if res:
-            print(f"✅ 持仓 {sym.upper()} 已手动平仓并归档！")
-        else:
-            print(f"⚠️ 未找到 {sym.upper()} 的开仓记录。")
-        return
+        if args.list_pos:
+            store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
+            open_pos = store.get_open_positions()
+            if open_pos:
+                try:
+                    prices = fetch_ticker_prices([clean_symbol(p["symbol"]) for p in open_pos])
+                except BinanceAPIError as e:
+                    logger.warning(f"批量获取行情失败: {e}")
+                    prices = {}
+                for p in open_pos:
+                    curr_p = prices.get(clean_symbol(p["symbol"]), 0.0)
+                    entry_val = float(p.get("entry_price", 0.0))
+                    if curr_p > 0 and entry_val > 0:
+                        p["current_price"] = curr_p
+                        p["pnl_pct"] = round((curr_p - entry_val) / entry_val * 100.0, 2)
+            print("\n========================= 当前有效开仓清单 =========================")
+            print(format_positions_table(open_pos))
+            print("===================================================================\n")
+            return
 
-    # 3. 持仓管理指令: --list-pos
-    if args.list_pos:
-        store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
-        open_pos = store.get_open_positions()
-        # 刷新实时市价以呈现最新盈亏
-        for p in open_pos:
-            curr_p = get_binance_ticker_price(p["symbol"])
-            if curr_p > 0:
-                p["current_price"] = curr_p
-                p["pnl_pct"] = round((curr_p - p["entry_price"]) / p["entry_price"] * 100.0, 2)
-        print("\n========================= 当前有效开仓清单 =========================")
-        print(format_positions_table(open_pos))
-        print("===================================================================\n")
-        return
+        if args.check_once:
+            notifier = ServerChanNotifier(cfg.get("serverchan_sendkey", ""), dry_run=args.dry_run)
+            state_store = ResonanceStateStore(Path(cfg.get("resonance_state_file", DEFAULT_RESONANCE_STATE_PATH)))
+            pos_store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
+            res = run_evaluation_cycle(notifier, state_store, pos_store, cfg)
+            print("\n================== 交易预警与风控单次评测报告 ==================")
+            print(json.dumps(res, indent=2, ensure_ascii=False))
+            print("================================================================\n")
+            return
 
-    # 4. 单次评测指令: --check-once
-    if args.check_once:
-        notifier = ServerChanNotifier(cfg.get("serverchan_sendkey", ""), dry_run=args.dry_run)
-        state_store = ResonanceStateStore(Path(cfg.get("resonance_state_file", DEFAULT_RESONANCE_STATE_PATH)))
-        pos_store = PositionStore(Path(cfg.get("positions_file", DEFAULT_POSITIONS_PATH)))
-        res = run_evaluation_cycle(notifier, state_store, pos_store, cfg)
-        print("\n================== 交易预警与风控单次评测报告 ==================")
-        print(json.dumps(res, indent=2, ensure_ascii=False))
-        print("================================================================\n")
-        return
+        if args.daemon:
+            daemon = TradeAlertDaemon(cfg, dry_run=args.dry_run)
+            daemon.start()
+            return
 
-    # 5. 持续守护进程指令: --daemon
-    if args.daemon:
-        daemon = TradeAlertDaemon(cfg, dry_run=args.dry_run)
-        daemon.start()
-        return
-
-    # 无参数时打印帮助信息
-    parser.print_help()
+        parser.print_help()
+    finally:
+        close_managed_handlers(managed_handlers)
 
 
 if __name__ == "__main__":

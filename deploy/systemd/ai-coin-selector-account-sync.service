@@ -8,5 +8,6 @@ ConditionPathExists=/opt/ai-coin-selector/.env
 Type=oneshot
 User=ai-coin-selector
 WorkingDirectory=/opt/ai-coin-selector
+Environment=COIN_DATABASE=/opt/ai-coin-selector/runs/account.sqlite3
 ExecStart=/usr/bin/python3 scripts/account_analytics_engine.py --database runs/account.sqlite3
 UMask=0027

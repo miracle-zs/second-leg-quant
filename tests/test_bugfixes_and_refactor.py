@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
-from http.server import ThreadingHTTPServer
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -59,8 +59,8 @@ class TestTrendlineMatchingAndSelection(unittest.TestCase):
         self.assertIsNone(bpc.select_best_position_trendline([lines[0], lines[1]], current_time=now))
 
     def test_tv_log_resistance_overflow_guard(self):
-        res = tve.calculate_log_resistance(p1=1.0, t1=1000, p2=100.0, t2=1010, target_t=100000)
-        self.assertEqual(res, 0.0)
+        with self.assertRaises(ValueError):
+            tve.calculate_log_resistance(p1=1.0, t1=1000, p2=100.0, t2=1010, target_t=100000)
 
 
 class TestAccountAnalyticsFixes(unittest.TestCase):
@@ -107,7 +107,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
         status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "account.sqlite3"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn, conn:
                 conn.execute("CREATE TABLE equity_observations (timestamp INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
             with patch.object(
                 engine,
@@ -130,10 +130,100 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
         }
         enriched = engine.enrich_active_position(raw_short, 0)
         self.assertEqual(enriched["side"], "SHORT")
+        self.assertFalse(enriched["risk_monitored"])
         self.assertEqual(enriched["amount"], 2.0)
         self.assertAlmostEqual(enriched["unrealized_pnl"], 300.0, places=2)
         self.assertAlmostEqual(enriched["pnl_pct"], 5.0, places=2)
         self.assertGreater(enriched["liquidation_price"], 3000.0)
+
+        # 验证纯静态壳 + account.js 明确提示空单未纳入自动风控
+        import build_account_analytics as baa
+        self.assertFalse(hasattr(baa, "normalize_account_data"))
+        html_out = baa.render_account_html()
+        self.assertIn("static/styles.css", html_out)
+        self.assertIn("static/account.js", html_out)
+        self.assertNotIn('<script id="account-data"', html_out)
+        self.assertIn("short-position-warning", html_out)
+        self.assertIn("仅多头仓位纳入 15m 破线止损与移动保本风控", html_out)
+        account_js = (ROOT_DIR / "web" / "account.js").read_text(encoding="utf-8")
+        self.assertIn("未受风控监控", account_js)
+        self.assertIn("未纳入风控", account_js)
+
+    def test_one_way_both_mode_multi_fill_close_reconstructs_side_prices_and_entry_time(self):
+        """单向持仓 (positionSide=BOTH) 下多笔平仓合并应推断方向、重算加权平仓均价并补全开仓价与开仓时间"""
+        client = bpc.BinanceFuturesClient("demo", "demo")
+        engine = aae.AccountAnalyticsEngine(client=client)
+        start = 1795200000000
+        previous = {
+            "recording": {"start_ms": start, "started_at": "2026-11-21 00:00:00", "initial_equity": 1000},
+            "equity_curve": [{"timestamp": start, "equity": 1000, "drawdown_usd": 0, "drawdown_pct": 0}],
+        }
+        # 单向持仓开多 3 个 @100，分两笔平多：1 个 @110 (盈利 10)，2 个 @116 (盈利 32)，加权平仓均价 = (110+232)/3 = 114.0
+        income = [
+            {"incomeType": "REALIZED_PNL", "tranId": 11, "tradeId": "102", "time": start + 4000, "income": "10", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "REALIZED_PNL", "tranId": 12, "tradeId": "103", "time": start + 5000, "income": "32", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "COMMISSION", "tranId": 13, "tradeId": "102", "time": start + 4000, "income": "-0.1", "asset": "USDT", "symbol": "BTCUSDT"},
+            {"incomeType": "COMMISSION", "tranId": 14, "tradeId": "103", "time": start + 5000, "income": "-0.2", "asset": "USDT", "symbol": "BTCUSDT"},
+        ]
+        fills = [
+            {"symbol": "BTCUSDT", "id": 101, "orderId": 10, "side": "BUY", "time": start + 1000, "positionSide": "BOTH", "price": "100", "qty": "3", "quoteQty": "300"},
+            {"symbol": "BTCUSDT", "id": 102, "orderId": 20, "side": "SELL", "time": start + 4000, "positionSide": "BOTH", "price": "110", "qty": "1", "quoteQty": "110"},
+            {"symbol": "BTCUSDT", "id": 103, "orderId": 20, "side": "SELL", "time": start + 5000, "positionSide": "BOTH", "price": "116", "qty": "2", "quoteQty": "232"},
+        ]
+        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "account.sqlite3"
+            api.publish_report(db_path, previous)
+            with patch.object(
+                engine,
+                "fetch_binance_data",
+                return_value=({"totalWalletBalance": "1041.7", "totalMarginBalance": "1041.7"}, income, [], status),
+            ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
+                client,
+                "_send_signed_request",
+                side_effect=lambda endpoint, params: (income if endpoint == "/fapi/v1/income" else fills, None),
+            ):
+                report = engine.run(database=db_path)
+
+        self.assertEqual(len(report["trade_history"]), 1)
+        trade = report["trade_history"][0]
+        self.assertEqual(trade["side"], "LONG")
+        self.assertAlmostEqual(trade["amount"], 3.0, places=6)
+        self.assertAlmostEqual(trade["exit_price"], 114.0, places=6)
+        self.assertAlmostEqual(trade["entry_price"], 100.0, places=6)
+        self.assertNotEqual(trade["entry_time"], "--")
+        self.assertEqual(trade["duration_seconds"], 4)
+        self.assertIsNotNone(trade["pnl_pct"])
+        self.assertAlmostEqual(trade["net_pnl"], 41.7, places=2)
+
+
+class TestConcurrentTransactionLocking(unittest.TestCase):
+    """验证跨进程事务锁覆盖完整读-改-写过程，避免并发丢更新"""
+
+    def test_position_store_transaction_prevents_lost_updates_across_processes(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            pos_file = Path(tmp) / "positions.json"
+            worker_code = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1])))
+import trade_alert_daemon as tad
+store = tad.PositionStore(Path(sys.argv[2]))
+sym = sys.argv[3]
+with store.transaction():
+    time.sleep(0.05)
+    store.add_position(sym, 1.23, amount=10.0)
+"""
+            p1 = subprocess.Popen([sys.executable, "-c", worker_code, str(SCRIPTS_DIR), str(pos_file), "AAAUSDT"])
+            p2 = subprocess.Popen([sys.executable, "-c", worker_code, str(SCRIPTS_DIR), str(pos_file), "BBBUSDT"])
+            self.assertEqual(p1.wait(timeout=10), 0)
+            self.assertEqual(p2.wait(timeout=10), 0)
+
+            import trade_alert_daemon as tad
+            final_store = tad.PositionStore(pos_file)
+            syms = sorted(p["symbol"] for p in final_store.get_open_positions())
+            self.assertEqual(syms, ["AAAUSDT", "BBBUSDT"])
 
 
 class TestBinanceClientAndConfig(unittest.TestCase):
@@ -161,7 +251,7 @@ class TestBinanceClientAndConfig(unittest.TestCase):
 
 
 class TestDashboardAPIRoutes(unittest.TestCase):
-    """验证 account_dashboard_api.py 的 query 参数、本地直连与静态资源服务"""
+    """验证 account_dashboard_api.py 静态壳路由、ETag 缓存、重定向与安全边界"""
 
     def _invoke_get(self, handler_cls, raw_path: str, headers: dict = None):
         import io
@@ -192,7 +282,7 @@ class TestDashboardAPIRoutes(unittest.TestCase):
         handler.do_GET()
         return status_box.get("code", 0), resp_headers, handler.wfile.getvalue()
 
-    def test_api_handles_query_params_and_static_assets(self):
+    def test_static_shells_redirects_apis_and_etags(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "test.sqlite3"
             api.publish_report(
@@ -205,39 +295,164 @@ class TestDashboardAPIRoutes(unittest.TestCase):
                     "daily_pnl": [],
                 },
             )
-            with sqlite3.connect(db_path) as conn:
+            with closing(cfg.open_sqlite_connection(db_path, readonly=False)) as conn, conn:
                 conn.execute(
                     "CREATE TABLE candidate_snapshot (id INTEGER PRIMARY KEY, updated_at TEXT NOT NULL, payload TEXT NOT NULL)"
                 )
                 conn.execute(
                     "INSERT INTO candidate_snapshot VALUES (1, '2026-11-23 12:00:00', ?)",
-                    (json.dumps([]),),
+                    (json.dumps([{"symbol": "BTCUSDT"}]),),
                 )
 
             handler_cls = api.create_handler(db_path)
 
-            code, _, body = self._invoke_get(handler_cls, "/account?t=123")
-            self.assertEqual(code, 200)
-            self.assertEqual(json.loads(body)["summary"]["total_equity"], 1234.56)
+            # 1. Pure static shells & XSS immunity against X-Forwarded-Prefix
+            xss_headers = {"X-Forwarded-Prefix": "</script><script>alert(1)</script>"}
+            for route in ("/", "/candidates", "/index.html"):
+                code, headers, body = self._invoke_get(handler_cls, route, headers=xss_headers)
+                self.assertEqual(code, 200)
+                self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
+                text = body.decode("utf-8")
+                self.assertIn("static/styles.css", text)
+                self.assertIn("static/candidates.js", text)
+                self.assertNotIn("BTCUSDT", text)
+                self.assertNotIn("<script>alert(1)</script>", text)
 
-            code, _, body = self._invoke_get(handler_cls, "/candidate-version?v=1")
+            code, headers, body = self._invoke_get(handler_cls, "/account.html")
+            self.assertEqual(code, 200)
+            account_html = body.decode("utf-8")
+            self.assertIn("static/styles.css", account_html)
+            self.assertIn("static/account.js", account_html)
+            self.assertNotIn('<script id="account-data"', account_html)
+
+            code, headers, body = self._invoke_get(handler_cls, "/reports/strategy_second_leg_playbook.html")
+            self.assertEqual(code, 200)
+            self.assertIn("../static/styles.css", body.decode("utf-8"))
+
+            # 2. Trailing-slash redirects
+            code, headers, body = self._invoke_get(handler_cls, "/account/")
+            self.assertEqual(code, 302)
+            self.assertEqual(headers["location"], "../account.html")
+            self.assertEqual(body, b"")
+
+            code, headers, body = self._invoke_get(handler_cls, "/strategy/")
+            self.assertEqual(code, 302)
+            self.assertEqual(headers["location"], "../reports/strategy_second_leg_playbook.html")
+            self.assertEqual(body, b"")
+
+            # 3. JSON APIs & ETag / 304 Not Modified
+            for route in ("/account?t=123", "/api/account?t=123"):
+                code, headers, body = self._invoke_get(handler_cls, route)
+                self.assertEqual(code, 200)
+                self.assertEqual(json.loads(body)["summary"]["total_equity"], 1234.56)
+                etag = headers["etag"]
+                code_304, headers_304, body_304 = self._invoke_get(
+                    handler_cls, route, headers={"If-None-Match": etag}
+                )
+                self.assertEqual(code_304, 304)
+                self.assertEqual(headers_304["etag"], etag)
+                self.assertEqual(body_304, b"")
+
+            code, headers, body = self._invoke_get(handler_cls, "/api/candidates")
+            self.assertEqual(code, 200)
+            cand_payload = json.loads(body)
+            self.assertEqual(cand_payload["updated_at"], "2026-11-23 12:00:00")
+            self.assertEqual(cand_payload["candidates"], [{"symbol": "BTCUSDT"}])
+            cand_etag = headers["etag"]
+            code_304, _, body_304 = self._invoke_get(
+                handler_cls, "/api/candidates", headers={"If-None-Match": cand_etag}
+            )
+            self.assertEqual(code_304, 304)
+            self.assertEqual(body_304, b"")
+
+            code, _, body = self._invoke_get(handler_cls, "/api/candidate-version?v=1")
             self.assertEqual(code, 200)
             self.assertEqual(json.loads(body)["updated_at"], "2026-11-23 12:00:00")
 
-            code, _, body = self._invoke_get(handler_cls, "/candidates?t=999")
-            self.assertEqual(code, 200)
-            self.assertIn("api/candidate-version", body.decode("utf-8"))
-
-            code, _, body = self._invoke_get(handler_cls, "/static/account.js")
-            self.assertEqual(code, 200)
-            self.assertIn("renderDashboard", body.decode("utf-8"))
-
-            code, _, body = self._invoke_get(handler_cls, "/static/styles.css")
-            self.assertEqual(code, 200)
-            self.assertIn("kpi-card", body.decode("utf-8"))
+            # 4. Static assets & 404
+            for asset in ("/static/account.js", "/static/candidates.js", "/static/styles.css"):
+                code, headers, _ = self._invoke_get(handler_cls, asset)
+                self.assertEqual(code, 200)
+                self.assertIn("charset=utf-8", headers["content-type"])
 
             code, _, _ = self._invoke_get(handler_cls, "/unknown?x=1")
             self.assertEqual(code, 404)
+
+    def test_static_path_traversal_and_binary_mime_type(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            web_dir = root / "web"
+            sibling_secret = root / "web_secret"
+            web_dir.mkdir()
+            sibling_secret.mkdir()
+            (web_dir / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            (sibling_secret / "secret.txt").write_text("TOP_SECRET", encoding="utf-8")
+            db_path = root / "empty.sqlite3"
+
+            with patch.object(api, "WEB_DIR", web_dir):
+                handler_cls = api.create_handler(db_path)
+
+                code, headers, body = self._invoke_get(handler_cls, "/static/logo.png")
+                self.assertEqual(code, 200)
+                self.assertEqual(headers["content-type"], "image/png")
+                self.assertNotIn("charset", headers["content-type"])
+                self.assertEqual(body, b"\x89PNG\r\n\x1a\n")
+
+                # Sibling prefix directory bypass & absolute path bypass must both return 404
+                code, _, _ = self._invoke_get(handler_cls, "/static/../web_secret/secret.txt")
+                self.assertEqual(code, 404)
+                code, _, _ = self._invoke_get(handler_cls, "/static//etc/passwd")
+                self.assertEqual(code, 404)
+                code, _, _ = self._invoke_get(handler_cls, "/static/")
+                self.assertEqual(code, 404)
+
+                # Missing DB returns 503 cleanly
+                code, _, _ = self._invoke_get(handler_cls, "/api/account")
+                self.assertEqual(code, 503)
+
+    def test_http11_keepalive_server_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "live.sqlite3"
+            api.publish_report(
+                db_path,
+                {
+                    "summary": {"total_equity": 999.0},
+                    "active_positions": [],
+                    "trade_history": [],
+                    "equity_curve": [],
+                    "daily_pnl": [],
+                },
+            )
+            handler_cls = api.create_handler(db_path)
+            with api.DashboardHTTPServer(("127.0.0.1", 0), handler_cls) as server:
+                port = server.server_address[1]
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                try:
+                    conn.request("GET", "/api/account")
+                    resp1 = conn.getresponse()
+                    raw1 = resp1.read()
+                    self.assertEqual(resp1.status, 200)
+                    etag = resp1.getheader("ETag")
+                    self.assertIsNotNone(etag)
+                    self.assertEqual(json.loads(raw1)["summary"]["total_equity"], 999.0)
+
+                    # Reuse same HTTP/1.1 connection for 304 and 302
+                    conn.request("GET", "/api/account", headers={"If-None-Match": etag})
+                    resp2 = conn.getresponse()
+                    raw2 = resp2.read()
+                    self.assertEqual(resp2.status, 304)
+                    self.assertEqual(raw2, b"")
+
+                    conn.request("GET", "/account/")
+                    resp3 = conn.getresponse()
+                    resp3.read()
+                    self.assertEqual(resp3.status, 302)
+                    self.assertEqual(resp3.getheader("Location"), "../account.html")
+                finally:
+                    conn.close()
+                    server.shutdown()
 
 
 if __name__ == "__main__":

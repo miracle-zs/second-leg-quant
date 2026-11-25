@@ -1,653 +1,75 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-账户数据可视化页面构建脚本 (Account Analytics Builder v3.5 Pro)
+账户数据可视化静态外壳构建脚本 (Account Analytics Static Shell Builder)
 ==============================================================================
 交付路径: account.html
-核心功能:
-1. 风格完全统一：继承 index.html 顶级机构级暗色 HUD 风格（Tailwind CSS, JetBrains Mono, 卡片半透明质感，红绿霓虹态）。
-2. 顶部 KPI 矩阵卡片：账户总资产 (Equity)、可用保证金、累计实现盈亏、未结浮盈、胜率、
-   盈亏比 (Profit Factor)、最大回撤 (Max Drawdown)、夏普比率、已平仓交易总数等。
-3. 核心可视化交互图表 (基于 Chart.js 4)：
-   - 资金净值走势曲线 (Equity Curve)：资金增长曲线 vs 初始本金基准线；
-   - 累计盈亏与水下回撤双轴/双图 (Underwater Drawdown)；
-   - 每日盈亏柱状图 (Daily PnL Bar Chart)：绿正红负清晰对比；
-   - 交易盈亏分布直方图 / 散点图 (Trade PnL Distribution)。
-4. 活跃持仓监控面板 (Active Positions)：标的、杠杆、仓位大小、开仓价、标记价、
-   未实现盈亏(%与$)、止损止盈保本线、破线止损状态。
-5. 历史开平仓全量流水表 (Trade History Table)：时间、币种、方向(多/空)、开仓均价、
-   平仓均价、盈亏金额、盈亏率、持仓时间、平仓类型(移动保本/破线止损/止盈/手动等)、
-   关联趋势线标签；支持前端即时搜索与多维度筛选（全部/盈利/亏损/保本/止损）。
-6. 数据驱动：优先读取 runs/account_analytics.json，自动容错降级读取
-   runs/trade_positions.json 与模拟兜底，内嵌静态 JSON 数据保障 100% 离线自给自足。
-==============================================================================
+职责:
+- 生成纯静态 HTML 外壳 (链接 static/styles.css、Chart.js 与 static/account.js)
+- 不内联 CSS/JS 或私有账户 JSON 数据，所有动态数据由浏览器从同源 api/account 拉取渲染
 """
 
 import os
 import sys
-import json
-import math
-import html
-import datetime
+import time
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Optional
 
-# 路径基准
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
-RUNS_DIR = PROJECT_ROOT / "runs"
-ANALYTICS_FILE = RUNS_DIR / "account_analytics.json"
-POSITIONS_FILE = RUNS_DIR / "trade_positions.json"
-OUTPUT_HTML = PROJECT_ROOT / "account.html"
-TV_LAYOUT_ID = "ig0LuDL8"
-
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-
-def format_crypto_price(val: Optional[float]) -> str:
-    """根据价格量级自适应格式化币种价格"""
-    if val is None or not isinstance(val, (int, float)) or math.isnan(val):
-        return "--"
-    abs_v = abs(val)
-    if abs_v >= 100:
-        return f"{val:,.2f}"
-    elif abs_v >= 1:
-        return f"{val:.4f}"
-    elif abs_v >= 0.0001:
-        return f"{val:.6f}"
-    else:
-        return f"{val:.8f}"
-
-
-def calculate_duration_str(start_str: Optional[str], end_str: Optional[str]) -> str:
-    """计算起止时间之间的时长文本"""
-    if not start_str or not end_str:
-        return "--"
-    try:
-        t1 = datetime.datetime.fromisoformat(str(start_str).replace("Z", "+00:00"))
-    except Exception:
-        try:
-            t1 = datetime.datetime.strptime(str(start_str), "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return "--"
-
-    try:
-        t2 = datetime.datetime.fromisoformat(str(end_str).replace("Z", "+00:00"))
-    except Exception:
-        try:
-            t2 = datetime.datetime.strptime(str(end_str), "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return "--"
-
-    diff_sec = int(abs((t2 - t1).total_seconds()))
-    if diff_sec < 60:
-        return f"{diff_sec}s"
-    elif diff_sec < 3600:
-        m = diff_sec // 60
-        s = diff_sec % 60
-        return f"{m}m {s}s"
-    else:
-        h = diff_sec // 3600
-        m = (diff_sec % 3600) // 60
-        return f"{h}h {m}m"
-
-
-def load_account_data(
-    analytics_path: Optional[Path] = None,
-    positions_path: Optional[Path] = None
-) -> Dict[str, Any]:
-    """
-    数据加载与降级适配器:
-    1. 优先读取 analytics_path (runs/account_analytics.json)
-    2. 若不存在或异常，降级解析 positions_path (runs/trade_positions.json) 计算基本指标
-    3. 保证返回满足前端渲染的完备数据字典，绝不崩溃
-    """
-    a_path = analytics_path or ANALYTICS_FILE
-    p_path = positions_path or POSITIONS_FILE
-
-    # 1. 优先加载 runs/account_analytics.json
-    if a_path.exists():
-        try:
-            with open(a_path, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
-                if isinstance(raw_data, dict) and ("summary" in raw_data or "total_equity" in raw_data):
-                    return normalize_account_data(raw_data)
-        except Exception as e:
-            print(f"[WARN] Failed to load {a_path}: {e}, falling back to positions file", file=sys.stderr)
-
-    # 2. 降级方案：从 runs/trade_positions.json 重新推算基础风控与资金模型
-    pos_data = {"positions": [], "history": []}
-    if p_path.exists():
-        try:
-            with open(p_path, "r", encoding="utf-8") as f:
-                pos_data = json.load(f)
-        except Exception as e:
-            print(f"[WARN] Failed to read {p_path}: {e}", file=sys.stderr)
-
-    return build_fallback_account_data(pos_data)
-
-
-def normalize_account_data(raw: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    标准化数据结构，确保所有前端需要的键存在且类型严谨
-    """
-    summary = raw.get("summary") or raw.get("metrics") or {}
-    
-    initial_equity = float(summary.get("initial_capital") or summary.get("initial_equity") or 10000.0)
-    total_equity = float(summary.get("total_equity") or initial_equity)
-    available_margin = float(summary.get("available_margin") or (total_equity * 0.9))
-    margin_used = float(summary.get("position_margin") or summary.get("margin_used") or (total_equity - available_margin))
-    
-    realized_pnl = float(summary.get("net_realized_pnl") or summary.get("cumulative_realized_pnl") or summary.get("realized_pnl") or 0.0)
-    gross_realized_pnl = float(summary.get("cumulative_realized_pnl") or realized_pnl)
-    total_fee = float(summary.get("total_fee") or 0.0)
-    unrealized_pnl = float(summary.get("total_unrealized_pnl") or summary.get("unrealized_pnl") or 0.0)
-    total_pnl = realized_pnl + unrealized_pnl
-    total_return_pct = float(summary.get("total_return_pct") or summary.get("roi_pct") or ((total_pnl / initial_equity) * 100 if initial_equity > 0 else 0.0))
-
-    win_rate_pct = float(summary.get("win_rate_pct") or 0.0)
-    win_rate_ex_breakeven_pct = float(summary.get("win_rate_ex_breakeven_pct") or win_rate_pct)
-    pf_raw = summary.get("profit_factor", 0.0)
-    profit_factor = 999.0 if (pf_raw is None or pf_raw >= 999.0 or math.isinf(float(pf_raw))) else float(pf_raw)
-
-    mdd_pct = float(summary.get("max_drawdown_pct") or 0.0)
-    mdd_usd = float(summary.get("max_drawdown_usd") or 0.0)
-    sharpe_ratio = float(summary.get("sharpe_ratio") or 0.0)
-    sortino_ratio = float(summary.get("sortino_ratio") or (sharpe_ratio * 1.5 if sharpe_ratio > 0 else 0.0))
-
-    total_trades = int(summary.get("total_trades") or summary.get("closed_trades") or len(raw.get("trade_history") or []))
-    winning_trades = int(summary.get("winning_trades") or 0)
-    losing_trades = int(summary.get("losing_trades") or 0)
-    breakeven_trades = int(summary.get("breakeven_trades") or max(0, total_trades - winning_trades - losing_trades))
-
-    avg_trade_pnl = float(summary.get("avg_trade_pnl") or (realized_pnl / total_trades if total_trades > 0 else 0.0))
-    avg_win = float(summary.get("avg_winning_trade") or summary.get("avg_win") or 0.0)
-    avg_loss = float(summary.get("avg_losing_trade") or summary.get("avg_loss") or 0.0)
-    avg_holding_duration = str(summary.get("avg_hold_duration_str") or summary.get("avg_holding_duration") or "3m 25s")
-    max_consecutive_wins = int(summary.get("max_consecutive_wins") or 0)
-    max_consecutive_losses = int(summary.get("max_consecutive_losses") or 0)
-
-    updated_at = str(raw.get("generated_at") or raw.get("updated_at") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    data_source = str(raw.get("data_source") or "binance_live")
-
-    # 规范化持仓
-    raw_positions = raw.get("active_positions") or raw.get("positions") or []
-    positions = []
-    for p in raw_positions:
-        entry_p = float(p.get("entry_price") or p.get("entryPrice") or 0.0)
-        mark_p = float(p.get("mark_price") or p.get("current_price") or p.get("markPrice") or entry_p)
-        amt = float(p.get("amount") or p.get("position_size") or p.get("positionAmt") or 0.0)
-        side = str(p.get("side") or ("LONG" if amt >= 0 else "SHORT")).upper()
-        leverage = int(p.get("leverage") or 5)
-        u_pnl = float(p.get("unrealized_pnl") or p.get("unRealizedProfit") or ((mark_p - entry_p) * amt if side == "LONG" else (entry_p - mark_p) * abs(amt)))
-        notional = abs(entry_p * amt)
-        u_pnl_pct = float(p.get("unrealized_pnl_pct") or ((u_pnl / (notional / leverage) * 100) if notional > 0 else 0.0))
-
-        trendline = p.get("trendline")
-        trendline_id = str(trendline.get("id") if isinstance(trendline, dict) else (trendline or p.get("trendline_id") or "--"))
-        sl_status = str(p.get("trendline_break_sl_status") or p.get("status") or ("SAFE" if u_pnl >= 0 else "WARNING"))
-
-        positions.append({
-            "symbol": str(p.get("symbol") or "--").upper(),
-            "side": side,
-            "leverage": leverage,
-            "amount": amt,
-            "position_size": notional,
-            "entry_price": entry_p,
-            "mark_price": mark_p,
-            "unrealized_pnl": u_pnl,
-            "unrealized_pnl_pct": u_pnl_pct,
-            "liquidation_price": float(p.get("liquidation_price") or p.get("liquidationPrice") or 0.0),
-            "stop_loss_price": float(p.get("stop_loss_price") or 0.0),
-            "take_profit_price": float(p.get("take_profit_price") or 0.0),
-            "breakeven_price": float(p.get("breakeven_price") or p.get("trailing_stop_price") or 0.0),
-            "trailing_stop_triggered": bool(p.get("trailing_stop_triggered", False)),
-            "trendline_break_sl_status": sl_status,
-            "trendline_id": trendline_id,
-            "entry_time": str(p.get("entry_time") or "--")
-        })
-
-    # 规范化历史流水
-    raw_history = raw.get("trade_history") or raw.get("history") or []
-    history = []
-    for h in raw_history:
-        entry_p = float(h.get("entry_price") or 0.0)
-        exit_p = float(h.get("exit_price") or entry_p)
-        amt = float(h.get("amount") or 0.0)
-        side = str(h.get("side") or "LONG").upper()
-        pnl = float(h.get("net_pnl") if "net_pnl" in h else (h.get("realized_pnl") if "realized_pnl" in h else h.get("pnl", 0.0)))
-        raw_return = h.get("pnl_pct")
-        if h.get("source") == "BINANCE_REALTIME" and not h.get("entry_notional"):
-            raw_return = None  # 旧报表中的流水重建记录可能含有占位收益率
-        pnl_pct = round(float(raw_return), 2) if raw_return is not None else None
-
-        e_time = str(h.get("entry_time") or "--")
-        c_time = str(h.get("closed_at") or h.get("exit_time") or "--")
-        dur = str(h.get("duration_str") or h.get("holding_duration") or calculate_duration_str(e_time, c_time))
-
-        t_id = str(h.get("trendline_id") or "")
-        if not t_id or t_id == "None":
-            t_obj = h.get("trendline") or h.get("trendline_info")
-            t_id = str(t_obj.get("id") if isinstance(t_obj, dict) else (t_obj or "--"))
-
-        close_reason = str(h.get("close_reason") or h.get("status") or "MANUAL_CLOSE")
-        outcome = str(h.get("outcome") or ("WIN" if pnl > 0.0001 else ("LOSS" if pnl < -0.0001 else "BREAKEVEN")))
-
-        history.append({
-            "trade_id": str(h.get("trade_id") or f"TRD-{len(history)+1}"),
-            "symbol": str(h.get("symbol") or "--").upper(),
-            "side": side,
-            "entry_price": entry_p,
-            "exit_price": exit_p,
-            "amount": amt,
-            "pnl": round(pnl, 4),
-            "pnl_pct": pnl_pct,
-            "entry_time": e_time,
-            "closed_at": c_time,
-            "holding_duration": dur,
-            "close_reason": close_reason,
-            "outcome": outcome,
-            "trendline_id": t_id if t_id != "None" else "--",
-            "trendline_label": str(h.get("trendline_label") or t_id or "--"),
-            "notes": str(h.get("notes") or "")
-        })
-
-    # 规范化净值曲线
-    raw_curve = raw.get("equity_curve") or []
-    equity_curve = []
-    for c in raw_curve:
-        ts_str = str(c.get("datetime") or c.get("timestamp") or "")
-        eq_val = float(c.get("equity") or initial_equity)
-        cum_pnl = float(c.get("cumulative_pnl") or (eq_val - initial_equity))
-        dd_pct = float(c.get("drawdown_pct") or 0.0)
-        # 确保回撤为负数或0，方便下行图表呈现
-        if dd_pct > 0:
-            dd_pct = -dd_pct
-        equity_curve.append({
-            "timestamp": ts_str,
-            "equity": round(eq_val, 2),
-            "benchmark": initial_equity,
-            "cumulative_pnl": round(cum_pnl, 2),
-            "drawdown_pct": round(dd_pct, 2),
-            "event": str(c.get("event") or "")
-        })
-
-    if not equity_curve:
-        equity_curve = generate_equity_curve_from_history(history, initial_equity)
-
-    # 规范化每日盈亏
-    raw_daily = raw.get("daily_pnl") or []
-    daily_pnl = []
-    for d in raw_daily:
-        d_pnl = float(d.get("net_pnl") if "net_pnl" in d else (d.get("realized_pnl") if "realized_pnl" in d else d.get("pnl", 0.0)))
-        cnt = int(d.get("trades_count") or d.get("trade_count") or 1)
-        daily_pnl.append({
-            "date": str(d.get("date") or ""),
-            "pnl": round(d_pnl, 2),
-            "trade_count": cnt,
-            "wins": int(d.get("wins") or 0),
-            "losses": int(d.get("losses") or 0),
-            "breakeven": int(d.get("breakeven") or 0)
-        })
-
-    if not daily_pnl:
-        daily_pnl = generate_daily_pnl_from_history(history)
-
-    return {
-        "summary": {
-            "initial_equity": initial_equity,
-            "total_equity": total_equity,
-            "available_margin": available_margin,
-            "margin_used": margin_used,
-            "realized_pnl": realized_pnl,
-            "gross_realized_pnl": gross_realized_pnl,
-            "total_fee": total_fee,
-            "unrealized_pnl": unrealized_pnl,
-            "total_pnl": total_pnl,
-            "total_return_pct": total_return_pct,
-            "win_rate_pct": win_rate_pct,
-            "win_rate_ex_breakeven_pct": win_rate_ex_breakeven_pct,
-            "profit_factor": profit_factor,
-            "max_drawdown_pct": -abs(mdd_pct),
-            "max_drawdown_usd": -abs(mdd_usd),
-            "sharpe_ratio": sharpe_ratio,
-            "sortino_ratio": sortino_ratio,
-            "total_closed_trades": total_trades,
-            "winning_trades": winning_trades,
-            "losing_trades": losing_trades,
-            "break_even_trades": breakeven_trades,
-            "avg_trade_pnl": avg_trade_pnl,
-            "avg_win": avg_win,
-            "avg_loss": avg_loss,
-            "avg_holding_duration": avg_holding_duration,
-            "max_consecutive_wins": max_consecutive_wins,
-            "max_consecutive_losses": max_consecutive_losses,
-            "updated_at": updated_at,
-            "data_source": data_source
-        },
-        "active_positions": positions,
-        "trade_history": history,
-        "equity_curve": equity_curve,
-        "daily_pnl": daily_pnl,
-        "income_breakdown": raw.get("income_breakdown", {}),
-        "positions_source": raw.get("positions_source"),
-    }
-
-
-def build_fallback_account_data(pos_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    当 runs/account_analytics.json 不存在时，由 trade_positions.json 深度自愈构建
-    """
-    initial_equity = 10000.0
-    history_raw = pos_data.get("history", [])
-    positions_raw = pos_data.get("positions", [])
-
-    history = []
-    total_realized_pnl = 0.0
-    wins = 0
-    losses = 0
-    gross_profit = 0.0
-    gross_loss = 0.0
-    durations_sec = []
-
-    for h in history_raw:
-        entry_p = float(h.get("entry_price") or 0.0)
-        exit_p = float(h.get("exit_price") or entry_p)
-        amt = float(h.get("amount") or 0.0)
-        side = "LONG"
-        pnl = (exit_p - entry_p) * amt
-        cost = entry_p * amt
-        pnl_pct = (pnl / cost * 100) if cost > 0 else 0.0
-
-        if pnl > 0.0001:
-            wins += 1
-            gross_profit += pnl
-        elif pnl < -0.0001:
-            losses += 1
-            gross_loss += abs(pnl)
-
-        total_realized_pnl += pnl
-
-        e_time = str(h.get("entry_time") or "--")
-        c_time = str(h.get("closed_at") or "--")
-        dur_str = calculate_duration_str(e_time, c_time)
-
-        try:
-            t1 = datetime.datetime.fromisoformat(e_time)
-            t2 = datetime.datetime.fromisoformat(c_time)
-            durations_sec.append(abs((t2 - t1).total_seconds()))
-        except Exception:
-            pass
-
-        t_obj = h.get("trendline")
-        t_id = str(t_obj.get("id") if isinstance(t_obj, dict) else (t_obj or "--"))
-        status = str(h.get("status") or "MANUAL_CLOSE")
-
-        history.append({
-            "trade_id": f"TRD-{len(history)+1}",
-            "symbol": str(h.get("symbol") or "--").upper(),
-            "side": side,
-            "entry_price": entry_p,
-            "exit_price": exit_p,
-            "amount": amt,
-            "pnl": round(pnl, 4),
-            "pnl_pct": round(pnl_pct, 2),
-            "entry_time": e_time,
-            "closed_at": c_time,
-            "holding_duration": dur_str,
-            "close_reason": "动态移动保本锁利" if "STOP_LOSS" in status and pnl > 0 else ("跌破趋势线止损" if "STOP_LOSS" in status else "手动平仓"),
-            "outcome": "WIN" if pnl > 0.0001 else ("LOSS" if pnl < -0.0001 else "BREAKEVEN"),
-            "trendline_id": t_id,
-            "trendline_label": t_id,
-            "notes": str(h.get("notes") or "")
-        })
-
-    positions = []
-    unrealized_pnl = 0.0
-    margin_used = 0.0
-    for p in positions_raw:
-        entry_p = float(p.get("entry_price") or 0.0)
-        cur_p = float(p.get("current_price") or p.get("mark_price") or entry_p)
-        amt = float(p.get("amount") or 0.0)
-        leverage = int(p.get("leverage") or 5)
-        u_pnl = (cur_p - entry_p) * amt
-        notional = entry_p * amt
-        u_pnl_pct = (u_pnl / (notional / leverage) * 100) if notional > 0 else 0.0
-        unrealized_pnl += u_pnl
-        margin_used += (notional / leverage)
-
-        t_obj = p.get("trendline")
-        t_id = str(t_obj.get("id") if isinstance(t_obj, dict) else (t_obj or "--"))
-
-        positions.append({
-            "symbol": str(p.get("symbol") or "--").upper(),
-            "side": "LONG",
-            "leverage": leverage,
-            "amount": amt,
-            "position_size": notional,
-            "entry_price": entry_p,
-            "mark_price": cur_p,
-            "unrealized_pnl": round(u_pnl, 4),
-            "unrealized_pnl_pct": round(u_pnl_pct, 2),
-            "liquidation_price": round(entry_p * 0.82, 4),
-            "stop_loss_price": float(p.get("trailing_stop_price") or 0.0),
-            "take_profit_price": round(entry_p * 1.15, 4),
-            "breakeven_price": float(p.get("trailing_stop_price") or 0.0),
-            "trailing_stop_triggered": bool(p.get("trailing_stop_triggered", False)),
-            "trendline_break_sl_status": "SAFE",
-            "trendline_id": t_id,
-            "entry_time": str(p.get("entry_time") or "--")
-        })
-
-    total_trades = len(history)
-    win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
-    pf = (gross_profit / gross_loss) if gross_loss > 0 else (999.0 if gross_profit > 0 else 1.0)
-    total_equity = initial_equity + total_realized_pnl + unrealized_pnl
-    available_margin = max(0.0, total_equity - margin_used)
-    total_return_pct = (total_equity - initial_equity) / initial_equity * 100
-
-    avg_dur = f"{int(sum(durations_sec) / len(durations_sec) // 60)}m {int(sum(durations_sec) / len(durations_sec) % 60)}s" if durations_sec else "3m 25s"
-
-    equity_curve = generate_equity_curve_from_history(history, initial_equity)
-    daily_pnl = generate_daily_pnl_from_history(history)
-
-    return {
-        "summary": {
-            "initial_equity": initial_equity,
-            "total_equity": round(total_equity, 2),
-            "available_margin": round(available_margin, 2),
-            "margin_used": round(margin_used, 2),
-            "realized_pnl": round(total_realized_pnl, 2),
-            "unrealized_pnl": round(unrealized_pnl, 2),
-            "total_pnl": round(total_realized_pnl + unrealized_pnl, 2),
-            "total_return_pct": round(total_return_pct, 2),
-            "win_rate_pct": round(win_rate, 1),
-            "profit_factor": round(pf, 2),
-            "max_drawdown_pct": -0.01 if total_trades > 0 else 0.0,
-            "max_drawdown_usd": -0.61 if total_trades > 0 else 0.0,
-            "sharpe_ratio": 13.48,
-            "sortino_ratio": 181.95,
-            "total_closed_trades": total_trades,
-            "winning_trades": wins,
-            "losing_trades": losses,
-            "break_even_trades": max(0, total_trades - wins - losses),
-            "avg_trade_pnl": round(total_realized_pnl / total_trades, 2) if total_trades > 0 else 0.0,
-            "avg_win": round(gross_profit / wins, 2) if wins > 0 else 0.0,
-            "avg_loss": round(gross_loss / losses, 2) if losses > 0 else 0.0,
-            "avg_holding_duration": avg_dur,
-            "max_consecutive_wins": wins,
-            "max_consecutive_losses": losses,
-            "updated_at": pos_data.get("updated_at") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "data_source": "trade_positions_cache"
-        },
-        "active_positions": positions,
-        "trade_history": history,
-        "equity_curve": equity_curve,
-        "daily_pnl": daily_pnl
-    }
-
-
-def generate_equity_curve_from_history(history: List[Dict[str, Any]], initial_equity: float = 10000.0) -> List[Dict[str, Any]]:
-    """根据交易历史构建净值走势曲线序列"""
-    sorted_h = sorted(history, key=lambda x: str(x.get("closed_at") or x.get("entry_time") or ""))
-    curve = []
-    
-    start_time = sorted_h[0]["entry_time"] if sorted_h and sorted_h[0].get("entry_time") != "--" else datetime.datetime.now().strftime("%Y-%m-%d 00:00:00")
-    curve.append({
-        "timestamp": start_time,
-        "equity": initial_equity,
-        "benchmark": initial_equity,
-        "cumulative_pnl": 0.0,
-        "drawdown_pct": 0.0,
-        "event": "初始基准资金"
-    })
-
-    current_eq = initial_equity
-    peak_eq = initial_equity
-    cum_pnl = 0.0
-
-    for h in sorted_h:
-        pnl = float(h.get("pnl") or 0.0)
-        current_eq += pnl
-        cum_pnl += pnl
-        if current_eq > peak_eq:
-            peak_eq = current_eq
-        dd_pct = ((current_eq - peak_eq) / peak_eq * 100) if peak_eq > 0 else 0.0
-        ts = str(h.get("closed_at") or h.get("entry_time") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-
-        curve.append({
-            "timestamp": ts,
-            "equity": round(current_eq, 2),
-            "benchmark": initial_equity,
-            "cumulative_pnl": round(cum_pnl, 2),
-            "drawdown_pct": round(-abs(dd_pct), 2),
-            "event": f"平仓 {h.get('symbol')} ({pnl:+.2f} USDT)"
-        })
-
-    return curve
-
-
-def generate_daily_pnl_from_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """根据交易历史聚合每日盈亏"""
-    daily_map: Dict[str, Dict[str, Any]] = {}
-    for h in history:
-        t_str = str(h.get("closed_at") or h.get("entry_time") or "")
-        d_str = t_str[:10] if len(t_str) >= 10 else datetime.datetime.now().strftime("%Y-%m-%d")
-        pnl = float(h.get("pnl") or 0.0)
-
-        if d_str not in daily_map:
-            daily_map[d_str] = {
-                "date": d_str,
-                "pnl": 0.0,
-                "trade_count": 0,
-                "wins": 0,
-                "losses": 0
-            }
-        daily_map[d_str]["pnl"] += pnl
-        daily_map[d_str]["trade_count"] += 1
-        if pnl > 0.0001:
-            daily_map[d_str]["wins"] += 1
-        elif pnl < -0.0001:
-            daily_map[d_str]["losses"] += 1
-
-    sorted_dates = sorted(daily_map.keys())
-    res = []
-    for d in sorted_dates:
-        item = daily_map[d]
-        res.append({
-            "date": d,
-            "pnl": round(item["pnl"], 2),
-            "trade_count": item["trade_count"],
-            "wins": item["wins"],
-            "losses": item["losses"],
-            "breakeven": max(0, item["trade_count"] - item["wins"] - item["losses"])
-        })
-
-    if not res:
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        res.append({
-            "date": today,
-            "pnl": 0.0,
-            "trade_count": 0,
-            "wins": 0,
-            "losses": 0,
-            "breakeven": 0
-        })
-
-    return res
-
-
-def render_global_nav_header(active_tab: str = "account", updated_at: str = "", data_source: str = "") -> str:
-    """
-    渲染全局统一 HUD Header 导航栏
-    无缝调用 hud_common.render_global_header，保证与 index.html 及 playbook 绝对一致。
-    """
-    try:
-        from hud_common import render_global_header
-        
-        badges = (
-            f'<span class="px-2 py-0.5 text-[11px] font-bold rounded-md bg-sky-500/10 text-sky-400 border border-sky-500/20 flex items-center gap-1">'
-            f'<span>📊</span><span>账户数据与量化风控看板</span>'
-            f'</span>'
-            f'<span id="sync-time-badge" class="px-2 py-0.5 text-[11px] font-mono text-slate-400 bg-slate-800/80 rounded-md border border-slate-700/60 flex items-center gap-1">'
-            f'<span>⏱️ 同步:</span><span id="sync-time-text">{html.escape(updated_at)}</span>'
-            f'</span>'
-        )
-
-        extra_actions = (
-            f'<button id="btn-manual-refresh" type="button" class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700 transition-all flex items-center gap-1.5 focus-visible:outline-2 focus-visible:outline-sky-400" title="重新获取账户最新资产与流水数据">'
-            f'<span id="refresh-spinner" class="inline-block transition-transform duration-300">🔄</span>'
-            f'<span>刷新</span>'
-            f'</button>'
-            f'<a href="https://www.tradingview.com/chart/{TV_LAYOUT_ID}/" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 transition-all flex items-center gap-1" title="跳转 TradingView 专属画线图表">'
-            f'<span>📐 TV 云端布局</span>'
-            f'</a>'
-        )
-
-        sync_text = {
-            "BINANCE_API": "币安实盘直连",
-            "BINANCE_PARTIAL": "币安部分数据可用",
-            "BINANCE_LIVE": "币安实盘直连",
-            "DYNAMIC_FETCH": "等待账户数据",
-        }.get(data_source.upper(), "离线风控同步")
-        
-        return render_global_header(
-            current_page="account",
-            title="突破追多与移动保本系统",
-            title_badge="v3.5 Pro",
-            badges_html=badges,
-            extra_actions_html=extra_actions,
-            settle_countdown_id="",
-            sync_badge_text=sync_text,
-            sync_badge_id="api-status-badge"
-        )
-    except Exception as e:
-        print(f"[WARN] Failed to use hud_common.render_global_header: {e}", file=sys.stderr)
-
-    # 兜底独立导航
-    return f"""    <header class="bg-slate-900/95 border border-slate-800 rounded-xl px-3.5 py-2.5 shadow-lg backdrop-blur-sm">
-      <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5">
-        <div class="flex flex-wrap items-center gap-2">
-          <h1 class="text-lg md:text-xl font-black tracking-tight text-white flex items-center gap-1.5 mr-1">
-            <span>突破追多与移动保本系统</span>
-            <span class="text-[10px] px-1.5 py-0.5 rounded font-mono font-normal bg-slate-800 text-slate-300 border border-slate-700">v3.5 Pro</span>
-          </h1>
-          <span class="px-2 py-0.5 text-[11px] font-bold rounded-md bg-sky-500/10 text-sky-400 border border-sky-500/20">📊 账户数据分析</span>
-        </div>
-        <nav class="flex items-center gap-1.5">
-          <a href="index.html" class="px-2.5 py-1 text-xs font-bold rounded-lg border bg-slate-800 text-slate-300 border-slate-700">📈 策略看板</a>
-          <a href="account.html" class="px-2.5 py-1 text-xs font-bold rounded-lg border bg-sky-500/20 text-sky-300 border-sky-500/40">📊 账户分析</a>
-          <a href="reports/strategy_second_leg_playbook.html" class="px-2.5 py-1 text-xs font-bold rounded-lg border bg-amber-500/15 text-amber-300 border-amber-500/30">📖 战法手册</a>
-        </nav>
-      </div>
-    </header>"""
+from config import DEFAULT_TV_LAYOUT_ID  # noqa: E402
+from hud_common import render_global_header  # noqa: E402
+
+OUTPUT_HTML = PROJECT_ROOT / "account.html"
+TV_LAYOUT_ID = DEFAULT_TV_LAYOUT_ID
+
+
+def render_global_nav_header() -> str:
+    """渲染与全站统一的全局 HUD Header 导航栏。"""
+    badges = (
+        '<span class="px-2 py-0.5 text-[11px] font-bold rounded-md bg-sky-500/10 text-sky-400 '
+        'border border-sky-500/20 flex items-center gap-1">'
+        '<span>📊</span><span>账户数据与量化风控看板</span>'
+        '</span>'
+        '<span id="sync-time-badge" class="px-2 py-0.5 text-[11px] font-mono text-slate-400 '
+        'bg-slate-800/80 rounded-md border border-slate-700/60 flex items-center gap-1">'
+        '<span>⏱️ 同步:</span><span id="sync-time-text">--</span>'
+        '</span>'
+    )
+    extra_actions = (
+        '<button id="btn-manual-refresh" type="button" '
+        'class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-400 '
+        'border border-slate-700 transition-all flex items-center gap-1.5 '
+        'focus-visible:outline-2 focus-visible:outline-sky-400" title="重新获取账户最新资产与流水数据">'
+        '<span id="refresh-spinner" class="inline-block transition-transform duration-300">🔄</span>'
+        '<span>刷新</span>'
+        '</button>'
+        f'<a href="https://www.tradingview.com/chart/{TV_LAYOUT_ID}/" target="_blank" rel="noopener noreferrer" '
+        'class="px-2.5 py-1.5 text-xs font-bold rounded-lg bg-indigo-500/15 hover:bg-indigo-500/25 '
+        'text-indigo-300 border border-indigo-500/30 transition-all flex items-center gap-1" '
+        'title="跳转 TradingView 专属画线图表">'
+        '<span>📐 TV 云端布局</span>'
+        '</a>'
+    )
+    return render_global_header(
+        current_page="account",
+        title="突破追多与移动保本系统",
+        title_badge="v3.5 Pro",
+        badges_html=badges,
+        extra_actions_html=extra_actions,
+        settle_countdown_id="",
+        sync_badge_text="等待账户数据",
+        sync_badge_id="api-status-badge",
+    )
 
 
 def render_discipline_ribbon() -> str:
-    """渲染量化执行纪律横幅"""
+    """渲染量化风控纪律说明横幅。"""
     return """    <!-- Risk Control & Execution Ribbon -->
     <div class="bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 px-3.5 py-1.5 rounded-xl border border-indigo-500/30 flex flex-col md:flex-row md:items-center justify-between gap-2 text-[11px]">
       <div class="flex items-center gap-2 flex-wrap">
@@ -667,9 +89,6 @@ def render_discipline_ribbon() -> str:
         </span>
       </div>
       <div class="flex items-center gap-2 shrink-0 font-mono text-[11px]">
-        <span class="text-emerald-400 font-bold bg-emerald-950/40 px-2 py-0.5 rounded border border-emerald-500/30">
-          资金安全率: 100%
-        </span>
         <span class="text-rose-400 font-bold bg-rose-950/40 px-2 py-0.5 rounded border border-rose-500/30">
           回撤硬红线: -5.0%
         </span>
@@ -677,37 +96,11 @@ def render_discipline_ribbon() -> str:
     </div>"""
 
 
-def render_kpi_matrix(summary: Dict[str, Any]) -> str:
-    """
-    渲染顶部 10 联排量化与风控 KPI 矩阵卡片
-    """
-    eq = summary.get("total_equity", 10000.0)
-    avail = summary.get("available_margin", 10000.0)
-    real_pnl = summary.get("realized_pnl", 0.0)
-    unreal_pnl = summary.get("unrealized_pnl", 0.0)
-    total_roi = summary.get("total_return_pct", 0.0)
-    win_rate = summary.get("win_rate_pct", 0.0)
-    pf = summary.get("profit_factor", 0.0)
-    mdd = summary.get("max_drawdown_pct", 0.0)
-    mdd_usd = summary.get("max_drawdown_usd", 0.0)
-    sharpe = summary.get("sharpe_ratio", 0.0)
-    sortino = summary.get("sortino_ratio", 0.0)
-    trades = summary.get("total_closed_trades", 0)
-    wins = summary.get("winning_trades", 0)
-    losses = summary.get("losing_trades", 0)
-    avg_dur = summary.get("avg_holding_duration", "--")
-
-    real_pnl_cls = "text-emerald-400" if real_pnl >= 0 else "text-rose-400"
-    real_pnl_sign = "+" if real_pnl > 0 else ""
-    unreal_pnl_cls = "text-emerald-400" if unreal_pnl >= 0 else "text-rose-400"
-    unreal_pnl_sign = "+" if unreal_pnl > 0 else ""
-    roi_cls = "text-emerald-400" if total_roi >= 0 else "text-rose-400"
-    roi_sign = "+" if total_roi > 0 else ""
-    pf_display = "∞ (全胜)" if pf >= 999.0 else f"{pf:.2f}"
-
-    return f"""    <!-- Top KPI Quantitative Performance Matrix -->
+def render_kpi_shell() -> str:
+    """渲染 10 联排 KPI 矩阵静态外壳（由 static/account.js 填充真实数值）。"""
+    return """    <!-- Top KPI Quantitative Performance Matrix -->
     <section id="kpi-matrix-section" aria-label="核心资产与风控绩效矩阵" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-2 text-xs">
-      
+
       <!-- Card 1: 账户总资产 (Equity) -->
       <div class="kpi-card px-3.5 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-sky-500/40 transition-all flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400">
@@ -715,13 +108,11 @@ def render_kpi_matrix(summary: Dict[str, Any]) -> str:
           <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-sky-500/10 text-sky-400 border border-sky-500/20">USDT</span>
         </div>
         <div class="my-1">
-          <div id="kpi-total-equity" class="text-xl md:text-2xl font-black font-mono text-white tabular-nums tracking-tight">
-            ${eq:,.2f}
-          </div>
+          <div id="kpi-total-equity" class="text-xl md:text-2xl font-black font-mono text-white tabular-nums tracking-tight">--</div>
         </div>
         <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
-          <span>本金: ${summary.get('initial_equity', 10000.0):,.0f}</span>
-          <span class="{roi_cls} font-bold">{roi_sign}{total_roi:.2f}%</span>
+          <span id="kpi-initial-capital">本金: --</span>
+          <span id="kpi-total-return" class="text-slate-300 font-bold">--</span>
         </div>
       </div>
 
@@ -729,33 +120,29 @@ def render_kpi_matrix(summary: Dict[str, Any]) -> str:
       <div class="kpi-card px-3.5 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-sky-500/40 transition-all flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400">
           <span class="font-medium text-[11px]">可用保证金 (Margin)</span>
-          <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">安全在岸</span>
+          <span id="kpi-margin-badge" class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700">--</span>
         </div>
         <div class="my-1">
-          <div id="kpi-available-margin" class="text-xl md:text-2xl font-black font-mono text-white tabular-nums tracking-tight">
-            ${avail:,.2f}
-          </div>
+          <div id="kpi-available-margin" class="text-xl md:text-2xl font-black font-mono text-white tabular-nums tracking-tight">--</div>
         </div>
         <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
           <span>占用保证金</span>
-          <span id="kpi-position-margin" class="text-slate-300">${summary.get('position_margin', 0.0):,.2f}</span>
+          <span id="kpi-position-margin" class="text-slate-300">--</span>
         </div>
       </div>
 
-      <!-- Card 3: 累计实现盈亏 (Realized PnL) -->
+      <!-- Card 3: 累计净实现盈亏 (Net Realized PnL) -->
       <div class="kpi-card px-3.5 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-emerald-500/40 transition-all flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400">
-          <span class="font-medium text-[11px]">累计实现盈亏 (Realized)</span>
-          <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-slate-800 text-slate-300">净流水</span>
+          <span class="font-medium text-[11px]">累计净盈亏 (Realized)</span>
+          <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-slate-800 text-slate-300">扣费净值</span>
         </div>
         <div class="my-1">
-          <div id="kpi-realized-pnl" class="text-xl md:text-2xl font-black font-mono {real_pnl_cls} tabular-nums tracking-tight">
-            {real_pnl_sign}${abs(real_pnl):,.2f}
-          </div>
+          <div id="kpi-net-realized-pnl" class="text-xl md:text-2xl font-black font-mono text-white tabular-nums tracking-tight">--</div>
         </div>
-        <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
-          <span>总手续费</span>
-          <span class="text-slate-400">-${summary.get('total_fee', 0.0):.2f}</span>
+        <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1 gap-2">
+          <span id="kpi-total-fee">手续费: --</span>
+          <span id="kpi-funding-fee">资费: --</span>
         </div>
       </div>
 
@@ -766,13 +153,11 @@ def render_kpi_matrix(summary: Dict[str, Any]) -> str:
           <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-indigo-500/10 text-indigo-300">实时敞口</span>
         </div>
         <div class="my-1">
-          <div id="kpi-unrealized-pnl" class="text-xl md:text-2xl font-black font-mono {unreal_pnl_cls} tabular-nums tracking-tight">
-            {unreal_pnl_sign}${abs(unreal_pnl):,.2f}
-          </div>
+          <div id="kpi-unrealized-pnl" class="text-xl md:text-2xl font-black font-mono text-white tabular-nums tracking-tight">--</div>
         </div>
         <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
-          <span>多头持仓</span>
-          <span id="kpi-open-positions" class="text-slate-300 font-bold">{summary.get('open_trades', 0)} 笔在途</span>
+          <span>活跃持仓</span>
+          <span id="kpi-open-trades" class="text-slate-300 font-bold">--</span>
         </div>
       </div>
 
@@ -780,16 +165,14 @@ def render_kpi_matrix(summary: Dict[str, Any]) -> str:
       <div class="kpi-card px-3.5 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-amber-500/40 transition-all flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400">
           <span class="font-medium text-[11px]">战法胜率 (Win Rate)</span>
-          <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-amber-500/10 text-amber-300">执行力</span>
+          <span id="kpi-total-trades" class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-amber-500/10 text-amber-300 border border-amber-500/20">--</span>
         </div>
         <div class="my-1">
-          <div id="kpi-win-rate" class="text-xl md:text-2xl font-black font-mono text-amber-300 tabular-nums tracking-tight">
-            {win_rate:.1f}%
-          </div>
+          <div id="kpi-win-rate" class="text-xl md:text-2xl font-black font-mono text-amber-300 tabular-nums tracking-tight">--</div>
         </div>
         <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
-          <span>胜 / 负 / 保本</span>
-          <span class="text-slate-300">{wins}W / {losses}L / {trades - wins - losses}BE</span>
+          <span>胜 / 负 / 平</span>
+          <span id="kpi-wl-record" class="text-slate-300">--</span>
         </div>
       </div>
 
@@ -797,16 +180,14 @@ def render_kpi_matrix(summary: Dict[str, Any]) -> str:
       <div class="kpi-card px-3.5 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-sky-500/40 transition-all flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400">
           <span class="font-medium text-[11px]">盈亏比 (Profit Factor)</span>
-          <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-sky-500/10 text-sky-400">赔率不对称</span>
+          <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-sky-500/10 text-sky-400">净盈亏口径</span>
         </div>
         <div class="my-1">
-          <div id="kpi-profit-factor" class="text-xl md:text-2xl font-black font-mono text-sky-300 tabular-nums tracking-tight">
-            {pf_display}
-          </div>
+          <div id="kpi-profit-factor" class="text-xl md:text-2xl font-black font-mono text-sky-300 tabular-nums tracking-tight">--</div>
         </div>
-        <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
-          <span>平均单笔盈利</span>
-          <span class="text-emerald-400 font-bold">+${summary.get('avg_win', 0.0):.2f}</span>
+        <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1 gap-2">
+          <span id="kpi-avg-win" class="text-emerald-400">均盈: --</span>
+          <span id="kpi-avg-loss" class="text-rose-400">均亏: --</span>
         </div>
       </div>
 
@@ -817,13 +198,11 @@ def render_kpi_matrix(summary: Dict[str, Any]) -> str:
           <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-rose-500/10 text-rose-400">极值约束</span>
         </div>
         <div class="my-1">
-          <div id="kpi-max-drawdown" class="text-xl md:text-2xl font-black font-mono text-rose-400 tabular-nums tracking-tight">
-            {mdd:.2f}%
-          </div>
+          <div id="kpi-max-dd-pct" class="text-xl md:text-2xl font-black font-mono text-rose-400 tabular-nums tracking-tight">--</div>
         </div>
         <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
           <span>峰值回撤金额</span>
-          <span class="text-rose-400 font-bold">${abs(mdd_usd):,.2f}</span>
+          <span id="kpi-max-dd-usd" class="text-rose-400 font-bold">--</span>
         </div>
       </div>
 
@@ -834,13 +213,11 @@ def render_kpi_matrix(summary: Dict[str, Any]) -> str:
           <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-indigo-500/10 text-indigo-300">年化风险收益</span>
         </div>
         <div class="my-1">
-          <div id="kpi-sharpe-ratio" class="text-xl md:text-2xl font-black font-mono text-indigo-300 tabular-nums tracking-tight">
-            {sharpe:.2f}
-          </div>
+          <div id="kpi-sharpe" class="text-xl md:text-2xl font-black font-mono text-indigo-300 tabular-nums tracking-tight">--</div>
         </div>
         <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
-          <span>年化波动评级</span>
-          <span class="text-emerald-400 font-bold">顶级稳健</span>
+          <span>评级</span>
+          <span id="kpi-sharpe-rating" class="text-slate-300 font-bold">--</span>
         </div>
       </div>
 
@@ -851,57 +228,50 @@ def render_kpi_matrix(summary: Dict[str, Any]) -> str:
           <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-purple-500/10 text-purple-300">下行惩罚</span>
         </div>
         <div class="my-1">
-          <div id="kpi-sortino-ratio" class="text-xl md:text-2xl font-black font-mono text-purple-300 tabular-nums tracking-tight">
-            {sortino:.2f}
-          </div>
+          <div id="kpi-sortino" class="text-xl md:text-2xl font-black font-mono text-purple-300 tabular-nums tracking-tight">--</div>
         </div>
         <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
-          <span>下行波动规避</span>
-          <span class="text-purple-300 font-bold">极低尾部风险</span>
+          <span>下行控制</span>
+          <span id="kpi-sortino-rating" class="text-slate-300 font-bold">--</span>
         </div>
       </div>
 
-      <!-- Card 10: 已结单数与平均持仓 -->
+      <!-- Card 10: 连胜连亏与平均持仓 -->
       <div class="kpi-card px-3.5 py-2.5 rounded-xl bg-slate-900/90 border border-slate-800 hover:border-slate-700 transition-all flex flex-col justify-between">
         <div class="flex items-center justify-between text-slate-400">
-          <span class="font-medium text-[11px]">已平仓总单数 (Closed)</span>
-          <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-slate-800 text-slate-300">周转频次</span>
+          <span class="font-medium text-[11px]">连胜 / 连亏 (Streak)</span>
+          <span class="px-1.5 py-0.2 rounded text-[10px] font-mono bg-slate-800 text-slate-300">交易节奏</span>
         </div>
         <div class="my-1">
-          <div id="kpi-total-trades" class="text-xl md:text-2xl font-black font-mono text-white tabular-nums tracking-tight">
-            {trades} <span class="text-xs font-normal text-slate-400 font-sans">笔</span>
-          </div>
+          <div id="kpi-max-streak" class="text-xl md:text-2xl font-black font-mono text-white tabular-nums tracking-tight">--</div>
         </div>
         <div class="text-[10px] font-mono flex items-center justify-between text-slate-400 border-t border-slate-800/80 pt-1">
           <span>平均持仓周期</span>
-          <span class="text-slate-300">{avg_dur}</span>
+          <span id="kpi-avg-hold" class="text-slate-300">--</span>
         </div>
       </div>
 
     </section>"""
 
 
-def render_charts_section() -> str:
-    """
-    渲染四大核心可视化交互图表卡片容器
-    """
+def render_charts_shell() -> str:
+    """渲染 4 大图表 canvas 静态容器。"""
     return """    <!-- Interactive Visual Analytics Charts (2x2 Grid) -->
     <section aria-label="核心量化分析可视化图表" class="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
 
       <!-- Chart 1: 资金净值走势曲线 (Equity Curve) -->
       <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 shadow-lg flex flex-col justify-between">
-        <div class="flex items-center justify-between border-b border-slate-800/80 pb-2 mb-2">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2 mb-2">
           <div class="flex items-center gap-2">
             <span class="text-sky-400 text-sm font-bold flex items-center gap-1.5">
               <span>📈</span>
               <span>资金净值走势 (Equity Curve)</span>
             </span>
-            <span class="text-[10px] text-slate-400 font-mono hidden sm:inline">增长曲线 vs $10,000 本金基准</span>
+            <span id="equity-range-label" class="text-[10px] text-slate-400 font-mono">--</span>
           </div>
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-sky-500/10 text-sky-300 border border-sky-500/20">
-              右侧追多顺势
-            </span>
+          <div class="flex items-center gap-2 text-[10px] font-mono">
+            <span id="equity-peak-label" class="px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">峰值: --</span>
+            <span id="equity-current-label" class="px-2 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20">当前: --</span>
           </div>
         </div>
         <div class="relative w-full h-[260px] sm:h-[300px]">
@@ -909,181 +279,86 @@ def render_charts_section() -> str:
         </div>
       </div>
 
-      <!-- Chart 2: 累计盈亏与水下回撤 (PnL & Underwater Drawdown) -->
-      <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 shadow-lg flex flex-col justify-between">
-        <div class="flex items-center justify-between border-b border-slate-800/80 pb-2 mb-2">
-          <div class="flex items-center gap-2">
-            <span class="text-emerald-400 text-sm font-bold flex items-center gap-1.5">
-              <span>🌊</span>
-              <span>累计盈亏与水下回撤 (Underwater Drawdown)</span>
-            </span>
-            <span class="text-[10px] text-slate-400 font-mono hidden sm:inline">实现收益走势与回撤深度</span>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-500/10 text-rose-300 border border-rose-500/20">
-              回撤深度监控
-            </span>
-          </div>
-        </div>
-        <div class="relative w-full h-[260px] sm:h-[300px]">
-          <canvas id="chart-pnl-drawdown" role="img" aria-label="累计盈亏与水下回撤图"></canvas>
-        </div>
-      </div>
-
-      <!-- Chart 3: 每日盈亏柱状图 (Daily PnL Bar Chart) -->
+      <!-- Chart 2: 每日盈亏柱状图 (Daily PnL Bar Chart) -->
       <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 shadow-lg flex flex-col justify-between">
         <div class="flex items-center justify-between border-b border-slate-800/80 pb-2 mb-2">
           <div class="flex items-center gap-2">
             <span class="text-amber-400 text-sm font-bold flex items-center gap-1.5">
               <span>📊</span>
-              <span>每日盈亏柱状对比 (Daily PnL)</span>
+              <span>每日净盈亏对比 (Daily PnL)</span>
             </span>
-            <span class="text-[10px] text-slate-400 font-mono hidden sm:inline">绿正红负清晰对比与交易笔数</span>
+            <span class="text-[10px] text-slate-400 font-mono hidden sm:inline">含手续费与资金费率</span>
           </div>
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20">
-              逐日盈亏
-            </span>
-          </div>
+          <span id="daily-days-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20">--</span>
         </div>
-        <div class="relative w-full h-[240px] sm:h-[280px]">
-          <canvas id="chart-daily-pnl" role="img" aria-label="每日盈亏对比柱状图"></canvas>
+        <div class="relative w-full h-[260px] sm:h-[300px]">
+          <canvas id="chart-daily-pnl" role="img" aria-label="每日净盈亏柱状图"></canvas>
         </div>
       </div>
 
-      <!-- Chart 4: 交易盈亏分布直方图 / 散点图 (Trade PnL Distribution) -->
+      <!-- Chart 3: 胜负结构分布 (Win / Loss / Breakeven) -->
+      <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 shadow-lg flex flex-col justify-between">
+        <div class="flex items-center justify-between border-b border-slate-800/80 pb-2 mb-2">
+          <div class="flex items-center gap-2">
+            <span class="text-emerald-400 text-sm font-bold flex items-center gap-1.5">
+              <span>🥧</span>
+              <span>胜负笔数结构 (Win / Loss)</span>
+            </span>
+          </div>
+          <span id="win-loss-summary-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">--</span>
+        </div>
+        <div class="relative w-full h-[240px] sm:h-[280px]">
+          <canvas id="chart-win-loss" role="img" aria-label="胜负结构分布图"></canvas>
+        </div>
+      </div>
+
+      <!-- Chart 4: 单笔盈亏率分布直方图 (Trade PnL Distribution) -->
       <div class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 shadow-lg flex flex-col justify-between">
         <div class="flex items-center justify-between border-b border-slate-800/80 pb-2 mb-2">
           <div class="flex items-center gap-2">
             <span class="text-indigo-400 text-sm font-bold flex items-center gap-1.5">
               <span>🎯</span>
-              <span>单笔盈亏率分布 (Trade Return Scatter)</span>
-            </span>
-            <span class="text-[10px] text-slate-400 font-mono hidden sm:inline">截断亏损让利润奔跑不对称验证</span>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
-              右侧盈亏比
+              <span>单笔收益率分布 (PnL Distribution)</span>
             </span>
           </div>
+          <span id="dist-summary-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">--</span>
         </div>
         <div class="relative w-full h-[240px] sm:h-[280px]">
-          <canvas id="chart-pnl-dist" role="img" aria-label="单笔盈亏率散点分布图"></canvas>
+          <canvas id="chart-pnl-dist" role="img" aria-label="单笔收益率分布直方图"></canvas>
         </div>
       </div>
 
     </section>"""
 
 
-def render_active_positions_panel(positions: List[Dict[str, Any]]) -> str:
-    """
-    渲染活跃多头持仓监控面板
-    """
-    n_pos = len(positions)
-    rows_html = []
-
-    for p in positions:
-        sym = html.escape(p["symbol"])
-        side = p.get("side", "LONG")
-        lev = p.get("leverage", 5)
-        amt = p.get("amount", 0.0)
-        pos_size = p.get("position_size", 0.0)
-        entry_p = p.get("entry_price", 0.0)
-        mark_p = p.get("mark_price", entry_p)
-        u_pnl = p.get("unrealized_pnl", 0.0)
-        u_pct = p.get("unrealized_pnl_pct", 0.0)
-        liq_p = p.get("liquidation_price", 0.0)
-        be_p = p.get("breakeven_price", 0.0)
-        t_id = html.escape(str(p.get("trendline_id") or "--"))
-        sl_status = p.get("trendline_break_sl_status", "SAFE")
-
-        pnl_cls = "text-emerald-400" if u_pnl >= 0 else "text-rose-400"
-        pnl_sign = "+" if u_pnl > 0 else ""
-        pct_sign = "+" if u_pct > 0 else ""
-
-        if sl_status == "TRIGGERED":
-            status_badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse">🔴 破线触发止损</span>'
-        elif sl_status == "WARNING":
-            status_badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">🟡 贴近破线警戒</span>'
-        else:
-            status_badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">🟢 趋势线上安全</span>'
-
-        if p.get("trailing_stop_triggered"):
-            be_badge = f'<span class="text-emerald-400 font-mono font-bold" title="已激活移动锁利止损线: {format_crypto_price(be_p)}">🔒 锁定 +1% ({format_crypto_price(be_p)})</span>'
-        else:
-            be_badge = f'<span class="text-slate-400 font-mono">触 +6% 推保本 ({format_crypto_price(entry_p * 1.01)})</span>'
-
-        tv_link = f"https://www.tradingview.com/chart/{TV_LAYOUT_ID}/?symbol=BINANCE:{sym}.P"
-
-        rows_html.append(f"""          <tr class="hover:bg-slate-800/40 transition-colors border-b border-slate-800/60 font-mono text-[11px]">
-            <td class="px-3 py-2.5">
-              <div class="flex items-center gap-1.5 font-sans font-black text-white">
-                <a href="{tv_link}" target="_blank" rel="noopener noreferrer" class="text-sky-400 hover:underline flex items-center gap-1">
-                  <span>{sym}</span>
-                  <span class="text-[9px] text-slate-500">↗</span>
-                </a>
-                <span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">{side} {lev}x</span>
-              </div>
-            </td>
-            <td class="px-3 py-2.5 tabular-nums text-slate-300">
-              <div>${pos_size:,.2f}</div>
-              <div class="text-[10px] text-slate-500">{amt:,.2f} 币</div>
-            </td>
-            <td class="px-3 py-2.5 tabular-nums text-slate-300">
-              {format_crypto_price(entry_p)}
-            </td>
-            <td class="px-3 py-2.5 tabular-nums text-white font-bold">
-              {format_crypto_price(mark_p)}
-            </td>
-            <td class="px-3 py-2.5 tabular-nums font-bold {pnl_cls}">
-              <div>{pnl_sign}${abs(u_pnl):,.2f}</div>
-              <div class="text-[10px]">{pct_sign}{u_pct:.2f}%</div>
-            </td>
-            <td class="px-3 py-2.5 tabular-nums text-rose-400/80">
-              {format_crypto_price(liq_p) if liq_p > 0 else "--"}
-            </td>
-            <td class="px-3 py-2.5">
-              {be_badge}
-            </td>
-            <td class="px-3 py-2.5">
-              {status_badge}
-            </td>
-            <td class="px-3 py-2.5">
-              <a href="{tv_link}" target="_blank" rel="noopener noreferrer" class="px-1.5 py-0.5 rounded text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/40 transition-all font-mono">
-                {t_id}
-              </a>
-            </td>
-          </tr>""")
-
-    empty_hidden = "hidden" if n_pos > 0 else ""
-    table_hidden = "" if n_pos > 0 else "hidden"
-
-    return f"""    <!-- Active Positions Panel -->
+def render_active_positions_shell() -> str:
+    """渲染活跃持仓面板静态外壳（9 列）。"""
+    return """    <!-- Active Positions Panel -->
     <section id="active-positions-panel" aria-label="活跃在途持仓监控面板" class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 shadow-lg space-y-2.5">
       <div class="flex items-center justify-between border-b border-slate-800 pb-2">
         <div class="flex items-center gap-2">
           <span class="text-white text-sm font-bold flex items-center gap-1.5">
             <span>⚡</span>
-            <span>活跃在途多头持仓监控 (Active Positions)</span>
+            <span>活跃在途持仓监控 (Active Positions)</span>
           </span>
-          <span id="active-positions-count" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-sky-500/10 text-sky-300 border border-sky-500/20">
-            {n_pos} 活跃仓位
-          </span>
+          <span id="active-pos-count-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-sky-500/10 text-sky-300 border border-sky-500/20">--</span>
         </div>
         <div class="flex items-center gap-2 text-slate-400 text-xs">
-          <span class="hidden sm:inline">15m K线收盘跌破趋势线支撑立即触发无条件平仓止损</span>
+          <span class="hidden sm:inline">仅多头仓位纳入 15m 破线止损与移动保本风控；空头仅展示敞口，请手动管理止损</span>
         </div>
       </div>
 
-      <!-- Empty State -->
-      <div id="active-positions-empty" class="{empty_hidden} py-8 text-center text-slate-400 space-y-1.5">
+      <div id="short-position-warning" class="hidden px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300">
+        ⚠️ 检测到空头仓位：当前风控守护进程仅监控多头仓位，空头仓位不会触发 15m 破线止损或移动保本提醒，请手动管理止损。
+      </div>
+
+      <div id="active-positions-empty" class="hidden py-8 text-center text-slate-400 space-y-1.5">
         <div class="text-2xl">🛡️</div>
-        <div class="text-sm font-semibold text-slate-300">当前账户无在途敞口 · 资金 100% 安全在岸</div>
+        <div class="text-sm font-semibold text-slate-300">当前账户无在途敞口 · 资金安全在岸</div>
         <div class="text-xs text-slate-500">守护进程正高频巡检共振标的，等待 15m 实体收盘突破对数趋势线确立入场机会</div>
       </div>
 
-      <!-- Positions Table -->
-      <div id="active-positions-table-wrap" class="{table_hidden} overflow-x-auto custom-scrollbar">
+      <div id="active-positions-table-wrap" class="overflow-x-auto custom-scrollbar">
         <table class="w-full text-left border-collapse">
           <thead class="sticky-header select-none text-[11px] text-slate-400 border-b border-slate-800">
             <tr>
@@ -1098,319 +373,66 @@ def render_active_positions_panel(positions: List[Dict[str, Any]]) -> str:
               <th class="px-3 py-2 font-semibold">关联画线</th>
             </tr>
           </thead>
-          <tbody id="active-positions-tbody">
-{chr(10).join(rows_html)}
-          </tbody>
+          <tbody id="active-positions-tbody"></tbody>
         </table>
       </div>
     </section>"""
 
 
-def render_trade_history_table(history: List[Dict[str, Any]]) -> str:
-    """
-    渲染历史开平仓全量流水表（支持即时前端搜索与多维度筛选）
-    """
-    n_total = len(history)
-    wins = sum(1 for h in history if float(h.get("pnl", 0)) > 0.0001)
-    losses = sum(1 for h in history if float(h.get("pnl", 0)) < -0.0001)
-    total_pnl = sum(float(h.get("pnl", 0)) for h in history)
-
-    rows_html = []
-    for idx, h in enumerate(history):
-        sym = html.escape(h.get("symbol", "--"))
-        side = h.get("side", "LONG")
-        entry_p = float(h.get("entry_price", 0.0))
-        exit_p = float(h.get("exit_price", 0.0))
-        amt = float(h.get("amount", 0.0))
-        pnl = float(h.get("pnl", 0.0))
-        pnl_pct = h.get("pnl_pct")
-        e_time = html.escape(str(h.get("entry_time", "--")))
-        c_time = html.escape(str(h.get("closed_at", "--")))
-        dur = html.escape(str(h.get("holding_duration", "--")))
-        close_reason = str(h.get("close_reason", "手动平仓"))
-        t_id = html.escape(str(h.get("trendline_id", "--")))
-
-        pnl_cls = "text-emerald-400" if pnl >= 0 else "text-rose-400"
-        pnl_sign = "+" if pnl > 0 else ""
-        pct_text = f"{pnl_pct:+.2f}%" if pnl_pct is not None else "未知"
-
-        if "保本" in close_reason or "锁利" in close_reason:
-            type_badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">🎯 动态移动保本</span>'
-            status_filter_tag = "breakeven"
-        elif "止损" in close_reason or "跌破" in close_reason:
-            type_badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">🛡️ 破线止损清仓</span>'
-            status_filter_tag = "stoploss"
-        elif "止盈" in close_reason:
-            type_badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">💰 目标位止盈</span>'
-            status_filter_tag = "win"
-        elif "实盘" in close_reason or "BINANCE" in close_reason:
-            type_badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">⚡ 币安实盘平仓</span>'
-            status_filter_tag = "binance"
-        else:
-            type_badge = '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300 border border-slate-700">🖐️ 战法手动平仓</span>'
-            status_filter_tag = "manual"
-
-        win_loss_tag = "win" if pnl > 0.0001 else ("loss" if pnl < -0.0001 else "breakeven")
-        tv_link = f"https://www.tradingview.com/chart/{TV_LAYOUT_ID}/?symbol=BINANCE:{sym}.P"
-
-        rows_html.append(f"""          <tr class="trade-row hover:bg-slate-800/40 transition-colors border-b border-slate-800/60 font-mono text-[11px]" 
-              data-symbol="{sym}" 
-              data-winloss="{win_loss_tag}" 
-              data-status="{status_filter_tag}" 
-              data-pnl="{pnl}" 
-              data-pnlpct="{pnl_pct if pnl_pct is not None else ''}"
-              data-closetime="{c_time}">
-            <td class="px-3 py-2.5 text-slate-400">
-              <div class="text-white font-medium">{c_time}</div>
-              <div class="text-[10px] text-slate-500">开仓: {e_time}</div>
-            </td>
-            <td class="px-3 py-2.5 font-sans font-black text-white">
-              <div class="flex items-center gap-1.5">
-                <a href="{tv_link}" target="_blank" rel="noopener noreferrer" class="text-sky-400 hover:underline flex items-center gap-0.5">
-                  <span>{sym}</span>
-                  <span class="text-[9px] text-slate-500">↗</span>
-                </a>
-                <span class="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">{side}</span>
-              </div>
-            </td>
-            <td class="px-3 py-2.5 tabular-nums text-slate-300">
-              <div>{f"${abs(entry_p * amt):,.2f}" if entry_p > 0 and amt > 0 else "--"}</div>
-              <div class="text-[10px] text-slate-500">{f"{amt:,.2f} 币" if amt > 0 else "--"}</div>
-            </td>
-            <td class="px-3 py-2.5 tabular-nums text-slate-300">
-              {format_crypto_price(entry_p) if entry_p > 0 else "--"}
-            </td>
-            <td class="px-3 py-2.5 tabular-nums text-white font-bold">
-              {format_crypto_price(exit_p) if exit_p > 0 else "--"}
-            </td>
-            <td class="px-3 py-2.5 tabular-nums font-bold {pnl_cls}">
-              <div>{pnl_sign}${abs(pnl):,.2f}</div>
-            </td>
-            <td class="px-3 py-2.5 tabular-nums font-bold {pnl_cls}">
-              <div>{pct_text}</div>
-            </td>
-            <td class="px-3 py-2.5 text-slate-300">
-              {dur}
-            </td>
-            <td class="px-3 py-2.5">
-              {type_badge}
-            </td>
-            <td class="px-3 py-2.5">
-              {f'<a href="{tv_link}" target="_blank" rel="noopener noreferrer" class="px-1.5 py-0.5 rounded text-[10px] bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/40 transition-all font-mono">{t_id}</a>' if t_id != "--" else '<span class="text-slate-600">--</span>'}
-            </td>
-          </tr>""")
-
-    pnl_banner_cls = "text-emerald-400" if total_pnl >= 0 else "text-rose-400"
-    pnl_banner_sign = "+" if total_pnl > 0 else ""
-
-    return f"""    <!-- Historical Trade History Section -->
+def render_trade_history_shell() -> str:
+    """渲染历史开平仓全量流水静态外壳。"""
+    return """    <!-- Historical Trade History Section -->
     <section aria-label="历史开平仓全量流水" class="bg-slate-900/90 border border-slate-800 rounded-xl p-3.5 shadow-lg space-y-3">
-      
-      <!-- Table Header & Controls Toolbar -->
       <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 border-b border-slate-800 pb-2.5">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-white text-sm font-bold flex items-center gap-1.5">
             <span>📜</span>
             <span>历史开平仓全量流水 (Trade History)</span>
           </span>
-          <span id="history-count-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-800 text-slate-300 border border-slate-700">
-            共 {n_total} 笔记录
-          </span>
-          <span id="history-winrate-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/10 text-amber-300 border border-amber-500/20">
-            胜率: {round(wins / n_total * 100, 1) if n_total > 0 else 0.0}% ({wins}胜 / {losses}负)
-          </span>
-          <span id="history-pnl-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-800 {pnl_banner_cls} border border-slate-700">
-            净盈亏: {pnl_banner_sign}${abs(total_pnl):,.2f}
-          </span>
+          <span id="history-count-badge" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-800 text-slate-300 border border-slate-700">--</span>
         </div>
 
-        <!-- Search & Filter Controls -->
         <div class="flex flex-wrap items-center gap-1.5 text-xs">
-          <!-- Search Box -->
-          <div class="relative">
-            <input id="search-input" type="text" placeholder="🔍 搜索标的 / 画线ID / 平仓原因..." 
-                   class="bg-slate-950/80 border border-slate-700/80 rounded-lg px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 w-44 sm:w-56 transition-all" />
-          </div>
-
-          <!-- Filter Buttons -->
-          <div class="flex items-center bg-slate-950/80 rounded-lg p-0.5 border border-slate-800">
-            <button type="button" data-filter="all" class="filter-btn active px-2.5 py-0.5 rounded-md font-bold text-[11px] bg-sky-500/20 text-sky-300 border border-sky-500/30 transition-all">
-              全部
-            </button>
-            <button type="button" data-filter="win" class="filter-btn px-2.5 py-0.5 rounded-md font-bold text-[11px] text-slate-400 hover:text-emerald-400 transition-all">
-              🟢 盈利
-            </button>
-            <button type="button" data-filter="loss" class="filter-btn px-2.5 py-0.5 rounded-md font-bold text-[11px] text-slate-400 hover:text-rose-400 transition-all">
-              🔴 亏损
-            </button>
-            <button type="button" data-filter="breakeven" class="filter-btn px-2.5 py-0.5 rounded-md font-bold text-[11px] text-slate-400 hover:text-amber-400 transition-all">
-              🎯 移动保本
-            </button>
-            <button type="button" data-filter="stoploss" class="filter-btn px-2.5 py-0.5 rounded-md font-bold text-[11px] text-slate-400 hover:text-rose-400 transition-all">
-              🛡️ 破线止损
-            </button>
-          </div>
+          <input id="history-search-input" type="text" placeholder="🔍 搜索标的 / 画线ID / 平仓原因..."
+                 class="bg-slate-950/80 border border-slate-700/80 rounded-lg px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500 focus:ring-1 focus:ring-sky-500 w-44 sm:w-56 transition-all" />
+          <select id="history-outcome-filter" aria-label="按交易结果筛选"
+                  class="bg-slate-950/80 border border-slate-700/80 rounded-lg px-2.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-sky-500">
+            <option value="">全部结果</option>
+            <option value="WIN">🟢 盈利 (WIN)</option>
+            <option value="LOSS">🔴 亏损 (LOSS)</option>
+            <option value="BREAKEVEN">⚪ 保本 (BREAKEVEN)</option>
+          </select>
+          <button id="btn-reset-history-filter" type="button"
+                  class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all">
+            重置
+          </button>
         </div>
       </div>
 
-      <!-- Table View -->
       <div class="overflow-x-auto custom-scrollbar">
         <table id="trade-history-table" class="w-full text-left border-collapse">
           <thead class="sticky-header select-none text-[11px] text-slate-400 border-b border-slate-800">
             <tr>
-              <th class="px-3 py-2 font-semibold sortable" data-sort="time">平仓时间 / 开仓 <span class="sort-icon">↕</span></th>
+              <th class="px-3 py-2 font-semibold sortable" data-sort="closed_ts">平仓时间 / 开仓 <span class="sort-icon">↕</span></th>
               <th class="px-3 py-2 font-semibold sortable" data-sort="symbol">交易标的 <span class="sort-icon">↕</span></th>
               <th class="px-3 py-2 font-semibold">名义仓位</th>
               <th class="px-3 py-2 font-semibold">开仓均价</th>
               <th class="px-3 py-2 font-semibold">平仓均价</th>
-              <th class="px-3 py-2 font-semibold sortable" data-sort="pnl">盈亏金额 ($) <span class="sort-icon">↕</span></th>
-              <th class="px-3 py-2 font-semibold sortable" data-sort="pnlpct">盈亏比例 (%) <span class="sort-icon">↕</span></th>
+              <th class="px-3 py-2 font-semibold sortable" data-sort="net_pnl">净盈亏 ($) <span class="sort-icon">↕</span></th>
+              <th class="px-3 py-2 font-semibold sortable" data-sort="pnl_pct">盈亏比例 (%) <span class="sort-icon">↕</span></th>
               <th class="px-3 py-2 font-semibold">持仓时长</th>
               <th class="px-3 py-2 font-semibold">平仓原因 / 战法触发</th>
               <th class="px-3 py-2 font-semibold">关联 TV 画线</th>
             </tr>
           </thead>
-          <tbody id="trade-history-tbody">
-{chr(10).join(rows_html) if rows_html else '<tr><td colspan="10" class="py-8 text-center text-slate-500">暂无开平仓流水记录</td></tr>'}
-          </tbody>
+          <tbody id="history-tbody"></tbody>
         </table>
       </div>
-
-      <!-- Table Pagination / Status Footer -->
-      <div class="flex items-center justify-between text-slate-400 text-xs border-t border-slate-800/80 pt-2 font-mono">
-        <div>
-          当前显示: <span id="visible-trades-count" class="text-white font-bold">{n_total}</span> / <span id="total-trades-count">{n_total}</span> 笔交易
-        </div>
-        <div class="flex items-center gap-2">
-          <span>点击表头支持实时升降序排序 · 支持键盘搜索即时过滤</span>
-        </div>
-      </div>
-
     </section>"""
 
 
-WEB_DIR = PROJECT_ROOT / "web"
-
-
-def _load_web_asset(filename: str) -> str:
-    """从独立的 web/ 目录加载前端静态资源（JS/CSS），避免在 Python 中维护数百行内联字符串。"""
-    asset_path = WEB_DIR / filename
-    if asset_path.is_file():
-        return asset_path.read_text(encoding="utf-8")
-    raise FileNotFoundError(f"Missing frontend asset: {asset_path}")
-
-
-CLIENT_JS = _load_web_asset("account.js")
-
-
-def get_clean_template_data() -> Dict[str, Any]:
-    """返回用于生成公开纯净 HTML 模板的脱敏占位数据结构 (不含任何个人真实私有资产与成交记录)"""
-    return {
-        "version": 1,
-        "generated_at": "--",
-        "data_source": "DYNAMIC_FETCH",
-        "api_status": {
-            "configured": True,
-            "connected": True,
-            "status_code": 200,
-            "message": "Template Mode - Awaiting Local Data Mount",
-            "mode": "DYNAMIC_CLIENT",
-            "last_sync": "--"
-        },
-        "summary": {
-            "initial_capital": 0.0,
-            "total_equity": 0.0,
-            "wallet_balance": 0.0,
-            "available_margin": 0.0,
-            "position_margin": 0.0,
-            "total_unrealized_pnl": 0.0,
-            "cumulative_realized_pnl": 0.0,
-            "total_fee": 0.0,
-            "net_realized_pnl": 0.0,
-            "total_return_pct": 0.0,
-            "win_rate_pct": 0.0,
-            "win_rate_ex_breakeven_pct": 0.0,
-            "profit_factor": 0.0,
-            "payoff_ratio": 0.0,
-            "max_drawdown_usd": 0.0,
-            "max_drawdown_pct": 0.0,
-            "sharpe_ratio": 0.0,
-            "sortino_ratio": 0.0,
-            "total_trades": 0,
-            "closed_trades": 0,
-            "open_trades": 0,
-            "winning_trades": 0,
-            "losing_trades": 0,
-            "breakeven_trades": 0,
-            "avg_trade_pnl": 0.0,
-            "avg_trade_pnl_pct": 0.0,
-            "avg_winning_trade": 0.0,
-            "avg_losing_trade": 0.0,
-            "avg_hold_duration_seconds": 0,
-            "avg_hold_duration_str": "--",
-            "max_hold_duration_seconds": 0,
-            "min_hold_duration_seconds": 0,
-            "max_consecutive_wins": 0,
-            "max_consecutive_losses": 0,
-            "largest_win_usd": 0.0,
-            "largest_loss_usd": 0.0
-        },
-        "active_positions": [],
-        "trade_history": [],
-        "equity_curve": [],
-        "daily_pnl": [],
-        "pnl_distribution": {"bins": [], "scatter": []},
-        "income_breakdown": {
-            "realized_pnl": 0.0,
-            "fee": 0.0,
-            "funding_fee": 0.0,
-            "transfer": 0.0,
-            "raw_count": 0
-        }
-    }
-
-
-def render_account_html(data: Optional[Dict[str, Any]] = None) -> str:
-    """
-    组装生成完整暗色 HUD 机构级 account.html。
-    若传入 data 则渲染该数据 (如单测环境)；若未传入则默认使用纯净模板数据。
-    """
-    render_data = data if data is not None else get_clean_template_data()
-    summary = render_data.get("summary", {})
-    positions = render_data.get("active_positions", [])
-    history = render_data.get("trade_history", [])
-    updated_at = render_data.get("generated_at", "--")
-    data_source = render_data.get("data_source", "DYNAMIC_FETCH")
-
-    embedded_json = json.dumps(render_data, ensure_ascii=False)
-
-    nav_header_html = render_global_nav_header(
-        active_tab="account",
-        updated_at=updated_at,
-        data_source=data_source
-    )
-    ribbon_html = render_discipline_ribbon()
-    load_status_html = (
-        '<p id="account-load-status" role="status" class="px-3 py-2 text-sm text-slate-300">'
-        '正在读取账户数据…</p>'
-    )
-    report_hidden = ' hidden' if data is None else ''
-
-    income_bd = render_data.get("income_breakdown") or {}
-    income_notice_html = ""
-    if income_bd.get("page_full"):
-        cov_start = html.escape(str(income_bd.get("coverage_start") or ""))
-        cov_end = html.escape(str(income_bd.get("coverage_end") or ""))
-        income_notice_html = f"""    <!-- Income Page Limit Notice -->
-    <div id="income-page-full-banner" class="px-3.5 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 flex items-center justify-between">
-      <span>⚠️ 已达单页上限，更早流水未纳入 (流水覆盖区间: {cov_start} 至 {cov_end})</span>
-    </div>"""
-
-    kpi_matrix_html = render_kpi_matrix(summary)
-    charts_html = render_charts_section()
-    positions_panel_html = render_active_positions_panel(positions)
-    history_table_html = render_trade_history_table(history)
-
+def render_account_html() -> str:
+    """组装纯静态 account.html 外壳，不包含内联样式、内联脚本或私有数据。"""
     doc_parts = [
         "<!DOCTYPE html>",
         '<html lang="zh-CN">',
@@ -1420,66 +442,58 @@ def render_account_html(data: Optional[Dict[str, Any]] = None) -> str:
         '  <meta name="color-scheme" content="dark">',
         "  <title>账户数据分析与量化风控看板 —— 实战工作台 v3.5</title>",
         '  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>',
-        '  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>',
-        "  <style>",
-        _load_web_asset("styles.css"),
-        "  </style>",
+        '  <link rel="stylesheet" href="static/styles.css">',
+        '  <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>',
+        '  <script src="static/account.js" defer></script>',
         "</head>",
         '<body class="p-2 md:p-3.5 antialiased custom-scrollbar">',
         '  <main id="main-content" class="w-full max-w-[1600px] mx-auto space-y-2.5">',
-        "",
-        nav_header_html,
-        "",
-        ribbon_html,
-        "",
-        load_status_html,
-        f'<section id="account-report" class="space-y-3.5"{report_hidden}>',
-        income_notice_html,
-        "",
-        kpi_matrix_html,
-        "",
-        charts_html,
-        "",
-        positions_panel_html,
-        "",
-        history_table_html,
-        '    </section>',
-        "",
+        render_global_nav_header(),
+        render_discipline_ribbon(),
+        '    <p id="account-load-status" role="status" class="px-3 py-2 text-sm text-slate-300">正在读取账户数据…</p>',
+        '    <section id="account-report" class="space-y-3.5" hidden>',
+        render_kpi_shell(),
+        render_charts_shell(),
+        render_active_positions_shell(),
+        render_trade_history_shell(),
+        "    </section>",
         '    <footer class="text-center py-4 text-slate-500 text-xs font-mono space-y-1">',
         "      <div>突破追多与移动保本系统 · 账户数据分析引擎 v3.5 Pro · 顶级量化执行终端</div>",
-        f"      <div class=\"text-[10px] text-slate-600\">TradingView 专属对数画线云端追踪 ({TV_LAYOUT_ID}) · 币安 USDⓈ-M 永续实盘直连</div>",
+        f'      <div class="text-[10px] text-slate-600">TradingView 专属对数画线云端追踪 ({TV_LAYOUT_ID}) · 币安 USDⓈ-M 永续实盘直连</div>',
         "    </footer>",
         "  </main>",
-        "",
-        '  <script id="account-data" type="application/json">',
-        embedded_json,
-        "  </script>",
-        "",
-        "  <script>",
-        CLIENT_JS,
-        "  </script>",
         "</body>",
-        "</html>"
+        "</html>",
     ]
-    return "\n".join(doc_parts)
+    raw_html = "\n".join(doc_parts)
+    # 压缩多余行首缩进以保持纯静态外壳精简 (<25KB)
+    return "\n".join(line.lstrip() if line.startswith("      ") else line for line in raw_html.splitlines()) + "\n"
 
 
-def build_account_analytics(
-    analytics_path: Optional[Path] = None,
-    positions_path: Optional[Path] = None,
-    output_path: Optional[Path] = None
-) -> Path:
-    """
-    生成静态账户页，浏览器从同源接口读取账户数据。
-    """
-    out = output_path or OUTPUT_HTML
+def build_account_analytics(output_path: Optional[Path] = None) -> Path:
+    """原子化写入纯静态账户看板外壳 HTML。"""
+    out = Path(output_path) if output_path is not None else OUTPUT_HTML
+    out.parent.mkdir(parents=True, exist_ok=True)
     html_content = render_account_html()
-    out.write_text(html_content, encoding="utf-8")
+    tmp_path = out.with_name(f".{out.name}.tmp.{os.getpid()}.{time.time_ns()}")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, out)
+    except Exception:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
     print(f"Successfully compiled {out.name}")
     return out
 
 
-def main():
+def main() -> None:
     build_account_analytics()
 
 
