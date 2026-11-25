@@ -147,6 +147,17 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
         self.assertIn("未受风控监控", account_js)
         self.assertIn("未纳入风控", account_js)
 
+    def test_decimal_fill_quantities_preserve_opening_time(self):
+        engine = aae.AccountAnalyticsEngine(offline_mode=True)
+        fills = [
+            {"symbol": "ACEUSDT", "id": 1, "orderId": 1, "side": "BUY", "time": 1000, "positionSide": "LONG", "price": "1", "qty": "25922.21"},
+            {"symbol": "ACEUSDT", "id": 2, "orderId": 2, "side": "SELL", "time": 2000, "positionSide": "LONG", "price": "1", "qty": "8806.15"},
+            {"symbol": "ACEUSDT", "id": 3, "orderId": 2, "side": "SELL", "time": 3000, "positionSide": "LONG", "price": "1", "qty": "17116.06"},
+        ]
+        trades, _ = engine.reconstruct_binance_trades([], [], fills)
+        self.assertEqual(trades[0]["entry_ts"], 1000)
+        self.assertEqual(trades[0]["duration_seconds"], 2)
+
     def test_one_way_both_mode_multi_fill_close_reconstructs_side_prices_and_entry_time(self):
         """单向持仓 (positionSide=BOTH) 下多笔平仓合并应推断方向、重算加权平仓均价并补全开仓价与开仓时间"""
         client = bpc.BinanceFuturesClient("demo", "demo")

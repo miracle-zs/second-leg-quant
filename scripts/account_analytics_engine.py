@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 import json
 import logging
 import math
@@ -623,7 +624,7 @@ class AccountAnalyticsEngine:
         close_side: str,
         order_id: str,
         ts_ms: int,
-        qty: float,
+        qty: Decimal,
         quote_qty: float,
         fill_fee_usdt: float,
         fill_non_usdt: Dict[str, float],
@@ -634,11 +635,11 @@ class AccountAnalyticsEngine:
         remaining = qty
         direction = 1.0 if close_side == "LONG" else -1.0
 
-        while remaining > 1e-12 and queue:
+        while remaining > 0 and queue:
             lot = queue[0]
             take = min(remaining, lot["qty"])
-            lot_frac = take / lot["qty"]
-            fill_frac = take / qty
+            lot_frac = float(take / lot["qty"])
+            fill_frac = float(take / qty)
 
             open_notional_slice = lot["notional"] * lot_frac
             open_fee_slice = lot["fee_usdt"] * lot_frac
@@ -649,7 +650,7 @@ class AccountAnalyticsEngine:
             lot["fee_usdt"] -= open_fee_slice
             for asset_k in list(lot["non_usdt_fees"].keys()):
                 lot["non_usdt_fees"][asset_k] -= open_non_usdt_slice[asset_k]
-            if lot["qty"] <= 1e-12:
+            if lot["qty"] == 0:
                 queue.pop(0)
 
             close_notional_slice = quote_qty * fill_frac
@@ -664,7 +665,7 @@ class AccountAnalyticsEngine:
                 "symbol": sym,
                 "side": close_side,
                 "order_id": order_id,
-                "qty": take,
+                "qty": float(take),
                 "open_notional": open_notional_slice,
                 "close_notional": close_notional_slice,
                 "realized_pnl": realized_slice,
@@ -676,8 +677,8 @@ class AccountAnalyticsEngine:
             })
             remaining -= take
 
-        if remaining > 1e-12:
-            fill_frac = remaining / qty
+        if remaining > 0:
+            fill_frac = float(remaining / qty)
             close_notional_slice = quote_qty * fill_frac
             close_fee_slice = fill_fee_usdt * fill_frac
             close_non_usdt_slice = {a: v * fill_frac for a, v in fill_non_usdt.items()}
@@ -687,7 +688,7 @@ class AccountAnalyticsEngine:
                 "symbol": sym,
                 "side": close_side,
                 "order_id": order_id,
-                "qty": remaining,
+                "qty": float(remaining),
                 "open_notional": open_notional_slice,
                 "close_notional": close_notional_slice,
                 "realized_pnl": realized_slice,
@@ -753,9 +754,9 @@ class AccountAnalyticsEngine:
             fill_side = str(f["side"]).upper()
             raw_pos_side = str(f.get("positionSide") or "BOTH").upper()
             ts_ms = int(f["time"])
-            qty = float(f["qty"])
+            qty = Decimal(str(f["qty"]))
             price = float(f["price"])
-            quote_qty = float(f.get("quoteQty") if f.get("quoteQty") is not None else (price * qty))
+            quote_qty = float(f.get("quoteQty") if f.get("quoteQty") is not None else (price * float(qty)))
             if qty <= 0:
                 continue
 
@@ -817,7 +818,7 @@ class AccountAnalyticsEngine:
                         total_open_qty = sum(lot["qty"] for lot in queue)
                         close_part = min(qty, total_open_qty)
                         open_rem = qty - close_part
-                        close_ratio = close_part / qty
+                        close_ratio = float(close_part / qty)
                         matched_trade_keys.add(t_key)
                         closed_slices.extend(
                             self._consume_fifo_lots(
@@ -833,9 +834,9 @@ class AccountAnalyticsEngine:
                                 fill_realized=fill_realized,
                             )
                         )
-                        if open_rem > 1e-12:
+                        if open_rem > 0:
                             new_side = "LONG" if fill_side == "BUY" else "SHORT"
-                            open_ratio = open_rem / qty
+                            open_ratio = float(open_rem / qty)
                             queue.append({
                                 "side": new_side,
                                 "qty": open_rem,
