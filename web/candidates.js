@@ -144,16 +144,16 @@
     resCount: document.getElementById('kpi-resonance-count'),
     resSub: document.getElementById('kpi-resonance-sub'),
     resSample: document.getElementById('kpi-resonance-sample'),
-    resBar: document.getElementById('kpi-resonance-bar'),
+    resPct: document.getElementById('kpi-resonance-pct'),
     negCount: document.getElementById('kpi-neg-fr-count'),
     negSample: document.getElementById('kpi-neg-fr-sample'),
-    negBar: document.getElementById('kpi-neg-fr-bar'),
+    negPct: document.getElementById('kpi-neg-fr-pct'),
     highTrCount: document.getElementById('kpi-high-tr-count'),
     highTrSample: document.getElementById('kpi-high-tr-sample'),
-    highTrBar: document.getElementById('kpi-high-tr-bar'),
+    highTrPct: document.getElementById('kpi-high-tr-pct'),
     emaBullCount: document.getElementById('kpi-ema-bull-count'),
     emaBullSample: document.getElementById('kpi-ema-bull-sample'),
-    emaBullBar: document.getElementById('kpi-ema-bull-bar'),
+    emaBullPct: document.getElementById('kpi-ema-bull-pct'),
     allCount: document.getElementById('kpi-all-count'),
     allSub: document.getElementById('kpi-all-sub'),
   };
@@ -204,9 +204,10 @@
 
   function getTurnoverBadgeClass(tr) {
     if (!isFiniteNum(tr)) return 'text-[#7f91a8]';
-    if (tr >= 2.0) return 'text-[#f1f5f9] font-bold bg-[#3b82f6]/15 px-1.5 py-0.5 rounded-[3px] border border-[#3b82f6]/35';
-    if (tr >= 1.5) return 'text-[#8ab8ff] font-medium bg-[#3b82f6]/10 px-1.5 py-0.5 rounded-[3px] border border-[#3b82f6]/25';
-    if (tr >= 0.8) return 'text-[#f1f5f9]';
+    if (tr >= 5.0) return 'text-[#f1f5f9] font-bold';
+    if (tr >= 2.0) return 'text-[#9bc0ff] font-semibold';
+    if (tr >= 1.5) return 'text-[#8ab8ff] font-medium';
+    if (tr >= 0.8) return 'text-[#9fb0c5]';
     return 'text-[#7f91a8]';
   }
 
@@ -236,42 +237,41 @@
   }
 
   function buildZonesHtml(c) {
-    let resonanceBadge = '';
     if (c.is_resonance && c.is_neg_funding) {
-      resonanceBadge = '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-semibold bg-[#f25565]/15 text-[#f8717e] border border-[#f25565]/35" title="1h顺势+高换手，4h负费率贴水逼空">贴水双核共振</span>';
-    } else if (c.is_resonance) {
-      resonanceBadge = '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-semibold bg-[#f0b429]/15 text-[#f5c451] border border-[#f0b429]/35" title="1h顺势+高换手，资金面健康">双核黄金共振</span>';
+      return '<div class="flex items-center gap-1.5"><span class="px-2 py-0.5 rounded-[3px] text-[11px] font-semibold bg-[#f25565]/14 text-[#f8717e] border border-[#f25565]/35" title="1h顺势+高换手，4h负费率贴水逼空">贴水双核共振</span></div>';
+    }
+    if (c.is_resonance) {
+      return '<div class="flex items-center gap-1.5"><span class="px-2 py-0.5 rounded-[3px] text-[11px] font-semibold bg-[#f0b429]/14 text-[#f5c451] border border-[#f0b429]/35" title="1h顺势+高换手，资金面健康">双核黄金共振</span></div>';
     }
 
     const tags = [];
-    if (!c.is_resonance && c.is_ema_bull) {
-      tags.push('<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] bg-[#151c27] text-[#38d99f] border border-[#283446]">1h顺势</span>');
+    if (c.is_ema_bull) {
+      tags.push('<span class="inline-flex items-center gap-1 text-[11px] text-[#38d99f]"><span class="w-1 h-1 rounded-full bg-[#22c58b]" aria-hidden="true"></span>1h顺势</span>');
     }
     if (c.is_high_turnover) {
-      const trLabel = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) + 'x' : '--';
-      tags.push(`<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#151c27] text-[#9fb0c5] border border-[#283446]">换手 ${escapeHtml(trLabel)}</span>`);
+      tags.push('<span class="inline-flex items-center gap-1 text-[11px] text-[#8ab8ff]"><span class="w-1 h-1 rounded-full bg-[#3b82f6]" aria-hidden="true"></span>高换手</span>');
     }
-    if (!c.is_resonance && c.is_neg_funding) {
-      tags.push('<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] bg-[#151c27] text-[#f8717e] border border-[#283446]" title="合约相对现货贴水">负费率贴水</span>');
+    if (c.is_neg_funding) {
+      tags.push('<span class="inline-flex items-center gap-1 text-[11px] text-[#f8717e]" title="合约相对现货贴水"><span class="w-1 h-1 rounded-full bg-[#f25565]" aria-hidden="true"></span>负费率贴水</span>');
     }
 
-    return `<div class="flex items-center gap-1.5 flex-wrap">${resonanceBadge}${tags.length ? tags.join('') : (!resonanceBadge ? '<span class="text-[#7f91a8] text-[11px]">基础底池</span>' : '')}</div>`;
+    return `<div class="flex items-center gap-2.5 flex-wrap">${tags.length ? tags.join('') : '<span class="text-[#7f91a8] text-[11px]">基础底池</span>'}</div>`;
   }
 
   function buildIntervalBadge(interval) {
     if (interval === 1) {
-      return '<span class="px-1 py-0.5 text-[10px] font-mono rounded-[3px] border bg-[#f0b429]/12 text-[#f5c451] border-[#f0b429]/30">1h</span>';
+      return '<span class="text-[10px] font-mono font-semibold text-[#f5c451]" title="每 1 小时结算资金费率">1h</span>';
     }
     if (interval === 4) {
-      return '<span class="px-1 py-0.5 text-[10px] font-mono rounded-[3px] border bg-[#151c27] text-[#9fb0c5] border-[#283446]">4h</span>';
+      return '<span class="text-[10px] font-mono text-[#7f91a8]">4h</span>';
     }
     if (interval === 8) {
-      return '<span class="px-1 py-0.5 text-[10px] font-mono rounded-[3px] border bg-[#0e131b] text-[#7f91a8] border-[#222b38]">8h</span>';
+      return '<span class="text-[10px] font-mono text-[#7f91a8]">8h</span>';
     }
     if (isFiniteNum(interval) && interval > 0) {
-      return `<span class="px-1 py-0.5 text-[10px] font-mono rounded-[3px] border bg-[#0e131b] text-[#7f91a8] border-[#222b38]">${escapeHtml(interval)}h</span>`;
+      return `<span class="text-[10px] font-mono text-[#7f91a8]">${escapeHtml(interval)}h</span>`;
     }
-    return '<span class="px-1 py-0.5 text-[10px] font-mono rounded-[3px] border bg-[#0e131b] text-[#7f91a8] border-[#222b38]">--</span>';
+    return '<span class="text-[10px] font-mono text-[#7f91a8]">--</span>';
   }
 
   function buildEmaHtml(c) {
@@ -326,17 +326,17 @@
     let badge;
     if (resHours > 0) {
       if (resHours <= 3) {
-        badge = `<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono tabular-nums font-semibold bg-[#22c58b]/12 text-[#38d99f] border border-[#22c58b]/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>新进 ${resHours}h</span>`;
+        badge = `<span class="text-[11px] font-mono tabular-nums font-semibold text-[#38d99f] inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>新进 ${resHours}h</span>`;
       } else if (resHours <= 12) {
-        badge = `<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono tabular-nums font-semibold bg-[#f0b429]/12 text-[#f5c451] border border-[#f0b429]/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span>活跃 ${resHours}h</span>`;
+        badge = `<span class="text-[11px] font-mono tabular-nums font-semibold text-[#f5c451] inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span>活跃 ${resHours}h</span>`;
       } else {
         const days = Math.floor(resHours / 24);
         const remH = resHours % 24;
         const dStr = days > 0 ? `${days}d ${remH}h` : `${resHours}h`;
-        badge = `<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono tabular-nums font-medium bg-[#151c27] text-[#9fb0c5] border border-[#283446] inline-flex items-center gap-1 w-fit">驻留 ${escapeHtml(dStr)}</span>`;
+        badge = `<span class="text-[11px] font-mono tabular-nums font-medium text-[#9fb0c5] inline-flex items-center gap-1.5">驻留 ${escapeHtml(dStr)}</span>`;
       }
     } else {
-      badge = '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono font-semibold bg-[#22c58b]/15 text-[#38d99f] border border-[#22c58b]/30 inline-flex items-center gap-1 w-fit"><span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>刚入圈</span>';
+      badge = '<span class="text-[11px] font-mono font-semibold text-[#38d99f] inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>刚入圈</span>';
     }
     return `<div>${badge}${entryStr}</div>`;
   }
@@ -423,32 +423,32 @@
       .map((c) => `${c.symbol.replace(/USDT$/, '')}(${formatSignedPct(c.ema_spread_pct, 1)})`)
       .join('、') || '--';
 
-    const pctWidth = (cnt) => (total > 0 ? `${Math.min(100, (cnt / total) * 100).toFixed(1)}%` : '0%');
+    const pctLabel = (cnt) => (total > 0 ? `${((cnt / total) * 100).toFixed(1)}%` : '--');
 
     if (kpiEls.resCount) kpiEls.resCount.textContent = String(resonance.length);
     if (kpiEls.resSub) kpiEls.resSub.textContent = `${pureResCount} 黄金 / ${negRes.length} 贴水`;
-    if (kpiEls.resBar) kpiEls.resBar.style.width = pctWidth(resonance.length);
+    if (kpiEls.resPct) kpiEls.resPct.textContent = pctLabel(resonance.length);
     if (kpiEls.resSample) {
       kpiEls.resSample.textContent = `代表: ${sampleRes}`;
       kpiEls.resSample.title = sampleRes;
     }
 
     if (kpiEls.negCount) kpiEls.negCount.textContent = String(negFr.length);
-    if (kpiEls.negBar) kpiEls.negBar.style.width = pctWidth(negFr.length);
+    if (kpiEls.negPct) kpiEls.negPct.textContent = pctLabel(negFr.length);
     if (kpiEls.negSample) {
       kpiEls.negSample.textContent = `贴水深: ${sampleNeg}`;
       kpiEls.negSample.title = sampleNeg;
     }
 
     if (kpiEls.highTrCount) kpiEls.highTrCount.textContent = String(highTr.length);
-    if (kpiEls.highTrBar) kpiEls.highTrBar.style.width = pctWidth(highTr.length);
+    if (kpiEls.highTrPct) kpiEls.highTrPct.textContent = pctLabel(highTr.length);
     if (kpiEls.highTrSample) {
       kpiEls.highTrSample.textContent = `最高: ${sampleTr}`;
       kpiEls.highTrSample.title = sampleTr;
     }
 
     if (kpiEls.emaBullCount) kpiEls.emaBullCount.textContent = String(emaBull.length);
-    if (kpiEls.emaBullBar) kpiEls.emaBullBar.style.width = pctWidth(emaBull.length);
+    if (kpiEls.emaBullPct) kpiEls.emaBullPct.textContent = pctLabel(emaBull.length);
     if (kpiEls.emaBullSample) {
       kpiEls.emaBullSample.textContent = `多头: ${sampleEma}`;
       kpiEls.emaBullSample.title = sampleEma;
@@ -518,14 +518,12 @@
       return `<tr class="${getRowClass(c)}" data-sym="${safeSym}" data-tv-sym="${safeTvSym}">
         <td class="py-2.5 px-2 text-center text-[#7f91a8] font-mono tabular-nums text-[11px] sym-rank">${idx + 1}</td>
         <th scope="row" class="py-2 px-3 font-normal whitespace-nowrap sticky-col">
-          <div class="flex items-center justify-between gap-1.5">
-            <div class="flex items-baseline gap-0.5">${formatTickerDisplayHtml(sym)}</div>
-            <button type="button" class="btn-copy-sym px-1.5 py-0.5 rounded-[3px] bg-[#151c27] hover:bg-[#1d2736] text-[#9fb0c5] hover:text-[#f1f5f9] border border-[#283446] text-[10px] font-sans transition-colors inline-flex items-center justify-center min-w-[32px]" data-copy="${safeTvSym}" data-label="复制" title="复制 TV 代码 (${safeTvSym})">复制</button>
-          </div>
-          <div class="flex items-center gap-1 mt-1 font-sans">
-            <button type="button" class="btn-preview-chart row-action-link row-action-primary" data-sym="${safeSym}" data-tv="${safeTvSym}" title="站内弹窗预览 15m 实时 K 线">15m图</button>
-            <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="row-action-link" title="在 TradingView 打开 15m 专属画线布局 (ig0LuDL8)"><span>TV</span>${EXT_ARROW_SVG}</a>
-            <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="row-action-link" title="打开币安合约盘口"><span>币安</span>${EXT_ARROW_SVG}</a>
+          <div class="flex items-baseline gap-0.5">${formatTickerDisplayHtml(sym)}</div>
+          <div class="flex items-center gap-1 mt-1 -ml-1 font-sans">
+            <button type="button" class="btn-preview-chart row-micro-btn row-micro-primary" data-sym="${safeSym}" data-tv="${safeTvSym}" title="站内弹窗预览 15m 实时 K 线">15m图</button>
+            <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="在 TradingView 打开 15m 专属画线布局 (ig0LuDL8)"><span>TV</span>${EXT_ARROW_SVG}</a>
+            <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="打开币安合约盘口"><span>币安</span>${EXT_ARROW_SVG}</a>
+            <button type="button" class="btn-copy-sym row-micro-btn" data-copy="${safeTvSym}" data-label="复制" title="复制 TV 代码 (${safeTvSym})">复制</button>
           </div>
         </th>
         <td class="py-2.5 px-2.5 whitespace-nowrap text-right">
@@ -624,10 +622,13 @@
       }
     }
 
-    candidatesState.forEach((c, idx) => {
+    let visibleRank = 0;
+    candidatesState.forEach((c) => {
       const refs = rowRefsBySym.get(c.symbol);
-      if (refs && refs.rankEl) {
-        const nextRank = String(idx + 1);
+      if (!refs || !refs.rowEl || refs.rowEl.style.display === 'none') return;
+      visibleRank += 1;
+      if (refs.rankEl) {
+        const nextRank = String(visibleRank);
         if (refs.rankEl.textContent !== nextRank) {
           refs.rankEl.textContent = nextRank;
         }
@@ -657,6 +658,12 @@
       }
       if (shouldShow) {
         visibleCount += 1;
+        if (refs.rankEl) {
+          const nextRank = String(visibleCount);
+          if (refs.rankEl.textContent !== nextRank) {
+            refs.rankEl.textContent = nextRank;
+          }
+        }
       }
     });
 
@@ -667,7 +674,7 @@
       }
     }
     if (activeZonePill) {
-      const nextZoneText = `当前筛选: ${ZONE_NAMES[currentZone] || '自定义'}`;
+      const nextZoneText = ZONE_NAMES[currentZone] || '自定义筛选';
       if (activeZonePill.textContent !== nextZoneText) {
         activeZonePill.textContent = nextZoneText;
       }
@@ -1163,6 +1170,17 @@
           throw new Error('Preview button missing data-sym or data-tv');
         }
         if (KlineModal) KlineModal.open(sym, tvSym);
+        return;
+      }
+
+      if (e.target.closest('a, button')) return;
+      const row = e.target.closest('tr.candidate-row');
+      if (row) {
+        const sym = row.getAttribute('data-sym');
+        const tvSym = row.getAttribute('data-tv-sym');
+        if (sym && tvSym && KlineModal) {
+          KlineModal.open(sym, tvSym);
+        }
       }
     });
   }

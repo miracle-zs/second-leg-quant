@@ -115,89 +115,79 @@
 
       <!-- Signature Swiss Zone Schedule Strip (Connected 1px Hairline Matrix) -->
       <section aria-label="交易机会区分区时刻表" class="ledger-grid grid grid-cols-2 lg:grid-cols-5 text-xs">
-        <div data-zone="resonance" role="button" tabindex="0" class="kpi-card card-resonance active px-3 sm:px-3.5 py-2 flex flex-col justify-between gap-1.5">
+        <div data-zone="resonance" role="button" tabindex="0" class="kpi-card card-resonance active px-3 sm:px-3.5 py-2.5 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
             <span class="font-semibold text-[#f5c451] text-xs truncate">顺势高换手共振区</span>
-            <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446] shrink-0">1</kbd>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <span id="kpi-resonance-pct" class="text-[10px] font-mono tabular-nums text-[#7f91a8]">--</span>
+              <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446]">1</kbd>
+            </div>
           </div>
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl sm:text-2xl font-bold font-mono text-[#f1f5f9] tabular-nums leading-none"><span id="kpi-resonance-count">--</span></div>
             <div id="kpi-resonance-sub" class="text-[11px] text-[#f5c451] font-mono truncate">--</div>
           </div>
-          <div class="space-y-1">
-            <div class="h-[2px] w-full bg-[#1a2230] overflow-hidden" aria-hidden="true">
-              <div id="kpi-resonance-bar" class="h-full bg-[#f0b429] transition-all duration-300" style="width: 0%"></div>
-            </div>
-            <div id="kpi-resonance-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate">代表: --</div>
-          </div>
+          <div id="kpi-resonance-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate border-t border-[#1c2532] pt-1.5">代表: --</div>
         </div>
 
-        <div data-zone="neg_fr" role="button" tabindex="0" class="kpi-card card-neg-fr px-3 sm:px-3.5 py-2 flex flex-col justify-between gap-1.5">
+        <div data-zone="neg_fr" role="button" tabindex="0" class="kpi-card card-neg-fr px-3 sm:px-3.5 py-2.5 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
             <span class="font-medium text-[#f1f5f9] text-xs truncate">负费率贴水区</span>
-            <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446] shrink-0">2</kbd>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <span id="kpi-neg-fr-pct" class="text-[10px] font-mono tabular-nums text-[#7f91a8]">--</span>
+              <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446]">2</kbd>
+            </div>
           </div>
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl sm:text-2xl font-bold font-mono text-[#f1f5f9] tabular-nums leading-none"><span id="kpi-neg-fr-count">--</span></div>
             <div class="text-[11px] text-[#f8717e] font-mono truncate">4h 资费 &lt; 0</div>
           </div>
-          <div class="space-y-1">
-            <div class="h-[2px] w-full bg-[#1a2230] overflow-hidden" aria-hidden="true">
-              <div id="kpi-neg-fr-bar" class="h-full bg-[#f25565] transition-all duration-300" style="width: 0%"></div>
-            </div>
-            <div id="kpi-neg-fr-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate">贴水深: --</div>
-          </div>
+          <div id="kpi-neg-fr-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate border-t border-[#1c2532] pt-1.5">贴水深: --</div>
         </div>
 
-        <div data-zone="high_tr" role="button" tabindex="0" class="kpi-card card-high-tr px-3 sm:px-3.5 py-2 flex flex-col justify-between gap-1.5">
+        <div data-zone="high_tr" role="button" tabindex="0" class="kpi-card card-high-tr px-3 sm:px-3.5 py-2.5 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
             <span class="font-medium text-[#f1f5f9] text-xs truncate">巨量高换手区</span>
-            <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446] shrink-0">3</kbd>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <span id="kpi-high-tr-pct" class="text-[10px] font-mono tabular-nums text-[#7f91a8]">--</span>
+              <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446]">3</kbd>
+            </div>
           </div>
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl sm:text-2xl font-bold font-mono text-[#f1f5f9] tabular-nums leading-none"><span id="kpi-high-tr-count">--</span></div>
             <div class="text-[11px] text-[#8ab8ff] font-mono truncate">换手 ≥ 1.5x</div>
           </div>
-          <div class="space-y-1">
-            <div class="h-[2px] w-full bg-[#1a2230] overflow-hidden" aria-hidden="true">
-              <div id="kpi-high-tr-bar" class="h-full bg-[#60a5fa] transition-all duration-300" style="width: 0%"></div>
-            </div>
-            <div id="kpi-high-tr-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate">最高: --</div>
-          </div>
+          <div id="kpi-high-tr-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate border-t border-[#1c2532] pt-1.5">最高: --</div>
         </div>
 
-        <div data-zone="ema_bull" role="button" tabindex="0" class="kpi-card card-ema-bull px-3 sm:px-3.5 py-2 flex flex-col justify-between gap-1.5">
+        <div data-zone="ema_bull" role="button" tabindex="0" class="kpi-card card-ema-bull px-3 sm:px-3.5 py-2.5 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
             <span class="font-medium text-[#f1f5f9] text-xs truncate">1h EMA 顺势区</span>
-            <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446] shrink-0">4</kbd>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <span id="kpi-ema-bull-pct" class="text-[10px] font-mono tabular-nums text-[#7f91a8]">--</span>
+              <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446]">4</kbd>
+            </div>
           </div>
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl sm:text-2xl font-bold font-mono text-[#f1f5f9] tabular-nums leading-none"><span id="kpi-ema-bull-count">--</span></div>
             <div class="text-[11px] text-[#38d99f] font-mono truncate">EMA 5 &gt; 10</div>
           </div>
-          <div class="space-y-1">
-            <div class="h-[2px] w-full bg-[#1a2230] overflow-hidden" aria-hidden="true">
-              <div id="kpi-ema-bull-bar" class="h-full bg-[#22c58b] transition-all duration-300" style="width: 0%"></div>
-            </div>
-            <div id="kpi-ema-bull-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate">多头: --</div>
-          </div>
+          <div id="kpi-ema-bull-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate border-t border-[#1c2532] pt-1.5">多头: --</div>
         </div>
 
-        <div data-zone="all" role="button" tabindex="0" class="kpi-card card-all px-3 sm:px-3.5 py-2 flex flex-col justify-between gap-1.5 col-span-2 lg:col-span-1">
+        <div data-zone="all" role="button" tabindex="0" class="kpi-card card-all px-3 sm:px-3.5 py-2.5 flex flex-col justify-between gap-2 col-span-2 lg:col-span-1">
           <div class="flex items-center justify-between gap-1.5">
             <span class="font-medium text-[#f1f5f9] text-xs truncate">全量候选底池</span>
-            <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446] shrink-0">5</kbd>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <span class="text-[10px] font-mono tabular-nums text-[#7f91a8]">100%</span>
+              <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446]">5</kbd>
+            </div>
           </div>
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl sm:text-2xl font-bold font-mono text-[#f1f5f9] tabular-nums leading-none"><span id="kpi-all-count">--</span></div>
             <div id="kpi-all-sub" class="text-[11px] text-[#8ab8ff] font-mono truncate">--</div>
           </div>
-          <div class="space-y-1">
-            <div class="h-[2px] w-full bg-[#1a2230] overflow-hidden" aria-hidden="true">
-              <div class="h-full bg-[#3b82f6] w-full"></div>
-            </div>
-            <div class="text-[11px] text-[#9fb0c5] font-mono truncate">&lt;$30M 底池 + 7d 溢出跟踪</div>
-          </div>
+          <div class="text-[11px] text-[#9fb0c5] font-mono truncate border-t border-[#1c2532] pt-1.5">&lt;$30M 底池 + 7d 溢出跟踪</div>
         </div>
       </section>
 
@@ -207,15 +197,15 @@
         <div id="candidates-sort-status" role="status" aria-live="polite" class="sr-status"></div>
 
         <!-- Unified Toolbar -->
-        <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2.5 px-3.5 py-2.5 bg-[#121822] border-b border-[#222b38]">
-          <div class="flex items-center gap-2 flex-wrap">
-            <span id="active-zone-pill" class="px-2 py-0.5 rounded-[4px] text-xs font-semibold bg-[#192231] text-[#f1f5f9] border border-[#324055]">当前筛选: 顺势高换手共振区</span>
-            <span id="pool-count-badge" class="text-xs font-mono tabular-nums px-2 py-0.5 rounded-[4px] bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">-- / -- 标的</span>
+        <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2.5 px-3.5 py-2 bg-[#121822] border-b border-[#222b38]">
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <span id="active-zone-pill" class="text-[13px] font-semibold text-[#f1f5f9]">顺势高换手共振区</span>
+            <span id="pool-count-badge" class="text-xs font-mono tabular-nums text-[#7f91a8]">-- / -- 标的</span>
 
             <div class="h-3.5 w-px bg-[#222b38] hidden sm:block" aria-hidden="true"></div>
 
             <div class="flex items-center gap-1.5">
-              <button id="btn-batch-copy-tv" type="button" class="px-2.5 py-1 text-xs font-semibold rounded-[4px] bg-[#2563eb] hover:bg-[#1d4ed8] text-white inline-flex items-center gap-1.5 transition-colors" title="复制当前列表代码，在 TradingView 自选列表粘贴即可批量添加">
+              <button id="btn-batch-copy-tv" type="button" class="px-2.5 py-1 text-xs font-medium rounded-[4px] bg-[#3b82f6]/12 hover:bg-[#3b82f6]/22 text-[#8ab8ff] hover:text-white border border-[#3b82f6]/35 inline-flex items-center gap-1.5 transition-colors" title="复制当前列表代码，在 TradingView 自选列表粘贴即可批量添加">
                 <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                   <rect x="5.5" y="5.5" width="8" height="8" rx="1.2" stroke="currentColor" stroke-width="1.4"/>
                   <path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5H9A1.5 1.5 0 0 1 10.5 3V3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
@@ -244,7 +234,7 @@
         </div>
 
         <!-- Main Candidates Schedule Table -->
-        <div tabindex="0" role="region" aria-labelledby="pool-table-heading" class="table-scroll-region overflow-x-auto max-h-[calc(100vh-230px)] min-h-[420px] custom-scrollbar">
+        <div tabindex="0" role="region" aria-labelledby="pool-table-heading" class="table-scroll-region overflow-x-auto max-h-[calc(100vh-225px)] custom-scrollbar">
           <table id="candidates-table" class="w-full text-left text-xs font-mono relative min-w-[1060px]">
             <thead class="sticky-header text-[11px] text-[#9fb0c5] font-sans font-medium">
               <tr>

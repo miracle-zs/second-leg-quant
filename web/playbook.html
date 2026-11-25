@@ -44,17 +44,16 @@
     </div>
   </header>
 
-  <div class="w-full max-w-[1680px] mx-auto px-3 sm:px-5 py-3.5 space-y-3.5">
-
-    <main class="space-y-3">
+  <div class="w-full max-w-[1360px] mx-auto px-3 sm:px-5 py-4 space-y-3.5">
+    <main class="space-y-3.5">
       <!-- Three Core Trading Boundaries (Connected 3-Column Datum Strip) -->
       <section aria-label="行情取舍三项原则" class="ledger-grid grid grid-cols-1 md:grid-cols-3">
         <div class="ledger-cell p-4 space-y-1.5">
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-bold text-[#f1f5f9]">放弃第一段拉升</h2>
-            <span class="font-mono text-[11px] px-1.5 py-0.5 rounded-[3px] bg-[#f25565]/10 text-[#f8717e] border border-[#f25565]/25">规避高位接盘</span>
+            <span class="font-mono text-[11px] text-[#f8717e]">规避高位接盘</span>
           </div>
-          <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[65ch]">
+          <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[60ch]">
             首波拉升多属突发脉冲且缺乏筹码沉淀，盘中追涨极易买在短期情绪高点并遭遇断崖回吐。
           </p>
         </div>
@@ -62,9 +61,9 @@
         <div class="ledger-cell p-4 space-y-1.5">
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-bold text-[#f1f5f9]">严禁盲目抄底初跌</h2>
-            <span class="font-mono text-[11px] px-1.5 py-0.5 rounded-[3px] bg-[#f0b429]/10 text-[#f5c451] border border-[#f0b429]/25">等待缩量收敛</span>
+            <span class="font-mono text-[11px] text-[#f5c451]">等待缩量收敛</span>
           </div>
-          <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[65ch]">
+          <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[60ch]">
             破位急跌往往伴随多头连环去杠杆踩踏，绝不左侧接飞刀，耐心等待波动率收敛至对数下降趋势线内。
           </p>
         </div>
@@ -72,18 +71,101 @@
         <div class="bg-[#141d2a] p-4 space-y-1.5">
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-bold text-[#38d99f]">只做二段突破追多</h2>
-            <span class="font-mono text-[11px] px-1.5 py-0.5 rounded-[3px] bg-[#22c58b]/12 text-[#38d99f] border border-[#22c58b]/30">极窄止损博弈</span>
+            <span class="font-mono text-[11px] text-[#38d99f]">极窄止损博弈</span>
           </div>
-          <p class="text-xs leading-relaxed text-[#f1f5f9] max-w-[65ch]">
+          <p class="text-xs leading-relaxed text-[#f1f5f9] max-w-[60ch]">
             聚焦 1h EMA 顺势与巨量高换手共振标的，以 15m 实体收盘站上趋势线为唯一开多信号，跌回即止损。
           </p>
         </div>
       </section>
 
-      <!-- Asymmetric Architectural Specification Grid: Execution Schedule + Risk Automation -->
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-3 items-stretch">
+      <!-- Precision Vector Strategy Schematic -->
+      <section aria-labelledby="schematic-heading" class="ledger-frame overflow-hidden">
+        <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-[#121822] border-b border-[#222b38]">
+          <h2 id="schematic-heading" class="text-xs font-semibold text-[#f1f5f9]">二段突破与移动保本价格结构示意图</h2>
+          <div class="flex items-center gap-3 text-[11px] font-mono text-[#9fb0c5] flex-wrap">
+            <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-dashed border-[#f0b429] inline-block"></span>15m 对数下降趋势线</span>
+            <span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-[#22c58b] inline-block"></span>实体收盘买点</span>
+            <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-dashed border-[#f25565] inline-block"></span>破线止损 (&lt;1.5%)</span>
+            <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-[#3b82f6] inline-block"></span>+6% 触发 / +1% 锁利</span>
+          </div>
+        </div>
+        <div class="bg-[#0b0e13] px-3 py-2 overflow-x-auto custom-scrollbar">
+          <svg viewBox="0 0 960 210" class="w-full min-w-[680px] h-auto block" role="img" aria-label="从第一段脉冲放弃、对数下降趋势线洗盘收敛、15m实体收盘突破开多、破线硬止损到浮盈+6%激活+1%移动保本的完整价格结构图">
+            <!-- Subtle Coordinate Grid -->
+            <g stroke="#161f2c" stroke-width="1">
+              <line x1="20" y1="32" x2="940" y2="32"/>
+              <line x1="20" y1="74" x2="940" y2="74"/>
+              <line x1="20" y1="116" x2="940" y2="116"/>
+              <line x1="20" y1="158" x2="940" y2="158"/>
+              <line x1="230" y1="16" x2="230" y2="190" stroke-dasharray="3 3"/>
+              <line x1="510" y1="16" x2="510" y2="190" stroke-dasharray="3 3"/>
+              <line x1="720" y1="16" x2="720" y2="190" stroke-dasharray="3 3"/>
+            </g>
 
-        <!-- Left (7 cols): 4-Step Sequential Timetable -->
+            <!-- Phase Zone Shading -->
+            <rect x="20" y="16" width="210" height="174" fill="#f25565" fill-opacity="0.035"/>
+            <rect x="230" y="16" width="280" height="174" fill="#f0b429" fill-opacity="0.025"/>
+            <rect x="510" y="16" width="430" height="174" fill="#22c58b" fill-opacity="0.025"/>
+
+            <!-- Phase Headers -->
+            <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="10.5">
+              <text x="32" y="28" fill="#f8717e" font-weight="600">PHASE 01 · 第一段脉冲 (放弃追高)</text>
+              <text x="242" y="28" fill="#f5c451" font-weight="600">PHASE 02 · 洗盘缩量与对数画线收敛</text>
+              <text x="522" y="28" fill="#38d99f" font-weight="600">PHASE 03 · 15m 实体突破开多</text>
+              <text x="732" y="28" fill="#8ab8ff" font-weight="600">PHASE 04 · 浮盈 +6% 移动保本锁利</text>
+            </g>
+
+            <!-- +6% Trigger Line & +1% Breakeven Lock Line -->
+            <line x1="548" y1="68" x2="936" y2="68" stroke="#3b82f6" stroke-width="1" stroke-dasharray="3 3" opacity="0.8"/>
+            <text x="932" y="83" text-anchor="end" fill="#8ab8ff" font-family="ui-monospace, Menlo, monospace" font-size="10">浮盈 ≥ +6.0% 激活锁利</text>
+
+            <line x1="548" y1="114" x2="936" y2="114" stroke="#f0b429" stroke-width="1.4"/>
+            <text x="932" y="109" text-anchor="end" fill="#f5c451" font-family="ui-monospace, Menlo, monospace" font-size="10" font-weight="600">移动保本提醒线 (+1.0%)</text>
+
+            <!-- Stop Loss Invalidated Zone -->
+            <line x1="518" y1="146" x2="646" y2="146" stroke="#f25565" stroke-width="1.2" stroke-dasharray="3 3"/>
+            <text x="652" y="150" fill="#f8717e" font-family="ui-monospace, Menlo, monospace" font-size="10">跌回趋势线立即止损 (&lt;1.5%)</text>
+
+            <!-- Price Action Path -->
+            <!-- Phase 1: Initial spike (avoid) -->
+            <polyline points="32,168 78,162 114,132 146,82 174,56 196,98 228,136" fill="none" stroke="#7f91a8" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+            <!-- Phase 2: Volatility contraction under descending log trendline -->
+            <polyline points="228,136 266,86 308,144 352,102 396,148 438,116 476,144 510,129" fill="none" stroke="#9fb0c5" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+            <!-- Phase 3 & 4: 15m solid breakout and second leg expansion -->
+            <polyline points="510,129 548,118 584,126 626,96 668,104 716,66 764,46 818,64 872,38 920,52" fill="none" stroke="#22c58b" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+
+            <!-- Descending Log Trendline (connecting lower highs) -->
+            <line x1="168" y1="53" x2="578" y2="142" stroke="#f0b429" stroke-width="1.8" stroke-dasharray="5 3"/>
+
+            <!-- Anchor High Points on Trendline -->
+            <circle cx="174" cy="56" r="3" fill="#0b0e13" stroke="#f0b429" stroke-width="1.5"/>
+            <circle cx="266" cy="86" r="3" fill="#0b0e13" stroke="#f0b429" stroke-width="1.5"/>
+            <circle cx="352" cy="102" r="3" fill="#0b0e13" stroke="#f0b429" stroke-width="1.5"/>
+            <circle cx="438" cy="116" r="3" fill="#0b0e13" stroke="#f0b429" stroke-width="1.5"/>
+
+            <!-- Breakout Entry Marker -->
+            <circle cx="548" cy="118" r="5" fill="#22c58b" fill-opacity="0.25"/>
+            <circle cx="548" cy="118" r="3" fill="#22c58b"/>
+            <text x="548" y="176" text-anchor="middle" fill="#38d99f" font-family="ui-monospace, Menlo, monospace" font-size="10.5" font-weight="600">买点确认: 15m 收盘站稳趋势线</text>
+            <line x1="548" y1="124" x2="548" y2="162" stroke="#22c58b" stroke-width="1" stroke-dasharray="2 2"/>
+
+            <!-- +6% Trigger Marker -->
+            <circle cx="716" cy="66" r="4.5" fill="#3b82f6" fill-opacity="0.28"/>
+            <circle cx="716" cy="66" r="2.8" fill="#60a5fa"/>
+            <text x="716" y="182" text-anchor="middle" fill="#8ab8ff" font-family="ui-monospace, Menlo, monospace" font-size="10">10s 巡检触发保本</text>
+            <line x1="716" y1="72" x2="716" y2="168" stroke="#3b82f6" stroke-width="1" stroke-dasharray="2 2" opacity="0.65"/>
+
+            <!-- Trendline Label -->
+            <text x="315" y="76" fill="#f5c451" font-family="ui-monospace, Menlo, monospace" font-size="10" transform="rotate(12 315 76)">15m 对数下降趋势线 (Alt+L)</text>
+          </svg>
+        </div>
+      </section>
+
+      <!-- Asymmetric Architectural Specification Grid: Execution Schedule + Risk Automation -->
+      <div class="grid grid-cols-1 lg:grid-cols-12 gap-3.5 items-stretch">
+
+        <!-- Left (7 cols): 4-Step Sequential Timetable with Spine -->
         <section aria-labelledby="execution-steps-heading" class="lg:col-span-7 ledger-frame overflow-hidden flex flex-col">
           <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-[#121822] border-b border-[#222b38]">
             <h2 id="execution-steps-heading" class="text-sm font-bold text-[#f1f5f9]">突破追多四步执行时刻表</h2>
@@ -91,65 +173,69 @@
           </div>
 
           <ol class="divide-y divide-[#1c2532]">
-            <li class="p-4 sm:px-5 grid grid-cols-[78px_1fr] sm:grid-cols-[112px_1fr] gap-3 sm:gap-4">
-              <div class="font-mono">
+            <li class="p-4 sm:px-5 grid grid-cols-[88px_1fr] sm:grid-cols-[124px_1fr] gap-3 sm:gap-4">
+              <div class="step-spine pl-5 font-mono">
+                <span class="w-2.5 h-2.5 rounded-full bg-[#f0b429] border-2 border-[#0b0e13] absolute left-0 top-1 z-10" aria-hidden="true"></span>
                 <div class="text-xs font-bold text-[#f5c451]">STEP 01</div>
                 <div class="text-[11px] text-[#7f91a8] mt-0.5">每小时扫描</div>
               </div>
               <div class="space-y-1">
                 <div class="flex flex-wrap items-center justify-between gap-2">
                   <h3 class="text-sm font-semibold text-[#f1f5f9]">标的池双核共振初选</h3>
-                  <span class="font-mono text-[11px] text-[#9fb0c5] bg-[#151c27] px-2 py-0.5 rounded-[3px] border border-[#283446]">Server酱入圈推送</span>
+                  <span class="font-mono text-[11px] text-[#9fb0c5]">Server酱入圈推送</span>
                 </div>
-                <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[68ch]">
+                <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[66ch]">
                   限定 CoinMarketCap 官方真实流通市值 &lt; $30M 的纯加密永续合约（剔除股票/大宗/外汇通证）。当同时满足 <strong class="text-[#f1f5f9] font-medium">1h EMA(5 &gt; 10)</strong> 与 <strong class="text-[#f1f5f9] font-medium">24h 换手倍数 ≥ 1.5x</strong> 时进入双核共振区，负费率贴水标的优先关注。
                 </p>
               </div>
             </li>
 
-            <li class="p-4 sm:px-5 grid grid-cols-[78px_1fr] sm:grid-cols-[112px_1fr] gap-3 sm:gap-4">
-              <div class="font-mono">
+            <li class="p-4 sm:px-5 grid grid-cols-[88px_1fr] sm:grid-cols-[124px_1fr] gap-3 sm:gap-4">
+              <div class="step-spine pl-5 font-mono">
+                <span class="w-2.5 h-2.5 rounded-full bg-[#3b82f6] border-2 border-[#0b0e13] absolute left-0 top-1 z-10" aria-hidden="true"></span>
                 <div class="text-xs font-bold text-[#8ab8ff]">STEP 02</div>
                 <div class="text-[11px] text-[#7f91a8] mt-0.5">人工定标画线</div>
               </div>
               <div class="space-y-1">
                 <div class="flex flex-wrap items-center justify-between gap-2">
                   <h3 class="text-sm font-semibold text-[#f1f5f9]">TradingView 对数下降趋势线绘制</h3>
-                  <span class="font-mono text-[11px] text-[#8ab8ff] bg-[#3b82f6]/10 px-2 py-0.5 rounded-[3px] border border-[#3b82f6]/30">云端布局 ig0LuDL8</span>
+                  <span class="font-mono text-[11px] text-[#8ab8ff]">布局 ig0LuDL8</span>
                 </div>
-                <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[68ch]">
+                <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[66ch]">
                   在专属云端图表开启对数坐标（<kbd class="px-1 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] font-mono text-[#f1f5f9]">Alt+L</kbd>），切换至 15m 周期连接洗盘回踩高点绘制下降趋势线（<kbd class="px-1 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] font-mono text-[#f1f5f9]">Alt+T</kbd>）。后台引擎在 15m 收盘与持仓同步时自动解析云端画线几何参数。
                 </p>
               </div>
             </li>
 
-            <li class="p-4 sm:px-5 grid grid-cols-[78px_1fr] sm:grid-cols-[112px_1fr] gap-3 sm:gap-4">
-              <div class="font-mono">
+            <li class="p-4 sm:px-5 grid grid-cols-[88px_1fr] sm:grid-cols-[124px_1fr] gap-3 sm:gap-4">
+              <div class="step-spine pl-5 font-mono">
+                <span class="w-2.5 h-2.5 rounded-full bg-[#22c58b] border-2 border-[#0b0e13] absolute left-0 top-1 z-10" aria-hidden="true"></span>
                 <div class="text-xs font-bold text-[#38d99f]">STEP 03</div>
                 <div class="text-[11px] text-[#7f91a8] mt-0.5">15m 整刻确认</div>
               </div>
               <div class="space-y-1">
                 <div class="flex flex-wrap items-center justify-between gap-2">
                   <h3 class="text-sm font-semibold text-[#f1f5f9]">15m K 线实体收盘突破开多</h3>
-                  <span class="font-mono text-[11px] text-[#38d99f] bg-[#22c58b]/10 px-2 py-0.5 rounded-[3px] border border-[#22c58b]/30">收盘价 &gt; 趋势线</span>
+                  <span class="font-mono text-[11px] text-[#38d99f]">Close &gt; Trendline</span>
                 </div>
-                <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[68ch]">
+                <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[66ch]">
                   拒绝盘中上影线假突破诱多，严格等待 15m K 线闭合且收盘价站稳在对数趋势线上方。守护进程确认闭合突破后即时发送买入信号。
                 </p>
               </div>
             </li>
 
-            <li class="p-4 sm:px-5 grid grid-cols-[78px_1fr] sm:grid-cols-[112px_1fr] gap-3 sm:gap-4">
-              <div class="font-mono">
+            <li class="p-4 sm:px-5 grid grid-cols-[88px_1fr] sm:grid-cols-[124px_1fr] gap-3 sm:gap-4">
+              <div class="step-spine pl-5 font-mono">
+                <span class="w-2.5 h-2.5 rounded-full bg-[#f25565] border-2 border-[#0b0e13] absolute left-0 top-1 z-10" aria-hidden="true"></span>
                 <div class="text-xs font-bold text-[#f8717e]">STEP 04</div>
                 <div class="text-[11px] text-[#7f91a8] mt-0.5">10s 巡检护航</div>
               </div>
               <div class="space-y-1">
                 <div class="flex flex-wrap items-center justify-between gap-2">
                   <h3 class="text-sm font-semibold text-[#f1f5f9]">破线硬止损与浮盈移动保本</h3>
-                  <span class="font-mono text-[11px] text-[#f5c451] bg-[#f0b429]/10 px-2 py-0.5 rounded-[3px] border border-[#f0b429]/30">+6% 锁定 +1%</span>
+                  <span class="font-mono text-[11px] text-[#f5c451]">+6% 锁定 +1%</span>
                 </div>
-                <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[68ch]">
+                <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[66ch]">
                   入场后任一 15m 收盘跌回对数趋势线下方立即清仓止损（常规风险敞口 &lt; 1.5%）；当账面涨幅达到 <strong class="text-[#38d99f] font-mono">+6.0%</strong> 安全垫后，系统自动激活开仓均价 <strong class="text-[#f5c451] font-mono">+1.0%</strong> 移动保本提醒线。
                 </p>
               </div>
@@ -157,7 +243,7 @@
           </ol>
         </section>
 
-        <!-- Right (5 cols): Automated Binance Futures API & Risk Daemon Ledger -->
+        <!-- Right (5 cols): Automated Binance Futures API & Quant Threshold Matrix -->
         <section aria-labelledby="risk-daemon-heading" class="lg:col-span-5 ledger-frame overflow-hidden flex flex-col">
           <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-[#121822] border-b border-[#222b38]">
             <h2 id="risk-daemon-heading" class="text-sm font-bold text-[#f1f5f9]">币安实盘联动与风控守护机制</h2>
@@ -170,41 +256,53 @@
                 <h3 class="text-xs font-semibold text-[#f1f5f9]">实盘仓位与成交流水自动重建</h3>
                 <span class="font-mono text-[11px] text-[#38d99f]">HMAC-SHA256</span>
               </div>
-              <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[65ch]">
+              <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[60ch]">
                 通过币安合约 API 自动同步在途仓位方向、杠杆、入场均价、未实现盈亏及资金流水，按 FIFO 规则精确还原历史回合净盈亏与夏普/索提诺绩效指标。
               </p>
             </div>
 
-            <div class="p-4 space-y-1.5 bg-[#f25565]/[0.03]">
+            <div class="p-4 space-y-1.5 bg-[#f25565]/[0.04]">
               <div class="flex items-center justify-between gap-2">
                 <h3 class="text-xs font-semibold text-[#f8717e]">15m 收盘破线清仓预警</h3>
                 <span class="font-mono text-[11px] text-[#f8717e]">Close &lt; Trendline</span>
               </div>
-              <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[65ch]">
+              <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[60ch]">
                 每根 15m K 线收盘时，守护进程自动解算当前时间点在对数趋势线上的映射价格；一旦收盘跌破支撑线，立即推送高优先级清仓止损告警。
               </p>
             </div>
 
-            <div class="p-4 space-y-1.5 bg-[#22c58b]/[0.03]">
+            <div class="p-4 space-y-1.5 bg-[#22c58b]/[0.04]">
               <div class="flex items-center justify-between gap-2">
                 <h3 class="text-xs font-semibold text-[#38d99f]">10 秒级浮盈锁利巡检</h3>
                 <span class="font-mono text-[11px] text-[#38d99f]">Peak ≥ +6% → SL +1%</span>
               </div>
-              <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[65ch]">
+              <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[60ch]">
                 高频轮询最新成交价，一旦持仓最大浮盈触及 +6%，即将保本防线提至开仓价 +1.0%，价格回落触线时即时通知离场锁利，杜绝盈利单变亏损单。
               </p>
             </div>
 
+            <!-- Quantitative Threshold Specification Matrix -->
             <div class="bg-[#0e131b] mt-auto border-t border-[#222b38]">
-              <div class="px-4 py-2 text-[11px] font-semibold text-[#9fb0c5] border-b border-[#1c2532]">风控边界说明</div>
-              <dl class="grid grid-cols-2 divide-x divide-[#222b38] text-[11px] font-mono">
-                <div class="px-4 py-2.5">
-                  <dt class="text-[#7f91a8] font-sans">自动风控范围</dt>
-                  <dd class="text-[#f1f5f9] mt-0.5">仅限匹配画线多单</dd>
+              <div class="px-4 py-2 text-[11px] font-semibold text-[#9fb0c5] border-b border-[#1c2532] flex items-center justify-between">
+                <span>核心风控与选池参数标尺</span>
+                <span class="font-mono text-[10px] text-[#7f91a8]">仅匹配画线多单受控</span>
+              </div>
+              <dl class="grid grid-cols-2 bg-[#1c2532] gap-px text-[11px] font-mono">
+                <div class="bg-[#0e131b] px-4 py-2.5">
+                  <dt class="text-[#7f91a8] font-sans">底池市值 / 7d 溢出</dt>
+                  <dd class="text-[#f1f5f9] mt-0.5 font-semibold">&lt; $30M <span class="text-[#7f91a8] font-normal">(≤ $80M)</span></dd>
                 </div>
-                <div class="px-4 py-2.5">
+                <div class="bg-[#0e131b] px-4 py-2.5">
+                  <dt class="text-[#7f91a8] font-sans">共振换手 / 趋势</dt>
+                  <dd class="text-[#8ab8ff] mt-0.5 font-semibold">≥ 1.5x · 1h EMA5&gt;10</dd>
+                </div>
+                <div class="bg-[#0e131b] px-4 py-2.5">
+                  <dt class="text-[#7f91a8] font-sans">破线硬止损</dt>
+                  <dd class="text-[#f8717e] mt-0.5 font-semibold">15m 破线 (&lt; 1.5%)</dd>
+                </div>
+                <div class="bg-[#0e131b] px-4 py-2.5">
                   <dt class="text-[#7f91a8] font-sans">空单敞口处理</dt>
-                  <dd class="text-[#f5c451] mt-0.5">看板展示 · 手动止损</dd>
+                  <dd class="text-[#f5c451] mt-0.5 font-semibold">看板展示 · 手动止损</dd>
                 </div>
               </dl>
             </div>

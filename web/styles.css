@@ -282,6 +282,10 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
   box-shadow: inset -1px 0 0 var(--border-hairline), 0 1px 0 var(--border-hairline);
 }
 
+#candidates-table tbody tr.candidate-row {
+  cursor: pointer;
+}
+
 #candidates-table tbody tr:hover {
   background-color: var(--bg-row-hover);
 }
@@ -316,38 +320,67 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
   color: #f5c451;
 }
 
-/* Row Micro-Actions Polish */
-.row-action-link {
+/* Borderless Quiet Row Micro-Actions (Reveal full contrast on row hover) */
+.row-micro-btn {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border-radius: 3px;
   font-size: 11px;
-  line-height: 1.4;
+  line-height: 1.35;
   font-weight: 500;
+  color: var(--ink-muted);
+  background: transparent;
+  border: 0;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+#candidates-table tbody tr:hover .row-micro-btn {
   color: var(--ink-secondary);
-  background-color: #151c27;
-  border: 1px solid #263244;
-  transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
 }
 
-.row-action-link:hover {
-  color: var(--ink-primary);
-  background-color: #1d2736;
-  border-color: #3d4f6a;
+.row-micro-btn:hover {
+  color: var(--ink-primary) !important;
+  background-color: rgba(50, 64, 85, 0.45);
 }
 
-.row-action-primary {
-  color: #8ab8ff;
-  border-color: rgba(59, 130, 246, 0.35);
-  background-color: rgba(59, 130, 246, 0.1);
+.row-micro-primary {
+  color: #7da9eb;
 }
 
-.row-action-primary:hover {
-  color: #ffffff;
-  background-color: rgba(59, 130, 246, 0.24);
-  border-color: rgba(59, 130, 246, 0.6);
+#candidates-table tbody tr:hover .row-micro-primary {
+  color: #9bc0ff;
+}
+
+.row-micro-primary:hover {
+  color: #ffffff !important;
+  background-color: rgba(59, 130, 246, 0.22);
+}
+
+/* Consistent Native Select Styling (rely on native dark-mode indicator to avoid double arrows in modern Chromium) */
+.ledger-select {
+  color-scheme: dark;
+  cursor: pointer;
+}
+
+/* Playbook Vertical Step Timeline Spine */
+.step-spine {
+  position: relative;
+}
+
+.step-spine::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 14px;
+  bottom: -36px;
+  width: 1px;
+  background-color: #2b384b;
+}
+
+li:last-child .step-spine::before {
+  display: none;
 }
 
 /* Native Top-Layer Dialog with @starting-style & discrete exit transitions */

@@ -81,10 +81,12 @@
     );
     if (!isFiniteNumber(val)) {
       el.classList.add('text-[#9fb0c5]');
-    } else if (Number(val) >= 0) {
+    } else if (Number(val) > 0) {
       el.classList.add('text-[#38d99f]');
-    } else {
+    } else if (Number(val) < 0) {
       el.classList.add('text-[#f8717e]');
+    } else {
+      el.classList.add('text-[#f1f5f9]');
     }
   }
 
@@ -491,6 +493,63 @@
     }).join('');
   }
 
+  const barValueLabelsPlugin = {
+    id: 'barValueLabels',
+    afterDatasetsDraw(chart, _args, pluginOpts) {
+      if (!pluginOpts || !pluginOpts.enabled) return;
+      const ctx = chart.ctx;
+      const meta = chart.getDatasetMeta(0);
+      const data = chart.data && chart.data.datasets && chart.data.datasets[0] ? chart.data.datasets[0].data : [];
+      if (!meta || !Array.isArray(meta.data) || !ctx) return;
+      ctx.save();
+      ctx.font = '600 10px "JetBrains Mono", "SF Mono", monospace';
+      ctx.textAlign = 'center';
+      meta.data.forEach((bar, i) => {
+        const raw = Number(data[i]);
+        if (!Number.isFinite(raw) || raw === 0) return;
+        const label = typeof pluginOpts.formatter === 'function' ? pluginOpts.formatter(raw) : String(raw);
+        if (!label) return;
+        const isNeg = raw < 0;
+        ctx.fillStyle = pluginOpts.signed
+          ? (isNeg ? '#f8717e' : '#38d99f')
+          : '#c9d5e3';
+        ctx.textBaseline = isNeg ? 'top' : 'bottom';
+        const yPos = isNeg ? (bar.y + 4) : (bar.y - 4);
+        ctx.fillText(label, bar.x, yPos);
+      });
+      ctx.restore();
+    }
+  };
+
+  const doughnutCenterPlugin = {
+    id: 'doughnutCenter',
+    afterDraw(chart) {
+      if (!currentAccountData || !currentAccountData.summary || !chart.chartArea) return;
+      const ctx = chart.ctx;
+      const meta = chart.getDatasetMeta(0);
+      if (!ctx || !meta || !meta.data || !meta.data.length) return;
+      const arc = meta.data[0];
+      const cx = arc.x;
+      const cy = arc.y;
+      const s = currentAccountData.summary;
+      const winRateStr = isFiniteNumber(s.win_rate_pct) ? (Number(s.win_rate_pct).toFixed(1) + '%') : '--';
+      const w = isFiniteNumber(s.win_count) ? Number(s.win_count) : 0;
+      const l = isFiniteNumber(s.loss_count) ? Number(s.loss_count) : 0;
+      const b = isFiniteNumber(s.breakeven_count) ? Number(s.breakeven_count) : 0;
+      const subStr = b > 0 ? (w + 'W · ' + l + 'L · ' + b + 'BE') : (w + 'W · ' + l + 'L');
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#f1f5f9';
+      ctx.font = '700 22px "JetBrains Mono", "SF Mono", monospace';
+      ctx.fillText(winRateStr, cx, cy - 8);
+      ctx.fillStyle = '#8b9bb0';
+      ctx.font = '500 11px "JetBrains Mono", "SF Mono", monospace';
+      ctx.fillText(subStr, cx, cy + 14);
+      ctx.restore();
+    }
+  };
+
   function ensureChartDefaults() {
     if (chartDefaultsConfigured || typeof Chart === 'undefined' || !Chart.defaults) return;
     Chart.defaults.color = '#8b9bb0';
@@ -533,7 +592,11 @@
         peakEq = peakEq === null ? Number(pt.equity) : Math.max(peakEq, Number(pt.equity));
       });
       setText('equity-peak-label', '峰值: ' + formatMoney(peakEq));
-      setText('equity-current-label', '当前: ' + formatMoney(lastPt.equity));
+      const currEl = setText('equity-current-label', '当前: ' + formatMoney(lastPt.equity));
+      if (currEl && isFiniteNumber(summary.initial_capital)) {
+        const delta = Number(lastPt.equity) - Number(summary.initial_capital);
+        setSignedColorClass(currEl, delta);
+      }
     } else {
       setText('equity-range-label', '--');
       setText('equity-peak-label', '峰值: --');
@@ -599,17 +662,19 @@
             cachedEqGradientTop = chartArea.top;
             cachedEqGradientHeight = height;
             const g = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-            g.addColorStop(0, 'rgba(59, 130, 246, 0.22)');
+            g.addColorStop(0, 'rgba(59, 130, 246, 0.20)');
             g.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
             cachedEqGradient = g;
           }
           return cachedEqGradient;
         },
         fill: true,
-        tension: 0.2,
-        pointRadius: eqValues.length > 20 ? 1 : 3,
+        tension: 0.15,
+        pointRadius: eqValues.length > 15 ? 0 : 2.5,
+        pointHoverRadius: 4,
+        pointHitRadius: 12,
         pointBackgroundColor: '#3b82f6',
-        borderWidth: 2
+        borderWidth: 1.75
       }];
       if (hasInitialCapital) {
         const cap = Number(summary.initial_capital);
@@ -629,6 +694,7 @@
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
           plugins: {
             tooltip: {
               ...tooltipConfig,
@@ -636,11 +702,11 @@
                 label: c => c.dataset.label + ': ' + formatMoney(c.raw)
               }
             },
-            legend: { position: 'top', align: 'end', labels: { boxWidth: 10, font: { size: 11 } } }
+            legend: { display: false }
           },
           scales: {
-            x: { grid: { display: false }, ticks: { maxTicksLimit: 8, font: { size: 10 } } },
-            y: { grid: { color: 'rgba(34, 43, 56, 0.7)' }, ticks: { font: { size: 10 }, callback: v => '$' + Number(v).toLocaleString('en-US') } }
+            x: { grid: { display: false }, ticks: { maxTicksLimit: 7, font: { size: 10 } } },
+            y: { grid: { color: 'rgba(34, 43, 56, 0.6)' }, ticks: { font: { size: 10 }, callback: v => '$' + Number(v).toLocaleString('en-US') } }
           }
         }
       });
@@ -662,20 +728,35 @@
       });
       upsertChart('daily', dailyCanvas, {
         type: 'bar',
+        plugins: [barValueLabelsPlugin],
         data: {
           labels: dLabels,
           datasets: [{
             label: '当日净盈亏 ($)',
             data: dValues,
-            backgroundColor: dValues.map(v => (v >= 0 ? '#22c58b' : '#f25565')),
-            borderRadius: 2,
-            borderSkipped: false
+            backgroundColor: dValues.map(v => (v >= 0 ? 'rgba(34, 197, 139, 0.85)' : 'rgba(242, 85, 101, 0.85)')),
+            hoverBackgroundColor: dValues.map(v => (v >= 0 ? '#22c58b' : '#f25565')),
+            borderRadius: 3,
+            borderSkipped: false,
+            maxBarThickness: 38,
+            barPercentage: 0.55,
+            categoryPercentage: 0.65
           }]
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          layout: { padding: { top: 20, bottom: 18 } },
           plugins: {
+            barValueLabels: {
+              enabled: true,
+              signed: true,
+              formatter: (v) => {
+                const abs = Math.abs(v);
+                const s = abs >= 100 ? Math.round(abs).toLocaleString('en-US') : abs.toFixed(1);
+                return (v < 0 ? '-$' : '+$') + s;
+              }
+            },
             tooltip: {
               ...tooltipConfig,
               callbacks: {
@@ -691,7 +772,13 @@
           },
           scales: {
             x: { grid: { display: false }, ticks: { font: { size: 10 } } },
-            y: { grid: { color: 'rgba(34, 43, 56, 0.7)' }, ticks: { font: { size: 10 }, callback: v => '$' + v } }
+            y: {
+              grid: {
+                color: (ctx) => (ctx && ctx.tick && ctx.tick.value === 0 ? '#3d4e66' : 'rgba(34, 43, 56, 0.55)'),
+                lineWidth: (ctx) => (ctx && ctx.tick && ctx.tick.value === 0 ? 1.5 : 1)
+              },
+              ticks: { font: { size: 10 }, callback: v => '$' + v }
+            }
           }
         }
       });
@@ -701,22 +788,24 @@
     if (winLossCanvas) {
       upsertChart('winLoss', winLossCanvas, {
         type: 'doughnut',
+        plugins: [doughnutCenterPlugin],
         data: {
           labels: ['盈利', '亏损', '保本'],
           datasets: [{
             data: [winCount, lossCount, beCount],
             backgroundColor: ['#22c58b', '#f25565', '#4b5c75'],
             borderColor: '#10151d',
-            borderWidth: 2
+            borderWidth: 2,
+            hoverOffset: 4
           }]
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
-          cutout: '64%',
+          cutout: '76%',
           plugins: {
             tooltip: tooltipConfig,
-            legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } }
+            legend: { position: 'bottom', labels: { boxWidth: 10, padding: 14, font: { size: 11 } } }
           }
         }
       });
@@ -727,26 +816,35 @@
       const binLabels = bins.map(b => b.label);
       const binCounts = bins.map(b => Number(b.count));
       const binColors = bins.map(b => {
-        if (isFiniteNumber(b.max) && Number(b.max) <= -0.0001) return '#f25565';
-        if (isFiniteNumber(b.min) && Number(b.min) >= 0.0001) return '#22c58b';
+        if (isFiniteNumber(b.max) && Number(b.max) <= -0.0001) return 'rgba(242, 85, 101, 0.85)';
+        if (isFiniteNumber(b.min) && Number(b.min) >= 0.0001) return 'rgba(34, 197, 139, 0.85)';
         return '#4b5c75';
       });
       upsertChart('dist', distCanvas, {
         type: 'bar',
+        plugins: [barValueLabelsPlugin],
         data: {
           labels: binLabels,
           datasets: [{
             label: '交易笔数',
             data: binCounts,
             backgroundColor: binColors,
-            borderRadius: 2,
-            borderSkipped: false
+            borderRadius: 3,
+            borderSkipped: false,
+            maxBarThickness: 34,
+            barPercentage: 0.6
           }]
         },
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          layout: { padding: { top: 20 } },
           plugins: {
+            barValueLabels: {
+              enabled: true,
+              signed: false,
+              formatter: (v) => (v > 0 ? String(v) : '')
+            },
             tooltip: {
               ...tooltipConfig,
               callbacks: {
@@ -766,7 +864,7 @@
             x: { grid: { display: false }, ticks: { font: { size: 10 } } },
             y: {
               beginAtZero: true,
-              grid: { color: 'rgba(34, 43, 56, 0.7)' },
+              grid: { color: 'rgba(34, 43, 56, 0.55)' },
               ticks: { precision: 0, font: { size: 10 } }
             }
           }
