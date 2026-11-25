@@ -116,13 +116,20 @@ def classify_outcome(net_pnl: float) -> str:
 
 def income_asset(item: Mapping[str, Any]) -> str:
     """Return normalized uppercase asset name for a Binance income record."""
-    asset = item.get("asset")
-    return str(asset).strip().upper() if asset else "USDT"
+    if "asset" not in item:
+        # Legacy minimal fixtures omit "asset"; reject explicit None/empty values below.
+        return "USDT"
+    asset = item["asset"]
+    if asset is None or not str(asset).strip():
+        raise ValueError(f"Empty or null asset in income record: {item!r}")
+    return str(asset).strip().upper()
 
 
 def _extract_trendline_meta(trendline: object) -> Tuple[Optional[Any], str, Optional[dict]]:
-    if not isinstance(trendline, Mapping):
+    if trendline is None:
         return None, "--", None
+    if not isinstance(trendline, Mapping):
+        raise ValueError(f"Expected mapping for trendline, got {type(trendline).__name__}")
     trendline_id = trendline.get("id") or trendline.get("line_id")
     p1_raw = trendline.get("p1")
     p2_raw = trendline.get("p2")
@@ -178,12 +185,18 @@ def enrich_trade_record(
     index: int,
     *,
     fee_rate: float = 0.0005,
-    default_leverage: int = 5,
+    default_leverage: Optional[int] = None,
 ) -> dict:
-    """标准化本地历史平仓交易记录，严格区分 LONG/SHORT 方向，不伪造平仓价/时间戳/负数手续费。"""
+    """标准化本地历史平仓交易记录，严格区分 LONG/SHORT 方向，不伪造平仓价/时间戳/杠杆/负数手续费。"""
     sym = clean_symbol(str(raw["symbol"]))
-    entry_price = float(raw["entry_price"]) if raw.get("entry_price") is not None else 0.0
-    raw_amount = float(raw["amount"]) if raw.get("amount") is not None else 0.0
+    if not sym:
+        raise ValueError(f"Trade record missing valid symbol: {raw!r}")
+    entry_price = float(raw["entry_price"])
+    if not math.isfinite(entry_price) or entry_price <= 0:
+        raise ValueError(f"Trade record for {sym} has invalid entry_price: {raw['entry_price']!r}")
+    raw_amount = float(raw["amount"])
+    if not math.isfinite(raw_amount):
+        raise ValueError(f"Trade record for {sym} has invalid amount: {raw['amount']!r}")
     raw_side = str(raw.get("side") or raw.get("positionSide") or "").strip().upper()
     if raw_side in ("LONG", "SHORT"):
         side = raw_side
@@ -191,7 +204,15 @@ def enrich_trade_record(
         side = "SHORT" if raw_amount < 0 else "LONG"
     amount = abs(raw_amount)
     direction = 1.0 if side == "LONG" else -1.0
-    leverage = int(raw["leverage"]) if raw.get("leverage") else default_leverage
+    raw_lev = raw.get("leverage")
+    if raw_lev is not None:
+        leverage: Optional[int] = int(raw_lev)
+        if leverage <= 0:
+            raise ValueError(f"Trade record for {sym} has invalid leverage: {raw_lev!r}")
+    elif default_leverage is not None:
+        leverage = int(default_leverage)
+    else:
+        leverage = None
 
     raw_exit = raw.get("exit_price")
     exit_price: Optional[float] = float(raw_exit) if raw_exit is not None and float(raw_exit) > 0 else None
@@ -237,7 +258,7 @@ def enrich_trade_record(
         realized_pnl = None
         pnl_pct = None
 
-    roe_pct = round(pnl_pct * leverage, 2) if pnl_pct is not None else None
+    roe_pct = round(pnl_pct * leverage, 2) if (pnl_pct is not None and leverage is not None) else None
 
     if raw.get("fee") is not None:
         fee = round(float(raw["fee"]), 4)
@@ -303,16 +324,26 @@ def enrich_active_position(
     raw: Mapping[str, Any],
     index: int,
     *,
-    default_leverage: int = 5,
+    default_leverage: Optional[int] = None,
     now_ts: Optional[float] = None,
 ) -> dict:
     """标准化当前活跃持仓；支持提取币安 /fapi/v2/positionRisk 的 updateTime 作为时间基准。"""
     sym = clean_symbol(str(raw["symbol"]))
+    if not sym:
+        raise ValueError(f"Active position missing valid symbol: {raw!r}")
     raw_entry = raw.get("entry_price") if raw.get("entry_price") is not None else raw.get("entryPrice")
-    entry_price = float(raw_entry) if raw_entry is not None else 0.0
+    if raw_entry is None:
+        raise ValueError(f"Active position {sym} missing entry_price: {raw!r}")
+    entry_price = float(raw_entry)
+    if not math.isfinite(entry_price) or entry_price <= 0:
+        raise ValueError(f"Active position {sym} has invalid entry_price: {raw_entry!r}")
 
     raw_amt_val = raw.get("amount") if raw.get("amount") is not None else raw.get("positionAmt")
-    raw_amt = float(raw_amt_val) if raw_amt_val is not None else 0.0
+    if raw_amt_val is None:
+        raise ValueError(f"Active position {sym} missing amount: {raw!r}")
+    raw_amt = float(raw_amt_val)
+    if not math.isfinite(raw_amt):
+        raise ValueError(f"Active position {sym} has invalid amount: {raw_amt_val!r}")
     raw_side = str(raw.get("side") or raw.get("positionSide") or "").strip().upper()
     if raw_side in ("LONG", "SHORT"):
         side = raw_side
@@ -320,32 +351,44 @@ def enrich_active_position(
         side = "SHORT" if raw_amt < 0 else "LONG"
     amount = abs(raw_amt)
     direction = -1.0 if side == "SHORT" else 1.0
-    leverage = int(raw["leverage"]) if raw.get("leverage") else default_leverage
+    raw_lev = raw.get("leverage")
+    if raw_lev is not None:
+        leverage: Optional[int] = int(raw_lev)
+        if leverage <= 0:
+            raise ValueError(f"Active position {sym} has invalid leverage: {raw_lev!r}")
+    elif default_leverage is not None:
+        leverage = int(default_leverage)
+    else:
+        leverage = None
 
     raw_mark = (
         raw.get("mark_price")
         if raw.get("mark_price") is not None
         else (raw.get("markPrice") if raw.get("markPrice") is not None else raw.get("current_price"))
     )
-    mark_price = float(raw_mark) if raw_mark is not None and float(raw_mark) > 0 else entry_price
+    if raw_mark is None:
+        raise ValueError(f"Active position {sym} missing mark_price: {raw!r}")
+    mark_price = float(raw_mark)
+    if not math.isfinite(mark_price) or mark_price <= 0:
+        raise ValueError(f"Active position {sym} has invalid mark_price: {raw_mark!r}")
 
     notional = round(mark_price * amount, 4)
-    initial_margin = round(notional / leverage, 4) if leverage > 0 else notional
+    initial_margin = round(notional / leverage, 4) if (leverage is not None and leverage > 0) else notional
 
     raw_upnl = raw.get("unrealized_pnl") if raw.get("unrealized_pnl") is not None else raw.get("unRealizedProfit")
     unrealized_pnl = float(raw_upnl) if raw_upnl is not None else ((mark_price - entry_price) * amount * direction)
     unrealized_pnl = round(unrealized_pnl, 4)
 
-    pnl_pct = round(((mark_price - entry_price) * direction / entry_price * 100.0), 2) if entry_price > 0 else 0.0
-    roe_pct = round(pnl_pct * leverage, 2)
+    pnl_pct = round(((mark_price - entry_price) * direction / entry_price * 100.0), 2)
+    roe_pct: Optional[float] = round(pnl_pct * leverage, 2) if leverage is not None else None
 
     raw_liq = raw.get("liquidation_price") if raw.get("liquidation_price") is not None else raw.get("liquidationPrice")
     if raw_liq is not None and float(raw_liq) > 0:
-        est_liq_price = round(float(raw_liq), 6)
-    elif entry_price > 0 and leverage > 1:
+        est_liq_price: Optional[float] = round(float(raw_liq), 6)
+    elif leverage is not None and leverage > 1:
         est_liq_price = round(entry_price * (1.0 - 0.9 / leverage * direction), 6)
     else:
-        est_liq_price = 0.0
+        est_liq_price = None
 
     entry_time_raw = raw.get("entry_time")
     fallback_time_raw = raw.get("updateTime") if raw.get("updateTime") is not None else raw.get("update_time")
@@ -412,7 +455,7 @@ def merge_active_positions(
     local_positions: Sequence[Mapping[str, Any]],
     positions_available: bool,
     *,
-    default_leverage: int = 5,
+    default_leverage: Optional[int] = None,
     now_ts: Optional[float] = None,
 ) -> List[dict]:
     """当币安持仓可用时，按 (symbol, side) 继承本地趋势线与移动锁利元数据。"""
@@ -424,19 +467,25 @@ def merge_active_positions(
 
     local_by_key: Dict[Tuple[str, str], Mapping[str, Any]] = {}
     for lp in local_positions:
-        sym = clean_symbol(str(lp.get("symbol") or ""))
+        sym = clean_symbol(str(lp["symbol"]))
+        if not sym:
+            raise ValueError(f"Local open position missing valid symbol: {lp!r}")
         raw_side = str(lp.get("side") or lp.get("positionSide") or "").upper()
-        amt = float(lp.get("amount") or 0.0)
+        amt = float(lp["amount"])
         lp_side = raw_side if raw_side in ("LONG", "SHORT") else ("SHORT" if amt < 0 else "LONG")
         local_by_key[(sym, lp_side)] = lp
 
     merged_raw: List[Mapping[str, Any]] = []
     for bp in active_positions_binance:
         sym = clean_symbol(str(bp["symbol"]))
+        if not sym:
+            raise ValueError(f"Binance active position missing valid symbol: {bp!r}")
         raw_amt_val = bp.get("positionAmt") if bp.get("positionAmt") is not None else bp.get("signed_amount")
         if raw_amt_val is None:
             raw_amt_val = bp.get("amount")
-        raw_amt = float(raw_amt_val) if raw_amt_val is not None else 0.0
+        if raw_amt_val is None:
+            raise ValueError(f"Binance active position {sym} missing amount: {bp!r}")
+        raw_amt = float(raw_amt_val)
         raw_side = str(bp.get("side") or bp.get("positionSide") or bp.get("position_side") or "BOTH").upper()
         bp_side = raw_side if raw_side in ("LONG", "SHORT") else ("SHORT" if raw_amt < 0 else "LONG")
         local = local_by_key.get((sym, bp_side))
@@ -491,13 +540,15 @@ def _build_local_trade_index(
     """Pre-index local position history by normalized symbol and sorted close timestamp."""
     grouped: Dict[str, List[Tuple[int, Optional[str], float, Mapping[str, Any]]]] = {}
     for idx, loc in enumerate(local_history):
-        sym = clean_symbol(str(loc.get("symbol") or ""))
+        sym = clean_symbol(str(loc["symbol"]))
         if not sym:
+            raise ValueError(f"Local position_history record missing valid symbol: {loc!r}")
+        loc_closed_at = loc.get("closed_at") if loc.get("closed_at") is not None else loc.get("exit_time")
+        if loc_closed_at is None or str(loc_closed_at).strip() == "--":
             continue
-        loc_closed_at = loc.get("closed_at") or loc.get("exit_time")
         loc_ts = parse_to_timestamp(loc_closed_at)
         if loc_ts is None:
-            continue
+            raise ValueError(f"Unparseable closed_at in local_history for {sym}: {loc_closed_at!r}")
         loc_side = _infer_local_trade_side(loc)
         grouped.setdefault(sym, []).append((idx, loc_side, loc_ts, loc))
 
@@ -722,7 +773,7 @@ def reconstruct_binance_trades(
     fills: Sequence[Mapping[str, Any]] = (),
     *,
     fee_rate: float = 0.0005,
-    default_leverage: int = 5,
+    default_leverage: Optional[int] = None,
 ) -> Tuple[List[dict], float]:
     """
     统一的 Binance 历史平仓重构状态机:
@@ -740,10 +791,10 @@ def reconstruct_binance_trades(
         sym = clean_symbol(str(item.get("symbol") or ""))
         if not sym:
             continue
-        itype = item.get("incomeType")
+        itype = item["incomeType"]
         tid = str(item.get("tradeId") or "")
         asset = income_asset(item)
-        amount = float(item.get("income") or 0.0)
+        amount = float(item["income"])
         key = (sym, tid)
 
         if itype == "COMMISSION":
@@ -764,16 +815,22 @@ def reconstruct_binance_trades(
     both_zero_close_indices = _precompute_both_zero_close(sorted_fills, realized_by_trade)
     for fill_idx, f in enumerate(sorted_fills):
         sym = clean_symbol(str(f["symbol"]))
+        if not sym:
+            raise ValueError(f"Fill record missing valid symbol: {f!r}")
         tid = str(f["id"])
         order_id = str(f["orderId"])
         fill_side = str(f["side"]).upper()
+        if fill_side not in ("BUY", "SELL"):
+            raise ValueError(f"Fill record for {sym} has invalid side: {f['side']!r}")
         raw_pos_side = str(f.get("positionSide") or "BOTH").upper()
         ts_ms = int(f["time"])
         qty = Decimal(str(f["qty"]))
         price = float(f["price"])
-        quote_qty = float(f.get("quoteQty") if f.get("quoteQty") is not None else (price * float(qty)))
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError(f"Fill record for {sym} has invalid price: {f['price']!r}")
+        quote_qty = float(f["quoteQty"]) if f.get("quoteQty") is not None else (price * float(qty))
         if qty <= 0:
-            continue
+            raise ValueError(f"Fill record for {sym} has non-positive qty: {f['qty']!r}")
 
         t_key = (sym, tid)
         fill_fee_usdt = commissions_usdt.get(t_key, 0.0)
@@ -884,11 +941,14 @@ def reconstruct_binance_trades(
                 or is_reduce_only
                 or fill_idx in both_zero_close_indices
             ):
-                effective_realized = (
-                    fill_realized
-                    if fill_realized is not None
-                    else (float(raw_fill_rpnl) if raw_fill_rpnl is not None else 0.0)
-                )
+                if fill_realized is not None:
+                    effective_realized = fill_realized
+                elif raw_fill_rpnl is not None:
+                    effective_realized = float(raw_fill_rpnl)
+                else:
+                    raise ValueError(
+                        f"Closing fill missing realizedPnl for pre-recording position ({sym}): {f!r}"
+                    )
                 inferred_close_side = "LONG" if fill_side == "SELL" else "SHORT"
                 matched_trade_keys.add(t_key)
                 closed_slices.extend(
@@ -970,12 +1030,16 @@ def reconstruct_binance_trades(
             else:
                 roe_pct = None
             raw_highest = matched_local.get("highest_price")
-            highest_price = float(raw_highest) if raw_highest is not None else (exit_price if exit_price > 0 else 0.0)
+            highest_price: Optional[float] = (
+                float(raw_highest)
+                if raw_highest is not None
+                else (exit_price if exit_price > 0 else None)
+            )
         else:
             close_reason, close_reason_code = "币安实盘成交", "BINANCE_REALTIME"
             leverage = None
             roe_pct = None
-            highest_price = 0.0
+            highest_price = None
 
         reconstructed.append({
             "trade_id": f"ORD-{idx + 1:03d}-{sym}-{order_id}",
@@ -1032,11 +1096,11 @@ def reconstruct_binance_trades(
 
     income_clusters: List[dict] = []
     for sym in sorted(by_symbol):
-        events = sorted(by_symbol[sym], key=lambda x: (int(x.get("time") or 0), str(x.get("tranId") or "")))
+        events = sorted(by_symbol[sym], key=lambda x: (int(x["time"]), str(x.get("tranId") or "")))
         curr: Optional[dict] = None
         for item in events:
-            t_ms = int(item.get("time") or 0)
-            val = float(item.get("income") or 0.0)
+            t_ms = int(item["time"])
+            val = float(item["income"])
             tid = str(item.get("tradeId") or "")
             if curr is not None and (t_ms - curr["end_t"]) <= 2000:
                 curr["end_t"] = t_ms
@@ -1107,11 +1171,11 @@ def reconstruct_binance_trades(
                 "trade_id": f"INC-{len(reconstructed) + 1:03d}-{sym}-{closed_ts}",
                 "symbol": sym,
                 "side": "UNKNOWN",
-                "entry_price": 0.0,
-                "exit_price": 0.0,
-                "amount": 0.0,
-                "entry_notional": 0.0,
-                "exit_notional": 0.0,
+                "entry_price": None,
+                "exit_price": None,
+                "amount": None,
+                "entry_notional": None,
+                "exit_notional": None,
                 "realized_pnl": realized_pnl,
                 "fee": fee,
                 "fee_asset": "USDT" if fee > 0 or not non_usdt else next(iter(non_usdt)),
@@ -1130,7 +1194,7 @@ def reconstruct_binance_trades(
                 "status": "BINANCE_REALTIME_TRADE",
                 "close_reason": "币安实盘平仓",
                 "close_reason_code": "BINANCE_REALTIME",
-                "highest_price": 0.0,
+                "highest_price": None,
                 "trailing_stop_triggered": False,
                 "trailing_stop_price": None,
                 "trendline_id": None,

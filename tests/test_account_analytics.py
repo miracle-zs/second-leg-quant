@@ -451,7 +451,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         client = bc.BinanceFuturesClient("test-key", "test-secret")
         engine = aae.AccountAnalyticsEngine(client=client)
         now_ms = int(time.time() * 1000)
-        income = [{"symbol": "YBUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "income": "12.50", "time": now_ms - 1000}]
+        income = [{"symbol": "YBUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "income": "12.50", "asset": "USDT", "time": now_ms - 1000}]
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "account.sqlite3"
             account_response = {"totalWalletBalance": "100", "totalMarginBalance": "100"}
@@ -499,7 +499,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         now_ms = int(time.time() * 1000)
         start_ms = now_ms - 2_000_000
         income = [
-            {"incomeType": "TRANSFER", "tranId": i + 1, "income": "1", "time": start_ms + i * 1000}
+            {"incomeType": "TRANSFER", "tranId": i + 1, "income": "1", "asset": "USDT", "time": start_ms + i * 1000}
             for i in range(aae.INCOME_PAGE_LIMIT)
         ]
 
@@ -889,7 +889,7 @@ class TestFullEngineExecution(unittest.TestCase):
             db_path = Path(tmp_dir) / "test.sqlite3"
             db_store.save_open_positions(
                 db_path,
-                [{"symbol": "BTCUSDT", "entry_price": 90000.0, "amount": 0.1, "leverage": 5}],
+                [{"symbol": "BTCUSDT", "entry_price": 90000.0, "amount": 0.1, "leverage": 5, "mark_price": 90000.0}],
             )
             db_store.append_position_history(
                 db_path,
@@ -949,7 +949,11 @@ class TestFullEngineExecution(unittest.TestCase):
     def test_cli_main_persists_to_sqlite_database(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "cli.sqlite3"
-            with patch.object(sys, "argv", ["account_analytics_engine.py", "--database", str(db_path), "--offline"]):
+            with patch.object(
+                sys,
+                "argv",
+                ["account_analytics_engine.py", "--database", str(db_path), "--offline", "--initial-capital", "10000"],
+            ):
                 aae.main()
             persisted = db_store.load_report(db_path)
             self.assertIsNotNone(persisted)
@@ -1204,7 +1208,7 @@ class TestP0AnalyticsFixes(unittest.TestCase):
             "equity_curve": [],
         }
         income = [
-            {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "income": "50", "time": now_ms - 1000}
+            {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "income": "50", "asset": "USDT", "time": now_ms - 1000}
         ]
         with tempfile.TemporaryDirectory() as directory:
             db_path = Path(directory) / "account.sqlite3"

@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 from pathlib import Path
 import sys
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -70,13 +71,25 @@ class AccountAnalyticsEngine:
         client: Optional[Any] = None,
         initial_capital: Optional[float] = None,
         fee_rate: float = 0.0005,
-        default_leverage: int = 5,
+        default_leverage: Optional[int] = None,
         offline_mode: bool = False,
     ) -> None:
-        self.custom_initial_capital = float(initial_capital) if initial_capital is not None else None
-        self.initial_capital = self.custom_initial_capital if self.custom_initial_capital is not None else 10000.0
+        if initial_capital is not None:
+            cap_val = float(initial_capital)
+            if not math.isfinite(cap_val) or cap_val <= 0:
+                raise ValueError(f"initial_capital must be a positive finite number, got {initial_capital!r}")
+            self.custom_initial_capital: Optional[float] = cap_val
+        else:
+            self.custom_initial_capital = None
+        self.initial_capital: Optional[float] = self.custom_initial_capital
         self.fee_rate = float(fee_rate)
-        self.default_leverage = int(default_leverage)
+        if default_leverage is not None:
+            lev_val = int(default_leverage)
+            if lev_val <= 0:
+                raise ValueError(f"default_leverage must be positive, got {default_leverage!r}")
+            self.default_leverage: Optional[int] = lev_val
+        else:
+            self.default_leverage = None
         self.offline_mode = bool(offline_mode)
 
         if client is not None:
@@ -136,9 +149,14 @@ class AccountAnalyticsEngine:
         if include_income:
             try:
                 raw_income = self.client.get_income(limit=INCOME_PAGE_LIMIT)
-                if isinstance(raw_income, list):
-                    income_list = raw_income
-                    api_status["income_available"] = True
+                if not isinstance(raw_income, list):
+                    raise BinanceAPIError(
+                        "Invalid /fapi/v1/income response",
+                        code="INVALID_RESPONSE",
+                        endpoint="/fapi/v1/income",
+                    )
+                income_list = raw_income
+                api_status["income_available"] = True
             except (BinanceAPIError, TimeoutError, OSError) as e:
                 api_status["income_error"] = str(e)
                 logger.warning("⚠️ 币安 /fapi/v1/income 查询失败: %s", e)
@@ -250,11 +268,21 @@ class AccountAnalyticsEngine:
         equity_curve_override: Optional[List[dict]] = None,
         initial_capital_override: Optional[float] = None,
     ) -> Tuple[dict, List[dict], List[dict]]:
+        has_account_transfers = (
+            isinstance(account_info, Mapping)
+            and bool(account_info)
+            and net_transfers is not None
+            and net_transfers > 0
+        )
+        if initial_capital_override is None and self.initial_capital is None and not has_account_transfers:
+            raise ValueError(
+                "Missing initial_capital: configure initial_capital or provide an account recording"
+            )
         return calculate_quant_risk_metrics(
             trades,
             active_positions,
             account_info,
-            default_initial_capital=self.initial_capital,
+            default_initial_capital=self.initial_capital if self.initial_capital is not None else 0.0,
             custom_initial_capital=self.custom_initial_capital,
             net_transfers=net_transfers,
             total_funding_fee=total_funding_fee,
@@ -357,8 +385,13 @@ class AccountAnalyticsEngine:
             income_list = [item for item in income_list if int(item["time"]) >= cutoff]
             filtered_local: List[dict] = []
             for trade in local_history:
-                ts = parse_to_timestamp(trade.get("closed_at") or trade.get("exit_time"))
-                if ts is not None and ts * 1000 >= cutoff:
+                raw_closed = trade.get("closed_at") if trade.get("closed_at") is not None else trade.get("exit_time")
+                ts = parse_to_timestamp(raw_closed)
+                if ts is None:
+                    raise ValueError(
+                        f"Local position_history record for {trade.get('symbol')!r} has missing or unparseable closed_at: {raw_closed!r}"
+                    )
+                if ts * 1000 >= cutoff:
                     filtered_local.append(trade)
             local_history = filtered_local
 
@@ -382,6 +415,8 @@ class AccountAnalyticsEngine:
         if recording is not None:
             assert account_info is not None
             initial_equity = float(recording["initial_equity"])
+            if not math.isfinite(initial_equity) or initial_equity < 0:
+                raise ValueError(f"Invalid recording.initial_equity: {recording['initial_equity']!r}")
             equity_curve_db, net_flow = build_db_equity_curve(
                 recording,
                 effective_recording_start_ms,
@@ -413,14 +448,30 @@ class AccountAnalyticsEngine:
             summary["net_external_transfers"] = round(net_flow, 4)
             principal_source = "recording_start"
         else:
+            offline_initial_override: Optional[float] = None
+            if self.custom_initial_capital is not None:
+                principal_source = "configured"
+            else:
+                persisted_recording = db_store.load_recording(db_path)
+                if persisted_recording is not None:
+                    offline_initial_override = float(persisted_recording["initial_equity"])
+                    if not math.isfinite(offline_initial_override) or offline_initial_override <= 0:
+                        raise ValueError(
+                            f"Invalid persisted recording.initial_equity: {persisted_recording['initial_equity']!r}"
+                        )
+                    principal_source = "recording_start"
+                else:
+                    raise ValueError(
+                        "离线模式需要显式传入 --initial-capital（或数据库中已存在有效的 account_recording）"
+                    )
             summary, equity_curve, daily_pnl = self.calculate_quant_risk_metrics(
                 trades=trade_history,
                 active_positions=active_positions,
                 account_info=account_info,
                 net_transfers=effective_transfers,
                 total_funding_fee=funding_fee_usdt,
+                initial_capital_override=offline_initial_override,
             )
-            principal_source = "configured" if self.custom_initial_capital is not None else "default"
 
         income_breakdown = build_income_breakdown(
             summary=summary,
@@ -466,7 +517,7 @@ def print_cli_summary(report: Mapping[str, Any]) -> None:
     print("\n" + "=" * 78)
     print(" 🚀 币安合约账户量化风控指标与交易评测仪表盘 (HUD)")
     print("=" * 78)
-    print(f" 状态模式: {'🟢 币安实盘在线' if api_status.get('connected') else '🟡 本地离线容灾回退'} | 更新时间: {report.get('generated_at')}")
+    print(f" 状态模式: {'🟢 币安实盘在线' if api_status['connected'] else '🟡 本地离线容灾回退'} | 更新时间: {report['generated_at']}")
     print("-" * 78)
 
     eq = summary["total_equity"]
@@ -510,9 +561,11 @@ def print_cli_summary(report: Mapping[str, Any]) -> None:
     if active_positions:
         for p in active_positions:
             pnl_c = "\033[32m" if p["unrealized_pnl"] >= 0 else "\033[31m"
+            lev_str = f"{p['leverage']}x" if p["leverage"] is not None else "--"
+            roe_str = f"{p['roe_pct']:+.2f}% ROE" if p["roe_pct"] is not None else "ROE 未知"
             print(
-                f"   • {p['symbol']} ({p['leverage']}x): {p['amount']} @ ${p['entry_price']:.4f} -> 现价 ${p['mark_price']:.4f} | "
-                f"浮盈: {pnl_c}{p['unrealized_pnl']:+.2f} USDT ({p['roe_pct']:+.2f}% ROE){reset} | 周期: {p['holding_str']}"
+                f"   • {p['symbol']} ({lev_str}): {p['amount']} @ ${p['entry_price']:.4f} -> 现价 ${p['mark_price']:.4f} | "
+                f"浮盈: {pnl_c}{p['unrealized_pnl']:+.2f} USDT ({roe_str}){reset} | 周期: {p['holding_str']}"
             )
     else:
         print("   (当前无活跃持仓)")
@@ -524,10 +577,11 @@ def print_cli_summary(report: Mapping[str, Any]) -> None:
         pnl_c = "\033[32m" if (net_val is not None and net_val >= 0) else "\033[31m"
         tl = f"[{t['trendline_label']}] " if t.get("trendline_id") else ""
         roe = f"{t['roe_pct']:+.2f}% ROE" if t["roe_pct"] is not None else "ROE 未知"
+        entry_str = f"${t['entry_price']:.4f}" if t.get("entry_price") is not None else "--"
         exit_str = f"${t['exit_price']:.4f}" if t.get("exit_price") is not None else "--"
         net_str = f"{net_val:+.2f} USDT" if net_val is not None else "--"
         print(
-            f"   [{t['closed_at']}] {t['symbol']} | 开: ${t['entry_price']:.4f} -> 平: {exit_str} | "
+            f"   [{t['closed_at']}] {t['symbol']} | 开: {entry_str} -> 平: {exit_str} | "
             f"净盈: {pnl_c}{net_str} ({roe}){reset} | 原因: {t['close_reason']} {tl}"
         )
     print("=" * 78 + "\n")

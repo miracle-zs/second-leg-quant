@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -47,6 +48,9 @@ def select_best_position_trendline(
         return None
     valid: list[tuple[int, int, dict[str, Any]]] = []
     for line in lines:
+        if not isinstance(line, Mapping):
+            logger.warning("跳过非字典格式的趋势线条目: %r", line)
+            continue
         if not tve.is_valid_15m_trendline(line, current_time=current_time):
             continue
         try:
@@ -54,14 +58,16 @@ def select_best_position_trendline(
             p2 = float(line["p2"])
             t1 = int(line["t1"])
             t2 = int(line["t2"])
-        except (KeyError, TypeError, ValueError):
+            s_time = line.get("server_update_time")
+            recency = int(s_time) if s_time is not None else t2
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("跳过畸形 15m 趋势线 (%s): %s", line.get("id"), exc)
             continue
-        if p1 <= 0 or p2 <= 0 or t1 == t2:
+        if not math.isfinite(p1) or not math.isfinite(p2) or p1 <= 0 or p2 <= 0 or t1 == t2:
+            logger.warning("跳过无效几何参数 15m 趋势线 (%s): p1=%r p2=%r t1=%r t2=%r", line.get("id"), p1, p2, t1, t2)
             continue
         descending = 1 if p1 >= p2 else 0
-        s_time = line.get("server_update_time")
-        recency = int(s_time) if s_time is not None else t2
-        valid.append((descending, recency, line))
+        valid.append((descending, recency, dict(line)))
 
     if not valid:
         return None
@@ -128,9 +134,15 @@ def sync_binance_positions(
     if need_drawings:
         fetcher = load_drawings if load_drawings is not None else tve.get_layout_drawings
         try:
-            drawings_map = fetcher(layout_id) or {}
+            raw_drawings = fetcher(layout_id)
         except (BinanceAPIError, RuntimeError, TimeoutError, OSError) as e:
             logger.warning("同步拉取 TV 画线失败: %s", e)
+        else:
+            if not isinstance(raw_drawings, Mapping):
+                raise TypeError(
+                    f"Expected mapping from load_drawings({layout_id!r}), got {type(raw_drawings).__name__}"
+                )
+            drawings_map = dict(raw_drawings)
 
     with pos_store.transaction():
         current_open_positions = {p["symbol"]: p for p in pos_store.get_open_positions()}
@@ -200,7 +212,7 @@ def sync_binance_positions(
                 local_p["profit_lock_notified"] = False
                 local_p["stop_loss_notified"] = False
                 local_p["highest_price"] = max(
-                    float(local_p.get("highest_price") or 0.0),
+                    float(local_p["highest_price"]) if local_p.get("highest_price") is not None else 0.0,
                     b_pos["mark_price"],
                     b_pos["entry_price"],
                 )

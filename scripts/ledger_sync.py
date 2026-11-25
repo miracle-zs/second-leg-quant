@@ -107,8 +107,13 @@ def sync_db_ledger(
     previous_report: Optional[Dict[str, Any]] = None
     if recording is None:
         previous_report = db_store.load_report(database)
-        if previous_report is not None and isinstance(previous_report.get("recording"), Mapping):
-            recording = dict(previous_report["recording"])
+        if previous_report is not None and previous_report.get("recording") is not None:
+            raw_prev_rec = previous_report["recording"]
+            if not isinstance(raw_prev_rec, Mapping):
+                raise ValueError(
+                    f"Corrupt previous_report['recording'] type: {type(raw_prev_rec).__name__}"
+                )
+            recording = dict(raw_prev_rec)
 
     try:
         end_ms = int(client.get_server_time())
@@ -149,9 +154,15 @@ def sync_db_ledger(
     raw_existing_income = bundle["income"]
     raw_existing_fills = bundle["fills"]
     raw_existing_obs = bundle["observations"]
-    existing_income: List[dict] = list(raw_existing_income) if isinstance(raw_existing_income, list) else []
-    existing_fills: List[dict] = list(raw_existing_fills) if isinstance(raw_existing_fills, list) else []
-    if isinstance(raw_existing_obs, list) and raw_existing_obs:
+    if not isinstance(raw_existing_income, list):
+        raise TypeError(f"Expected list for bundle['income'], got {type(raw_existing_income).__name__}")
+    if not isinstance(raw_existing_fills, list):
+        raise TypeError(f"Expected list for bundle['fills'], got {type(raw_existing_fills).__name__}")
+    if not isinstance(raw_existing_obs, list):
+        raise TypeError(f"Expected list for bundle['observations'], got {type(raw_existing_obs).__name__}")
+    existing_income: List[dict] = list(raw_existing_income)
+    existing_fills: List[dict] = list(raw_existing_fills)
+    if raw_existing_obs:
         if previous_report is None:
             previous_report = {"equity_curve": list(raw_existing_obs)}
         else:
@@ -164,18 +175,21 @@ def sync_db_ledger(
     income_list = list(income_by_id.values())
 
     # Scan only symbols with newly synced PnL/commission events or currently open positions.
-    fills_cursor: Dict[str, int] = dict(recording.get("fills_cursor_ms") or {})
+    raw_cursor = recording.get("fills_cursor_ms")
+    if raw_cursor is not None and not isinstance(raw_cursor, Mapping):
+        raise TypeError(f"Expected mapping for recording['fills_cursor_ms'], got {type(raw_cursor).__name__}")
+    fills_cursor: Dict[str, int] = dict(raw_cursor) if raw_cursor is not None else {}
     symbols_to_sync = {
         clean_symbol(item["symbol"])
         for item in new_income
-        if item.get("symbol") and item.get("incomeType") in ("REALIZED_PNL", "COMMISSION")
+        if item.get("symbol") and item["incomeType"] in ("REALIZED_PNL", "COMMISSION")
     }
     symbols_to_sync.update(clean_symbol(str(p["symbol"])) for p in active_positions_binance)
     if not existing_fills:
         symbols_to_sync.update(
             clean_symbol(item["symbol"])
             for item in existing_income
-            if item.get("symbol") and item.get("incomeType") in ("REALIZED_PNL", "COMMISSION")
+            if item.get("symbol") and item["incomeType"] in ("REALIZED_PNL", "COMMISSION")
         )
 
     sorted_symbols = sorted(s for s in symbols_to_sync if s)

@@ -425,5 +425,176 @@ class TestDashboardAPIP0Fixes(unittest.TestCase):
             self.assertIn("Forbidden", json.loads(b403)["error"])
 
 
+class TestAccountFailFastRegressionFixes(unittest.TestCase):
+    def test_trade_reconstructor_rejects_corrupt_required_fields_and_magic_leverage(self):
+        # Empty/null explicit asset raises ValueError
+        with self.assertRaises(ValueError):
+            tr.income_asset({"asset": ""})
+        with self.assertRaises(ValueError):
+            tr.income_asset({"asset": None})
+        self.assertEqual(tr.income_asset({"asset": " bnb "}), "BNB")
+
+        # enrich_trade_record requires entry_price & amount, does not fabricate leverage=5
+        with self.assertRaises(KeyError):
+            tr.enrich_trade_record({"symbol": "BTCUSDT", "amount": 1.0}, 0)
+        with self.assertRaises(KeyError):
+            tr.enrich_trade_record({"symbol": "BTCUSDT", "entry_price": 100.0}, 0)
+        with self.assertRaises(ValueError):
+            tr.enrich_trade_record({"symbol": "BTCUSDT", "entry_price": 0.0, "amount": 1.0}, 0)
+
+        no_lev_trade = tr.enrich_trade_record(
+            {"symbol": "BTCUSDT", "entry_price": 100.0, "exit_price": 110.0, "amount": 1.0},
+            0,
+        )
+        self.assertIsNone(no_lev_trade["leverage"])
+        self.assertIsNone(no_lev_trade["roe_pct"])
+
+        # enrich_active_position requires entry_price, amount, and mark_price; no magic leverage=5
+        with self.assertRaises(ValueError):
+            tr.enrich_active_position({"symbol": "BTCUSDT", "amount": 1.0, "mark_price": 100.0}, 0)
+        with self.assertRaises(ValueError):
+            tr.enrich_active_position({"symbol": "BTCUSDT", "entry_price": 100.0, "mark_price": 100.0}, 0)
+        with self.assertRaises(ValueError):
+            tr.enrich_active_position({"symbol": "BTCUSDT", "entry_price": 100.0, "amount": 1.0}, 0)
+        with self.assertRaises(ValueError):
+            tr.enrich_active_position({"symbol": "BTCUSDT", "entry_price": 100.0, "amount": 1.0, "mark_price": 0.0}, 0)
+
+        no_lev_pos = tr.enrich_active_position(
+            {"symbol": "BTCUSDT", "entry_price": 100.0, "amount": 2.0, "mark_price": 105.0},
+            0,
+        )
+        self.assertIsNone(no_lev_pos["leverage"])
+        self.assertIsNone(no_lev_pos["roe_pct"])
+        self.assertIsNone(no_lev_pos["liquidation_price"])
+
+    def test_reconstruct_binance_trades_fails_fast_on_malformed_income_fills_or_local_history(self):
+        # Missing income amount or incomeType or time fails fast
+        with self.assertRaises(KeyError):
+            tr.reconstruct_binance_trades(
+                [{"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "asset": "USDT", "time": 1000}],
+                [],
+            )
+        with self.assertRaises(KeyError):
+            tr.reconstruct_binance_trades(
+                [{"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "asset": "USDT", "income": "10"}],
+                [],
+            )
+
+        # Empty-queue reduceOnly fill without realizedPnl or REALIZED_PNL income fails fast
+        with self.assertRaises(ValueError):
+            tr.reconstruct_binance_trades(
+                [],
+                [],
+                fills=[{
+                    "symbol": "BTCUSDT",
+                    "id": 1,
+                    "orderId": 1,
+                    "side": "SELL",
+                    "positionSide": "BOTH",
+                    "time": 1000,
+                    "price": "100",
+                    "qty": "1",
+                    "reduceOnly": True,
+                }],
+            )
+
+        # Unparseable closed_at in local_history fails fast
+        with self.assertRaises(ValueError):
+            tr.reconstruct_binance_trades(
+                [],
+                [{"symbol": "BTCUSDT", "closed_at": "not-a-timestamp"}],
+                [],
+            )
+
+    def test_account_analytics_engine_rejects_missing_or_invalid_initial_capital_and_bad_closed_at(self):
+        for bad_cap in (0.0, -50.0, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=bad_cap)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "offline_no_cap.sqlite3"
+            eng = aae.AccountAnalyticsEngine(offline_mode=True)
+            with self.assertRaises(ValueError):
+                eng.run(database=db_path)
+
+            # Offline mode uses persisted recording initial_equity if present
+            db_store.publish_report(
+                db_path,
+                {
+                    "recording": {"start_ms": 1795200000000, "started_at": "2026-11-21 00:00:00", "initial_equity": 3333.0},
+                    "equity_curve": [{"timestamp": 1795200000000, "equity": 3333.0, "drawdown_usd": 0.0, "drawdown_pct": 0.0}],
+                },
+            )
+            report = eng.run(database=db_path)
+            self.assertEqual(report["summary"]["initial_capital"], 3333.0)
+            self.assertEqual(report["income_breakdown"]["principal_source"], "recording_start")
+
+        # Online mode must fail fast if position_history has unparseable closed_at instead of dropping it
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "bad_hist.sqlite3"
+            start_ms = 1795200000000
+            with db_store.transaction(db_path) as conn:
+                conn.execute(
+                    "INSERT INTO position_history (symbol, closed_at, payload) VALUES (?, ?, ?)",
+                    ("BTCUSDT", "CORRUPT_TIME", json.dumps({"symbol": "BTCUSDT", "closed_at": "CORRUPT_TIME"})),
+                )
+            client = bc.BinanceFuturesClient("k", "s")
+            eng = aae.AccountAnalyticsEngine(client=client)
+            status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+            with patch.object(
+                eng,
+                "fetch_binance_data",
+                return_value=({"totalWalletBalance": "1000", "totalMarginBalance": "1000"}, [], [], status),
+            ), patch.object(client, "get_server_time", return_value=start_ms), patch.object(
+                client, "_send_signed_request", return_value=[]
+            ):
+                with self.assertRaises(ValueError):
+                    eng.run(database=db_path, recording_start_ms=start_ms)
+
+    def test_binance_position_client_logs_malformed_trendlines_and_rejects_invalid_drawings_return(self):
+        import time as _time
+        now = _time.time()
+        malformed = {"id": "BAD_15M", "interval": "15", "p1": None, "t1": now - 3600, "p2": 9.0, "t2": now - 100}
+        with self.assertLogs("binance_client", level="WARNING") as cm:
+            chosen = bpc.select_best_position_trendline([malformed], current_time=now)
+        self.assertIsNone(chosen)
+        self.assertTrue(any("BAD_15M" in msg for msg in cm.output))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "pos.sqlite3"
+            store = tad.PositionStore(db_path)
+            client = bc.BinanceFuturesClient("k", "s")
+            active_longs = [
+                {"symbol": "SOLUSDT", "amount": 5.0, "entry_price": 150.0, "mark_price": 152.0, "unrealized_pnl": 10.0, "leverage": 5},
+            ]
+            with patch.object(client, "get_active_positions", return_value=active_longs):
+                with self.assertRaises(TypeError):
+                    bpc.sync_binance_positions(client, store, load_drawings=lambda _lid: None)
+
+    def test_db_store_and_ledger_sync_reject_corrupt_recording_and_cursor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "bad_rec.sqlite3"
+            with self.assertRaises(ValueError):
+                db_store.publish_report(db_path, {"recording": ["invalid"]})
+
+            db_store.publish_report(
+                db_path,
+                {
+                    "recording": {
+                        "start_ms": 1795200000000,
+                        "started_at": "2026-11-21 00:00:00",
+                        "initial_equity": 1000.0,
+                        "fills_cursor_ms": ["not-a-dict"],
+                    },
+                    "equity_curve": [],
+                },
+            )
+            fake_client = MagicMock()
+            fake_client.get_server_time.return_value = 1795200500000
+            fake_client.get_income.return_value = []
+            with self.assertRaises(TypeError):
+                ledger_sync.sync_db_ledger(fake_client, db_path, {"totalMarginBalance": "1000"}, [], None)
+
+
 if __name__ == "__main__":
     unittest.main()

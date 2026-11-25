@@ -239,6 +239,8 @@ def publish_report(
     with transaction(database) as conn:
         recording = report.get("recording")
         if recording is not None:
+            if not isinstance(recording, Mapping):
+                raise ValueError(f"report['recording'] must be a mapping, got {type(recording).__name__}")
             conn.execute(
                 """
                 INSERT INTO account_recording (id, payload) VALUES (1, ?)
