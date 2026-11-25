@@ -30,6 +30,7 @@ import binance_position_client as bpc
 import config as cfg
 import db_store
 import http_client
+import ledger_sync
 import tv_trendline_engine as tve
 
 
@@ -41,9 +42,9 @@ class TestTrendlineMatchingAndSelection(unittest.TestCase):
             cfg.clean_symbol("BINANCE:ETHUSDT.P"): [{"id": "ETH_LINE", "p1": 3500.0, "t1": 1000, "p2": 3400.0, "t2": 2000}],
             cfg.clean_symbol("BINANCE:1000CATUSDT.P"): [{"id": "CAT_LINE", "p1": 0.05, "t1": 1000, "p2": 0.04, "t2": 2000}],
         }
-        self.assertIsNone(bpc.match_symbol_drawings("HUSDT", drawings))
-        self.assertIsNone(bpc.match_symbol_drawings("ATUSDT", drawings))
-        eth_match = bpc.match_symbol_drawings("BINANCE:ETHUSDT.P", drawings)
+        self.assertIsNone(drawings.get(cfg.clean_symbol("HUSDT")))
+        self.assertIsNone(drawings.get(cfg.clean_symbol("ATUSDT")))
+        eth_match = drawings.get(cfg.clean_symbol("BINANCE:ETHUSDT.P"))
         self.assertIsNotNone(eth_match)
         self.assertEqual(eth_match[0]["id"], "ETH_LINE")
 
@@ -96,7 +97,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
 
             full_income = [
                 {"incomeType": "REALIZED_PNL", "tranId": i + 1, "income": "1", "time": start_ms + i * 1000}
-                for i in range(aae.INCOME_PAGE_LIMIT)
+                for i in range(ledger_sync.INCOME_PAGE_LIMIT)
             ]
 
             def fake_signed(endpoint, params=None):
@@ -117,8 +118,8 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
 
             self.assertEqual(report["summary"]["initial_capital"], 1336.0)
             self.assertEqual(report["income_breakdown"]["principal_source"], "recording_start")
-            self.assertFalse(report["income_breakdown"]["page_full"])
-            self.assertEqual(report["income_breakdown"]["raw_count"], aae.INCOME_PAGE_LIMIT)
+            self.assertNotIn("page_full", report["income_breakdown"])
+            self.assertEqual(report["income_breakdown"]["raw_count"], ledger_sync.INCOME_PAGE_LIMIT)
 
     def test_database_first_run_with_existing_equity_table_does_not_crash(self):
         client = bpc.BinanceFuturesClient("demo", "demo")
@@ -142,10 +143,11 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
         engine = aae.AccountAnalyticsEngine(offline_mode=True)
         raw_short = {
             "symbol": "ETHUSDT",
-            "positionAmt": "-2.0",
-            "entryPrice": "3000.0",
-            "markPrice": "2850.0",
-            "leverage": "10",
+            "side": "SHORT",
+            "amount": 2.0,
+            "entry_price": 3000.0,
+            "mark_price": 2850.0,
+            "leverage": 10,
         }
         enriched = engine.enrich_active_position(raw_short, 0)
         self.assertEqual(enriched["side"], "SHORT")
@@ -725,7 +727,7 @@ class TestSecondPassRegressions(unittest.TestCase):
 
         # Verify daily returns were computed against 100.0 (+20%, -4.17%), not 10000.0
         expected_sharpe, expected_sortino, _ = engine._compute_risk_ratios(
-            report["daily_pnl"], report["trade_history"], 100.0
+            report["daily_pnl"], 100.0
         )
         self.assertEqual(report["summary"]["sharpe_ratio"], expected_sharpe)
         self.assertEqual(report["summary"]["sortino_ratio"], expected_sortino)

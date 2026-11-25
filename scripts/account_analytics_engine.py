@@ -34,13 +34,8 @@ from config import (  # noqa: E402
     resolve_database_path,
 )
 import db_store  # noqa: E402
-from ledger_sync import (  # noqa: E402
-    INCOME_PAGE_LIMIT,
-    USER_TRADES_PAGE_LIMIT,
-    sync_db_ledger,
-)
+from ledger_sync import sync_db_ledger  # noqa: E402
 from quant_metrics import (  # noqa: E402
-    EQUITY_COMPACTION_BUCKET_MS,
     aggregate_income_ledger,
     build_db_daily_pnl,
     build_db_equity_curve,
@@ -56,7 +51,6 @@ from trade_reconstructor import (  # noqa: E402
     format_duration,
     merge_active_positions,
     parse_to_timestamp,
-    pop_matching_local_trade as _pop_matching_local_trade,
     reconstruct_binance_trades,
 )
 
@@ -99,11 +93,9 @@ class AccountAnalyticsEngine:
         else:
             self.client = None
 
-    def fetch_binance_data(
-        self, *, include_income: bool = True
-    ) -> Tuple[Optional[dict], List[dict], List[dict], dict]:
+    def fetch_binance_data(self) -> Tuple[Optional[dict], List[dict], List[dict], dict]:
         """
-        拉取币安实盘合约账户、资金流水与活跃持仓快照。
+        拉取币安实盘合约账户与活跃持仓快照（资金流水由 ledger_sync 增量同步）。
         仅捕获明确的接口/网络异常 (BinanceAPIError / TimeoutError / OSError)，不吞掉内部逻辑 Bug。
         """
         api_status = {
@@ -145,63 +137,33 @@ class AccountAnalyticsEngine:
             logger.warning("⚠️ 币安 /fapi/v2/account 请求异常 [%s]: %s，降级至本地离线模式。", code, e)
             return None, [], [], api_status
 
-        income_list: List[dict] = []
-        if include_income:
-            try:
-                raw_income = self.client.get_income(limit=INCOME_PAGE_LIMIT)
-                if not isinstance(raw_income, list):
-                    raise BinanceAPIError(
-                        "Invalid /fapi/v1/income response",
-                        code="INVALID_RESPONSE",
-                        endpoint="/fapi/v1/income",
-                    )
-                income_list = raw_income
-                api_status["income_available"] = True
-            except (BinanceAPIError, TimeoutError, OSError) as e:
-                api_status["income_error"] = str(e)
-                logger.warning("⚠️ 币安 /fapi/v1/income 查询失败: %s", e)
-
         active_positions_binance: List[dict] = []
         try:
-            pos_data = self.client.get_account_positions()
+            pos_data = self.client.get_active_positions(include_short=True)
             if not isinstance(pos_data, list):
                 raise BinanceAPIError(
                     "Invalid /fapi/v2/positionRisk response",
                     code="INVALID_RESPONSE",
                     endpoint="/fapi/v2/positionRisk",
                 )
+            active_positions_binance = list(pos_data)
             api_status["positions_available"] = True
         except (BinanceAPIError, TimeoutError, OSError) as e:
-            pos_data = None
             api_status["positions_error"] = str(e)
             if isinstance(e, BinanceAPIError) and e.code is not None and api_status["status_code"] == 0:
                 api_status["status_code"] = e.code
             logger.warning("⚠️ 币安 /fapi/v2/positionRisk 查询失败: %s", e)
 
-        if pos_data is not None:
-            for p in pos_data:
-                if float(p["positionAmt"]) != 0.0:
-                    active_positions_binance.append(p)
-
         api_status["connected"] = True
         api_status["status_code"] = 200
-        if not include_income:
-            if api_status["positions_available"]:
-                api_status["mode"] = "BINANCE_SNAPSHOT_PENDING_INCOME"
-                api_status["message"] = "Connected; pending incremental income sync"
-            else:
-                api_status["mode"] = "BINANCE_PARTIAL"
-                api_status["message"] = "Binance position data unavailable"
-        elif api_status["income_available"] and api_status["positions_available"]:
-            api_status["mode"] = "BINANCE_REALTIME"
-            api_status["message"] = "Connected to Binance Live Futures API"
-            logger.info("✅ 成功连接币安实盘合约 API 并同步账户、流水与持仓数据。")
+        if api_status["positions_available"]:
+            api_status["mode"] = "BINANCE_SNAPSHOT_PENDING_INCOME"
+            api_status["message"] = "Connected; pending incremental income sync"
         else:
             api_status["mode"] = "BINANCE_PARTIAL"
-            api_status["message"] = "Binance income or position data unavailable"
-            logger.warning("币安账户已连接，持仓或资金流水查询失败。")
+            api_status["message"] = "Binance position data unavailable"
 
-        return account_info, income_list, active_positions_binance, api_status
+        return account_info, [], active_positions_binance, api_status
 
     def load_local_positions_store(
         self, database: Optional[Path] = None
@@ -251,7 +213,6 @@ class AccountAnalyticsEngine:
     def _compute_risk_ratios(
         self,
         daily_pnl: Sequence[Mapping[str, Any]],
-        trades: Sequence[Mapping[str, Any]],
         initial_capital: float,
     ) -> Tuple[Optional[float], Optional[float], str]:
         return compute_risk_ratios(daily_pnl, initial_capital)
@@ -332,9 +293,7 @@ class AccountAnalyticsEngine:
         """执行账户数据拉取、交易重构、风控指标核算并持久化到 SQLite。"""
         db_path = Path(database) if database is not None else (resolve_database_path() or DEFAULT_DB_PATH)
 
-        account_info, income_list, active_positions_binance, api_status = self.fetch_binance_data(
-            include_income=False
-        )
+        account_info, income_list, active_positions_binance, api_status = self.fetch_binance_data()
 
         previous_report: Optional[Dict[str, Any]] = None
         recording: Optional[Dict[str, Any]] = None
@@ -385,7 +344,7 @@ class AccountAnalyticsEngine:
             income_list = [item for item in income_list if int(item["time"]) >= cutoff]
             filtered_local: List[dict] = []
             for trade in local_history:
-                raw_closed = trade.get("closed_at") if trade.get("closed_at") is not None else trade.get("exit_time")
+                raw_closed = trade.get("closed_at")
                 ts = parse_to_timestamp(raw_closed)
                 if ts is None:
                     raise ValueError(
@@ -401,19 +360,14 @@ class AccountAnalyticsEngine:
 
         open_position_fee = 0.0
         if recording is not None:
+            assert account_info is not None
             trade_history, open_position_fee = self.reconstruct_binance_trades(
                 income_list, local_history, fills=fills_list
             )
-        else:
-            trade_history = [self.enrich_trade_record(t, idx) for idx, t in enumerate(local_history)]
-
-        income_agg = aggregate_income_ledger(income_list)
-        net_transfers_val = float(income_agg["net_transfer_usdt"])
-        effective_transfers = net_transfers_val if net_transfers_val > 0 else None
-        funding_fee_usdt = float(income_agg["funding_fee_usdt"])
-
-        if recording is not None:
-            assert account_info is not None
+            income_agg = aggregate_income_ledger(income_list)
+            net_transfers_val = float(income_agg["net_transfer_usdt"])
+            effective_transfers = net_transfers_val if net_transfers_val > 0 else None
+            funding_fee_usdt = float(income_agg["funding_fee_usdt"])
             initial_equity = float(recording["initial_equity"])
             if not math.isfinite(initial_equity) or initial_equity < 0:
                 raise ValueError(f"Invalid recording.initial_equity: {recording['initial_equity']!r}")
@@ -448,6 +402,8 @@ class AccountAnalyticsEngine:
             summary["net_external_transfers"] = round(net_flow, 4)
             principal_source = "recording_start"
         else:
+            trade_history = [self.enrich_trade_record(t, idx) for idx, t in enumerate(local_history)]
+            income_agg = aggregate_income_ledger(())
             offline_initial_override: Optional[float] = None
             if self.custom_initial_capital is not None:
                 principal_source = "configured"
@@ -467,9 +423,7 @@ class AccountAnalyticsEngine:
             summary, equity_curve, daily_pnl = self.calculate_quant_risk_metrics(
                 trades=trade_history,
                 active_positions=active_positions,
-                account_info=account_info,
-                net_transfers=effective_transfers,
-                total_funding_fee=funding_fee_usdt,
+                account_info=None,
                 initial_capital_override=offline_initial_override,
             )
 
@@ -486,7 +440,6 @@ class AccountAnalyticsEngine:
             "generated_at": get_beijing_time_str(),
             "data_source": {
                 "BINANCE_REALTIME": "BINANCE_API",
-                "BINANCE_PARTIAL": "BINANCE_PARTIAL",
                 "OFFLINE_FALLBACK": "LOCAL_OFFLINE_FALLBACK",
             }[api_status["mode"]],
             "positions_source": "BINANCE_API" if api_status["positions_available"] else "LOCAL_CACHE",

@@ -28,7 +28,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from binance_client import BinanceAPIError, BinanceFuturesClient  # noqa: E402
-from config import DEFAULT_TV_LAYOUT_ID, clean_symbol, get_beijing_time_str  # noqa: E402
+from config import DEFAULT_TV_LAYOUT_ID, get_beijing_time_str  # noqa: E402
 import db_store  # noqa: E402
 import tv_trendline_engine as tve  # noqa: E402
 
@@ -73,17 +73,6 @@ def select_best_position_trendline(
         return None
     valid.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return valid[0][2]
-
-
-def match_symbol_drawings(
-    symbol: str,
-    drawings_map: Mapping[str, list[dict[str, Any]]],
-) -> Optional[list[dict[str, Any]]]:
-    """按标准化币种名称精确匹配画线（get_layout_drawings 已以 clean_symbol 为键）。"""
-    target = clean_symbol(symbol)
-    if not target or not drawings_map:
-        return None
-    return drawings_map.get(target)
 
 
 def sync_binance_positions(
@@ -151,7 +140,7 @@ def sync_binance_positions(
 
         for sym, b_pos in binance_symbols.items():
             if sym not in current_open_positions:
-                matched_lines = match_symbol_drawings(sym, drawings_map)
+                matched_lines = drawings_map.get(sym)
                 matched_trendline = select_best_position_trendline(matched_lines)
                 notes = f"Binance Real-Time Auto-Sync (Leverage: {b_pos['leverage']}x)"
                 if can_batch_store:
@@ -230,7 +219,7 @@ def sync_binance_positions(
                 dirty = True
 
             if not local_p.get("trendline") and drawings_map:
-                matched_trendline = select_best_position_trendline(match_symbol_drawings(sym, drawings_map))
+                matched_trendline = select_best_position_trendline(drawings_map.get(sym))
                 if matched_trendline is not None:
                     local_p["trendline"] = matched_trendline
                     dirty = True

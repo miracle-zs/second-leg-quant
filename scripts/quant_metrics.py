@@ -43,7 +43,7 @@ def _resolve_trade_beijing_date(trade: Mapping[str, Any]) -> Optional[str]:
             raise ValueError(f"Invalid trade closed_at timestamp: {c_at!r}")
         return get_beijing_time_str(ts)[:10]
     raw_closed_ts = trade.get("closed_ts")
-    if raw_closed_ts is not None and str(raw_closed_ts).strip() not in ("", "--"):
+    if raw_closed_ts is not None:
         ts = parse_to_timestamp(raw_closed_ts)
         if ts is None:
             raise ValueError(f"Invalid trade closed_ts timestamp: {raw_closed_ts!r}")
@@ -218,7 +218,7 @@ def build_trade_equity_curve(
             first_ts = int(raw_entry_ts)
         elif first_t.get("closed_ts") is not None:
             first_ts = int(first_t["closed_ts"])
-        elif first_t.get("closed_at") not in (None, "--", ""):
+        elif first_t.get("closed_at") is not None:
             parsed_first = parse_to_timestamp(first_t["closed_at"])
             if parsed_first is not None:
                 first_ts = int(parsed_first * 1000)
@@ -251,8 +251,7 @@ def build_trade_equity_curve(
                 raise ValueError(f"Invalid boolean closed_ts in trade: {t!r}")
             c_ts = int(raw_c_ts)
         else:
-            c_at_raw = t.get("closed_at")
-            parsed_c = parse_to_timestamp(c_at_raw) if c_at_raw not in (None, "--", "") else None
+            parsed_c = parse_to_timestamp(t.get("closed_at"))
             if parsed_c is None:
                 raise ValueError(f"Trade missing valid closed_ts/closed_at for equity curve: {t!r}")
             c_ts = int(parsed_c * 1000)
@@ -822,7 +821,6 @@ def build_income_breakdown(
         "raw_count": income_agg["raw_count"],
         "coverage_start": income_agg["coverage_start"],
         "coverage_end": income_agg["coverage_end"],
-        "page_full": False,
         "available": income_available,
         "principal_source": principal_source,
     }

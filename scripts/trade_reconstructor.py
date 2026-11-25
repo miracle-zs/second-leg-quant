@@ -130,14 +130,12 @@ def _extract_trendline_meta(trendline: object) -> Tuple[Optional[Any], str, Opti
         return None, "--", None
     if not isinstance(trendline, Mapping):
         raise ValueError(f"Expected mapping for trendline, got {type(trendline).__name__}")
-    trendline_id = trendline.get("id") or trendline.get("line_id")
+    trendline_id = trendline.get("id")
     p1_raw = trendline.get("p1")
     p2_raw = trendline.get("p2")
     p1 = float(p1_raw) if p1_raw is not None else None
     p2 = float(p2_raw) if p2_raw is not None else None
-    state = trendline.get("state")
-    state_color = state.get("linecolor") if isinstance(state, Mapping) else None
-    color = trendline.get("line_color") or state_color or "#2196f3"
+    color = trendline.get("line_color") or "#2196f3"
     info = {
         "id": trendline_id,
         "p1": p1,
@@ -197,7 +195,7 @@ def enrich_trade_record(
     raw_amount = float(raw["amount"])
     if not math.isfinite(raw_amount):
         raise ValueError(f"Trade record for {sym} has invalid amount: {raw['amount']!r}")
-    raw_side = str(raw.get("side") or raw.get("positionSide") or "").strip().upper()
+    raw_side = str(raw.get("side") or "").strip().upper()
     if raw_side in ("LONG", "SHORT"):
         side = raw_side
     else:
@@ -218,7 +216,7 @@ def enrich_trade_record(
     exit_price: Optional[float] = float(raw_exit) if raw_exit is not None and float(raw_exit) > 0 else None
 
     entry_time_raw = raw.get("entry_time")
-    closed_at_raw = raw.get("closed_at") if raw.get("closed_at") is not None else raw.get("exit_time")
+    closed_at_raw = raw.get("closed_at")
     entry_ts = parse_to_timestamp(entry_time_raw)
     closed_ts = parse_to_timestamp(closed_at_raw)
 
@@ -327,24 +325,24 @@ def enrich_active_position(
     default_leverage: Optional[int] = None,
     now_ts: Optional[float] = None,
 ) -> dict:
-    """标准化当前活跃持仓；支持提取币安 /fapi/v2/positionRisk 的 updateTime 作为时间基准。"""
+    """标准化当前活跃持仓（基于 get_active_positions / 本地 open_positions 的 snake_case 字段）。"""
     sym = clean_symbol(str(raw["symbol"]))
     if not sym:
         raise ValueError(f"Active position missing valid symbol: {raw!r}")
-    raw_entry = raw.get("entry_price") if raw.get("entry_price") is not None else raw.get("entryPrice")
+    raw_entry = raw.get("entry_price")
     if raw_entry is None:
         raise ValueError(f"Active position {sym} missing entry_price: {raw!r}")
     entry_price = float(raw_entry)
     if not math.isfinite(entry_price) or entry_price <= 0:
         raise ValueError(f"Active position {sym} has invalid entry_price: {raw_entry!r}")
 
-    raw_amt_val = raw.get("amount") if raw.get("amount") is not None else raw.get("positionAmt")
+    raw_amt_val = raw.get("amount")
     if raw_amt_val is None:
         raise ValueError(f"Active position {sym} missing amount: {raw!r}")
     raw_amt = float(raw_amt_val)
     if not math.isfinite(raw_amt):
         raise ValueError(f"Active position {sym} has invalid amount: {raw_amt_val!r}")
-    raw_side = str(raw.get("side") or raw.get("positionSide") or "").strip().upper()
+    raw_side = str(raw.get("side") or "").strip().upper()
     if raw_side in ("LONG", "SHORT"):
         side = raw_side
     else:
@@ -361,11 +359,7 @@ def enrich_active_position(
     else:
         leverage = None
 
-    raw_mark = (
-        raw.get("mark_price")
-        if raw.get("mark_price") is not None
-        else (raw.get("markPrice") if raw.get("markPrice") is not None else raw.get("current_price"))
-    )
+    raw_mark = raw.get("mark_price") if raw.get("mark_price") is not None else raw.get("current_price")
     if raw_mark is None:
         raise ValueError(f"Active position {sym} missing mark_price: {raw!r}")
     mark_price = float(raw_mark)
@@ -375,14 +369,14 @@ def enrich_active_position(
     notional = round(mark_price * amount, 4)
     initial_margin = round(notional / leverage, 4) if (leverage is not None and leverage > 0) else notional
 
-    raw_upnl = raw.get("unrealized_pnl") if raw.get("unrealized_pnl") is not None else raw.get("unRealizedProfit")
+    raw_upnl = raw.get("unrealized_pnl")
     unrealized_pnl = float(raw_upnl) if raw_upnl is not None else ((mark_price - entry_price) * amount * direction)
     unrealized_pnl = round(unrealized_pnl, 4)
 
     pnl_pct = round(((mark_price - entry_price) * direction / entry_price * 100.0), 2)
     roe_pct: Optional[float] = round(pnl_pct * leverage, 2) if leverage is not None else None
 
-    raw_liq = raw.get("liquidation_price") if raw.get("liquidation_price") is not None else raw.get("liquidationPrice")
+    raw_liq = raw.get("liquidation_price")
     if raw_liq is not None and float(raw_liq) > 0:
         est_liq_price: Optional[float] = round(float(raw_liq), 6)
     elif leverage is not None and leverage > 1:
@@ -391,10 +385,9 @@ def enrich_active_position(
         est_liq_price = None
 
     entry_time_raw = raw.get("entry_time")
-    fallback_time_raw = raw.get("updateTime") if raw.get("updateTime") is not None else raw.get("update_time")
     entry_ts = parse_to_timestamp(entry_time_raw)
     if entry_ts is None:
-        entry_ts = parse_to_timestamp(fallback_time_raw)
+        entry_ts = parse_to_timestamp(raw.get("update_time"))
 
     current_ts = now_ts if now_ts is not None else time.time()
     if entry_ts is not None:
@@ -443,7 +436,7 @@ def enrich_active_position(
         "trendline": trendline,
         "source": raw.get(
             "source",
-            "BINANCE_SYNC" if (raw.get("positionAmt") is not None or raw.get("position_side") is not None) else "MANUAL",
+            "BINANCE_SYNC" if raw.get("position_side") is not None else "MANUAL",
         ),
         "status": "OPEN",
         "notes": raw.get("notes", ""),
@@ -470,7 +463,7 @@ def merge_active_positions(
         sym = clean_symbol(str(lp["symbol"]))
         if not sym:
             raise ValueError(f"Local open position missing valid symbol: {lp!r}")
-        raw_side = str(lp.get("side") or lp.get("positionSide") or "").upper()
+        raw_side = str(lp.get("side") or "").upper()
         amt = float(lp["amount"])
         lp_side = raw_side if raw_side in ("LONG", "SHORT") else ("SHORT" if amt < 0 else "LONG")
         local_by_key[(sym, lp_side)] = lp
@@ -480,13 +473,11 @@ def merge_active_positions(
         sym = clean_symbol(str(bp["symbol"]))
         if not sym:
             raise ValueError(f"Binance active position missing valid symbol: {bp!r}")
-        raw_amt_val = bp.get("positionAmt") if bp.get("positionAmt") is not None else bp.get("signed_amount")
-        if raw_amt_val is None:
-            raw_amt_val = bp.get("amount")
+        raw_amt_val = bp.get("signed_amount") if bp.get("signed_amount") is not None else bp.get("amount")
         if raw_amt_val is None:
             raise ValueError(f"Binance active position {sym} missing amount: {bp!r}")
         raw_amt = float(raw_amt_val)
-        raw_side = str(bp.get("side") or bp.get("positionSide") or bp.get("position_side") or "BOTH").upper()
+        raw_side = str(bp.get("side") or bp.get("position_side") or "BOTH").upper()
         bp_side = raw_side if raw_side in ("LONG", "SHORT") else ("SHORT" if raw_amt < 0 else "LONG")
         local = local_by_key.get((sym, bp_side))
         combined = dict(bp)
@@ -521,7 +512,7 @@ def _merge_fee_dicts(a: Mapping[str, float], b: Mapping[str, float]) -> Dict[str
 
 
 def _infer_local_trade_side(loc: Mapping[str, Any]) -> Optional[str]:
-    raw_side = str(loc.get("side") or loc.get("positionSide") or "").strip().upper()
+    raw_side = str(loc.get("side") or "").strip().upper()
     if raw_side in ("LONG", "SHORT"):
         return raw_side
     raw_amount = loc.get("amount")
@@ -543,7 +534,7 @@ def _build_local_trade_index(
         sym = clean_symbol(str(loc["symbol"]))
         if not sym:
             raise ValueError(f"Local position_history record missing valid symbol: {loc!r}")
-        loc_closed_at = loc.get("closed_at") if loc.get("closed_at") is not None else loc.get("exit_time")
+        loc_closed_at = loc.get("closed_at")
         if loc_closed_at is None or str(loc_closed_at).strip() == "--":
             continue
         loc_ts = parse_to_timestamp(loc_closed_at)
@@ -592,39 +583,6 @@ def _pop_indexed_local_trade(
     if best_idx is not None:
         used_indices.add(best_idx)
         return best_entry
-    return None
-
-
-def pop_matching_local_trade(
-    sym: str,
-    closed_sec: float,
-    local_history: Sequence[Mapping[str, Any]],
-    used_indices: set[int],
-    side: Optional[str] = None,
-) -> Optional[Mapping[str, Any]]:
-    """Match the closest unused local trade record within +/-300s of `closed_sec`."""
-    best_idx: Optional[int] = None
-    best_diff = float("inf")
-    for idx, loc in enumerate(local_history):
-        if idx in used_indices:
-            continue
-        if clean_symbol(str(loc.get("symbol") or "")) != sym:
-            continue
-        if side in ("LONG", "SHORT"):
-            loc_side = _infer_local_trade_side(loc)
-            if loc_side is not None and loc_side != side:
-                continue
-        loc_closed_at = loc.get("closed_at") or loc.get("exit_time")
-        loc_ts = parse_to_timestamp(loc_closed_at)
-        if loc_ts is None:
-            continue
-        diff = abs(loc_ts - closed_sec)
-        if diff <= _LOCAL_MATCH_WINDOW_SEC and diff < best_diff:
-            best_diff = diff
-            best_idx = idx
-    if best_idx is not None:
-        used_indices.add(best_idx)
-        return local_history[best_idx]
     return None
 
 

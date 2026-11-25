@@ -582,27 +582,6 @@ def upsert_open_position(
         )
 
 
-def delete_open_position(
-    database: Path,
-    symbol: str,
-    *,
-    conn: Optional[sqlite3.Connection] = None,
-) -> Optional[dict[str, object]]:
-    """Delete a single open position by symbol and return its payload if present."""
-    sym = clean_symbol(symbol)
-    if not sym:
-        raise ValueError(f"Invalid symbol for deletion: {symbol!r}")
-    with _write_conn(database, conn) as w_conn:
-        row = w_conn.execute(
-            "SELECT payload FROM open_positions WHERE symbol = ?",
-            (sym,),
-        ).fetchone()
-        if row is None:
-            return None
-        w_conn.execute("DELETE FROM open_positions WHERE symbol = ?", (sym,))
-    return _loads_dict(row[0], context=f"open_positions[{sym}]")
-
-
 def load_position_history(
     database: Path,
     *,

@@ -46,6 +46,7 @@ if str(ROOT_DIR) not in sys.path:
 import account_analytics_engine as aae  # noqa: E402
 import binance_client as bc  # noqa: E402
 import db_store  # noqa: E402
+import ledger_sync  # noqa: E402
 
 
 class TestDataEnrichment(unittest.TestCase):
@@ -174,13 +175,15 @@ class TestDataEnrichment(unittest.TestCase):
         binance_pos = [
             {
                 "symbol": "SOLUSDT",
-                "positionAmt": "10",
-                "entryPrice": "150",
-                "markPrice": "165",
-                "unRealizedProfit": "150",
-                "leverage": "5",
-                "positionSide": "BOTH",
-                "updateTime": update_ms,
+                "side": "LONG",
+                "amount": 10.0,
+                "signed_amount": 10.0,
+                "entry_price": 150.0,
+                "mark_price": 165.0,
+                "unrealized_pnl": 150.0,
+                "leverage": 5,
+                "position_side": "BOTH",
+                "update_time": update_ms,
             }
         ]
         local_pos = [
@@ -500,7 +503,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         start_ms = now_ms - 2_000_000
         income = [
             {"incomeType": "TRANSFER", "tranId": i + 1, "income": "1", "asset": "USDT", "time": start_ms + i * 1000}
-            for i in range(aae.INCOME_PAGE_LIMIT)
+            for i in range(ledger_sync.INCOME_PAGE_LIMIT)
         ]
 
         def fake_signed(endpoint, params=None):
@@ -518,8 +521,8 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             report = engine.run(database=Path(directory) / "account.sqlite3", recording_start_ms=start_ms)
 
         coverage = report["income_breakdown"]
-        self.assertFalse(coverage["page_full"])
-        self.assertEqual(coverage["raw_count"], aae.INCOME_PAGE_LIMIT)
+        self.assertNotIn("page_full", coverage)
+        self.assertEqual(coverage["raw_count"], ledger_sync.INCOME_PAGE_LIMIT)
         self.assertLess(coverage["coverage_start"], coverage["coverage_end"])
         self.assertEqual(coverage["principal_source"], "recording_start")
 
@@ -1054,7 +1057,7 @@ class TestP0AnalyticsFixes(unittest.TestCase):
         # Day 3 资金基数 = 10500 - 2000 = 8500 -> -170/8500 = -2.0%
         self.assertAlmostEqual(daily_pnl[1]["return_pct"], -2.0, places=2)
 
-        sharpe, sortino, method = engine._compute_risk_ratios(daily_pnl, [], 1000.0)
+        sharpe, sortino, method = engine._compute_risk_ratios(daily_pnl, 1000.0)
         self.assertEqual(method, "DAILY_RETURNS")
         rets = [0.05, 0.0, -0.02]
         mean_r = sum(rets) / 3
@@ -1137,7 +1140,7 @@ class TestP0AnalyticsFixes(unittest.TestCase):
         self.assertEqual(trades_ro[1]["exit_price"], 120.0)
         self.assertEqual(trades_ro[1]["realized_pnl"], 10.0)
 
-    def test_pop_matching_local_trade_matches_side_closest_ts_and_rejects_inconsistent_pnl(self):
+    def test_local_trade_matching_by_side_closest_ts_and_rejects_inconsistent_pnl(self):
         engine = aae.AccountAnalyticsEngine(offline_mode=True)
         t0 = 1795200000
         local_history = [
@@ -1148,12 +1151,8 @@ class TestP0AnalyticsFixes(unittest.TestCase):
             # 同方向且时间最近 (+5s)
             {"symbol": "BTCUSDT", "side": "LONG", "closed_at": aae.get_beijing_time_str(t0 + 5), "leverage": 7, "highest_price": 115.0, "trendline": {"id": "TL_NEAR"}},
         ]
-        used = set()
-        matched = aae._pop_matching_local_trade("BTCUSDT", float(t0), local_history, used, side="LONG")
-        self.assertIsNotNone(matched)
-        self.assertEqual(matched["trendline"]["id"], "TL_NEAR")
 
-        # fills 路径应保留 leverage / roe_pct / highest_price
+        # fills 路径应保留 leverage / roe_pct / highest_price 并匹配同方向最近记录
         fills = [
             {"symbol": "BTCUSDT", "id": 1, "orderId": 1, "side": "BUY", "time": (t0 - 60) * 1000, "positionSide": "LONG", "price": "100", "qty": "2", "quoteQty": "200"},
             {"symbol": "BTCUSDT", "id": 2, "orderId": 2, "side": "SELL", "time": t0 * 1000, "positionSide": "LONG", "price": "110", "qty": "2", "quoteQty": "220"},
