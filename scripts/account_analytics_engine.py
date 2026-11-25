@@ -104,8 +104,15 @@ class AccountAnalyticsEngine:
             "last_sync": get_beijing_time_str(),
         }
 
-        if self.offline_mode or not self.client or not self.client.is_configured():
+        if self.offline_mode:
             logger.info("ℹ️ 运行在离线/本地回退模式 (Offline Mode)。")
+            return None, [], [], api_status
+
+        if not self.client or not self.client.is_configured():
+            api_status["status_code"] = "NOT_CONFIGURED"
+            api_status["message"] = "Binance API keys not configured"
+            api_status["mode"] = "NOT_CONFIGURED"
+            logger.warning("⚠️ 币安 API 凭证未配置 (NOT_CONFIGURED)。")
             return None, [], [], api_status
 
         api_status["configured"] = True
@@ -139,13 +146,18 @@ class AccountAnalyticsEngine:
         active_positions_binance: List[dict] = []
         try:
             pos_data = self.client.get_account_positions()
-            if isinstance(pos_data, list):
-                api_status["positions_available"] = True
-            else:
-                pos_data = []
+            if not isinstance(pos_data, list):
+                raise BinanceAPIError(
+                    "Invalid /fapi/v2/positionRisk response",
+                    code="INVALID_RESPONSE",
+                    endpoint="/fapi/v2/positionRisk",
+                )
+            api_status["positions_available"] = True
         except (BinanceAPIError, TimeoutError, OSError) as e:
             pos_data = None
             api_status["positions_error"] = str(e)
+            if isinstance(e, BinanceAPIError) and e.code is not None and api_status["status_code"] == 0:
+                api_status["status_code"] = e.code
             logger.warning("⚠️ 币安 /fapi/v2/positionRisk 查询失败: %s", e)
 
         if pos_data is not None:
@@ -304,8 +316,22 @@ class AccountAnalyticsEngine:
         effective_recording_start_ms = recording_start_ms
 
         if not self.offline_mode:
+            if api_status["mode"] == "NOT_CONFIGURED":
+                raise BinanceAPIError(
+                    "币安 API 凭证未配置 (NOT_CONFIGURED)；如需本地离线分析请传入 --offline",
+                    code="NOT_CONFIGURED",
+                )
             if api_status["mode"] not in ("BINANCE_REALTIME", "BINANCE_SNAPSHOT_PENDING_INCOME"):
-                raise RuntimeError("币安账户快照不完整，保留上一次完整实盘快照")
+                detail = (
+                    api_status.get("positions_error")
+                    or api_status.get("income_error")
+                    or api_status.get("message")
+                    or "Unknown error"
+                )
+                code = api_status.get("status_code")
+                raise RuntimeError(
+                    f"币安账户快照不完整 [{code}]: {detail}（保留上一次完整实盘快照）"
+                )
             assert account_info is not None
             (
                 recording,

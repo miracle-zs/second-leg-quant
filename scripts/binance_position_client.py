@@ -27,7 +27,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from binance_client import BinanceAPIError, BinanceFuturesClient  # noqa: E402
-from config import DEFAULT_TV_LAYOUT_ID, clean_symbol  # noqa: E402
+from config import DEFAULT_TV_LAYOUT_ID, clean_symbol, get_beijing_time_str  # noqa: E402
+import db_store  # noqa: E402
 import tv_trendline_engine as tve  # noqa: E402
 
 logger = logging.getLogger("binance_client")
@@ -116,39 +117,63 @@ def sync_binance_positions(
     new_added: list[str] = []
     auto_closed: list[str] = []
 
+    pre_open_positions = {p["symbol"]: p for p in pos_store.get_open_positions()}
+    missing_trendline_syms = {
+        sym for sym, p in pre_open_positions.items()
+        if sym in binance_symbols and not p.get("trendline")
+    }
+    need_drawings = bool(binance_symbols.keys() - pre_open_positions.keys()) or bool(missing_trendline_syms)
+
+    drawings_map: dict[str, list[dict[str, Any]]] = {}
+    if need_drawings:
+        fetcher = load_drawings if load_drawings is not None else tve.get_layout_drawings
+        try:
+            drawings_map = fetcher(layout_id) or {}
+        except (BinanceAPIError, RuntimeError, TimeoutError, OSError) as e:
+            logger.warning("同步拉取 TV 画线失败: %s", e)
+
     with pos_store.transaction():
         current_open_positions = {p["symbol"]: p for p in pos_store.get_open_positions()}
-        missing_trendline_syms = {
-            sym for sym, p in current_open_positions.items()
-            if sym in binance_symbols and not p.get("trendline")
-        }
-        need_drawings = bool(binance_symbols.keys() - current_open_positions.keys()) or bool(missing_trendline_syms)
-
-        drawings_map: dict[str, list[dict[str, Any]]] = {}
-        if need_drawings:
-            fetcher = load_drawings if load_drawings is not None else tve.get_layout_drawings
-            try:
-                drawings_map = fetcher(layout_id) or {}
-            except (BinanceAPIError, RuntimeError, TimeoutError, OSError) as e:
-                logger.warning("同步拉取 TV 画线失败: %s", e)
-
+        can_batch_store = hasattr(pos_store, "_open_positions") and hasattr(pos_store, "database")
         dirty = False
+
         for sym, b_pos in binance_symbols.items():
             if sym not in current_open_positions:
                 matched_lines = match_symbol_drawings(sym, drawings_map)
                 matched_trendline = select_best_position_trendline(matched_lines)
                 notes = f"Binance Real-Time Auto-Sync (Leverage: {b_pos['leverage']}x)"
-                pos_store.add_position(
-                    symbol=sym,
-                    entry_price=b_pos["entry_price"],
-                    amount=b_pos["amount"],
-                    trendline=matched_trendline,
-                    notes=notes,
-                    source="BINANCE_SYNC",
-                    leverage=b_pos["leverage"],
-                    mark_price=b_pos["mark_price"],
-                    current_price=b_pos["mark_price"],
-                )
+                if can_batch_store:
+                    pos_store._open_positions.append({
+                        "symbol": sym,
+                        "entry_price": float(b_pos["entry_price"]),
+                        "amount": float(b_pos["amount"]),
+                        "entry_time": get_beijing_time_str(),
+                        "highest_price": float(b_pos["entry_price"]),
+                        "current_price": b_pos["mark_price"],
+                        "mark_price": b_pos["mark_price"],
+                        "trailing_stop_triggered": False,
+                        "trailing_stop_price": None,
+                        "stop_loss_notified": False,
+                        "profit_lock_notified": False,
+                        "trendline": matched_trendline,
+                        "status": "OPEN",
+                        "notes": notes,
+                        "source": "BINANCE_SYNC",
+                        "leverage": b_pos["leverage"],
+                    })
+                    dirty = True
+                else:
+                    pos_store.add_position(
+                        symbol=sym,
+                        entry_price=b_pos["entry_price"],
+                        amount=b_pos["amount"],
+                        trendline=matched_trendline,
+                        notes=notes,
+                        source="BINANCE_SYNC",
+                        leverage=b_pos["leverage"],
+                        mark_price=b_pos["mark_price"],
+                        current_price=b_pos["mark_price"],
+                    )
                 new_added.append(sym)
                 logger.info(
                     "⚡ [币安实盘自动同步] 发现新开多仓: %s @ %s (数量: %s)",
@@ -160,7 +185,9 @@ def sync_binance_positions(
             old_entry = float(local_p["entry_price"])
             new_entry = float(b_pos["entry_price"])
             entry_changed = abs(old_entry - new_entry) / max(abs(new_entry), 1e-12) > 1e-5
-            amount_changed = abs(float(local_p["amount"]) - b_pos["amount"]) > 1e-6
+            old_amount = float(local_p["amount"])
+            new_amount = float(b_pos["amount"])
+            amount_changed = abs(old_amount - new_amount) > max(1e-12, max(abs(old_amount), abs(new_amount)) * 1e-6)
 
             if entry_changed:
                 logger.info(
@@ -211,11 +238,26 @@ def sync_binance_positions(
             sym = p["symbol"]
             if p.get("source") == "BINANCE_SYNC" and sym not in binance_symbols:
                 exit_price = p.get("mark_price") or p.get("current_price")
-                closed_p = pos_store.close_position(
-                    sym,
-                    reason="BINANCE_POSITION_CLOSED",
-                    exit_price=exit_price,
-                )
+                if can_batch_store:
+                    p["status"] = "BINANCE_POSITION_CLOSED"
+                    p["closed_at"] = db_store.now_beijing_iso()
+                    if exit_price is not None and float(exit_price) > 0:
+                        p["exit_price"] = float(exit_price)
+                        entry_val = float(p["entry_price"])
+                        if entry_val > 0:
+                            p["realized_pnl_pct"] = round((p["exit_price"] - entry_val) / entry_val * 100.0, 2)
+                    pos_store._open_positions.remove(p)
+                    db_store.append_position_history(
+                        pos_store.database, p, conn=getattr(pos_store, "_tx_conn", None)
+                    )
+                    dirty = True
+                    closed_p = p
+                else:
+                    closed_p = pos_store.close_position(
+                        sym,
+                        reason="BINANCE_POSITION_CLOSED",
+                        exit_price=exit_price,
+                    )
                 if closed_p:
                     auto_closed.append(sym)
                     logger.info("🏁 [币安实盘自动同步] 监测到币安已平仓，自动归档: %s", sym)

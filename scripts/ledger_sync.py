@@ -13,7 +13,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
-import time
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
@@ -39,7 +38,9 @@ def fetch_paginated_range(
     page_limit: int = 1000,
     label: str = "records",
 ) -> List[dict]:
-    """二分时间窗口分页拉取币安接口记录，避免触达单页上限丢数据。"""
+    """二分时间窗口分页拉取币安接口记录（按时间正序遍历），避免触达单页上限丢数据。"""
+    if start_ms > end_ms:
+        return []
     collected: List[dict] = []
     ranges: List[Tuple[int, int]] = [(start_ms, end_ms)]
     while ranges:
@@ -49,7 +50,7 @@ def fetch_paginated_range(
             if w_start >= w_end:
                 raise RuntimeError(f"同一毫秒 {label} 超过接口单页上限 ({page_limit})")
             middle = (w_start + w_end) // 2
-            ranges.extend([(w_start, middle), (middle + 1, w_end)])
+            ranges.extend([(middle + 1, w_end), (w_start, middle)])
         else:
             collected.extend(page)
     return collected
@@ -102,21 +103,21 @@ def sync_db_ledger(
     Incrementally sync Binance `/fapi/v1/income` and `/fapi/v1/userTrades` against SQLite
     without holding a SQLite write lock across network I/O.
     """
-    previous_report = db_store.load_report(database)
-    recording: Optional[Dict[str, Any]] = (
-        dict(previous_report["recording"])
-        if previous_report is not None and isinstance(previous_report.get("recording"), Mapping)
-        else None
-    )
+    recording: Optional[Dict[str, Any]] = db_store.load_recording(database)
+    previous_report: Optional[Dict[str, Any]] = None
     if recording is None:
-        pre_bundle = db_store.load_ledger_bundle(database)
-        pre_rec = pre_bundle["recording"]
-        if isinstance(pre_rec, dict):
-            recording = dict(pre_rec)
+        previous_report = db_store.load_report(database)
+        if previous_report is not None and isinstance(previous_report.get("recording"), Mapping):
+            recording = dict(previous_report["recording"])
+
+    try:
+        end_ms = int(client.get_server_time())
+    except (BinanceAPIError, TimeoutError, OSError) as e:
+        raise RuntimeError(f"币安服务器时间读取失败: {e}") from e
 
     effective_start_ms = recording_start_ms
     if recording is None and effective_start_ms is None:
-        effective_start_ms = int(time.time() * 1000)
+        effective_start_ms = end_ms
     if effective_start_ms is not None:
         if recording is not None:
             raise ValueError("账户记录起点已设置")
@@ -128,7 +129,6 @@ def sync_db_ledger(
 
     assert recording is not None
     start_ms = int(recording["start_ms"])
-    end_ms = int(time.time() * 1000)
     last_sync_ms = int(recording.get("ledger_synced_until_ms", start_ms))
     query_start = max(start_ms, last_sync_ms - 86400 * 1000)
     if end_ms - query_start > MAX_BINANCE_LOOKBACK_MS:
@@ -151,8 +151,11 @@ def sync_db_ledger(
     raw_existing_obs = bundle["observations"]
     existing_income: List[dict] = list(raw_existing_income) if isinstance(raw_existing_income, list) else []
     existing_fills: List[dict] = list(raw_existing_fills) if isinstance(raw_existing_fills, list) else []
-    if previous_report is not None and isinstance(raw_existing_obs, list) and raw_existing_obs:
-        previous_report["equity_curve"] = list(raw_existing_obs)
+    if isinstance(raw_existing_obs, list) and raw_existing_obs:
+        if previous_report is None:
+            previous_report = {"equity_curve": list(raw_existing_obs)}
+        else:
+            previous_report["equity_curve"] = list(raw_existing_obs)
 
     income_by_id = {
         (item["incomeType"], str(item["tranId"])): item

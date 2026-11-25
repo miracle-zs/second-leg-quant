@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Regression test suite for P0/P1 account pipeline fixes:
+- trade_reconstructor: One-Way (BOTH) pre-recording close vs flip, partial-queue FIFO
+  notional attribution, unified gross pnl_pct, O(N) zero-close precomputation, snake_case merge.
+- db_store & ledger_sync: snapshot-loss preservation of equity_observations via load_recording,
+  load_position_history latest-N ordering, normalize_beijing_iso empty guard, chronological
+  bisect pagination, server-time end_ms.
+- binance_position_client: TV drawings fetched outside DB write lock, single save() per sync,
+  relative amount_changed tolerance for micro-size positions.
+- account_analytics_engine: NOT_CONFIGURED vs BinanceAPIError propagation.
+- account_dashboard_api: raw-payload /api/account ETag caching, uniform JSON errors,
+  uppercase klines cache key normalization.
+"""
+
+from contextlib import closing
+import io
+import json
+import sqlite3
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = ROOT_DIR / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+import account_analytics_engine as aae  # noqa: E402
+import account_dashboard_api as api  # noqa: E402
+import binance_client as bc  # noqa: E402
+import binance_position_client as bpc  # noqa: E402
+import db_store  # noqa: E402
+import http_client  # noqa: E402
+import ledger_sync  # noqa: E402
+import trade_alert_daemon as tad  # noqa: E402
+import trade_reconstructor as tr  # noqa: E402
+
+
+class TestTradeReconstructorP0Fixes(unittest.TestCase):
+    def test_both_mode_pre_recording_close_not_misclassified_as_flip(self):
+        # Pre-recording LONG 2 BTC @ 50000, post-start add LONG 1 BTC @ 60000,
+        # then close all 3 BTC @ 62000 in One-Way (BOTH) mode with reduceOnly=False.
+        fills = [
+            {
+                "symbol": "BTCUSDT",
+                "id": 1,
+                "orderId": 10,
+                "side": "BUY",
+                "positionSide": "BOTH",
+                "time": 1000,
+                "price": "60000",
+                "qty": "1",
+                "quoteQty": "60000",
+                "reduceOnly": False,
+            },
+            {
+                "symbol": "BTCUSDT",
+                "id": 2,
+                "orderId": 20,
+                "side": "SELL",
+                "positionSide": "BOTH",
+                "time": 2000,
+                "price": "62000",
+                "qty": "3",
+                "quoteQty": "186000",
+                "reduceOnly": False,
+            },
+        ]
+        income = [
+            {"symbol": "BTCUSDT", "incomeType": "COMMISSION", "tranId": 1, "tradeId": "1", "time": 1000, "income": "-30", "asset": "USDT"},
+            {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "tranId": 2, "tradeId": "2", "time": 2000, "income": "26000", "asset": "USDT"},
+            {"symbol": "BTCUSDT", "incomeType": "COMMISSION", "tranId": 3, "tradeId": "2", "time": 2000, "income": "-93", "asset": "USDT"},
+        ]
+
+        trades, open_fee = tr.reconstruct_binance_trades(income, [], fills)
+        self.assertEqual(open_fee, 0.0)
+        self.assertEqual(len(trades), 1)
+        t = trades[0]
+        self.assertEqual(t["side"], "LONG")
+        self.assertAlmostEqual(t["amount"], 3.0, places=6)
+        self.assertAlmostEqual(t["realized_pnl"], 26000.0, places=4)
+        self.assertAlmostEqual(t["fee"], 123.0, places=4)
+        self.assertAlmostEqual(t["net_pnl"], 25877.0, places=4)
+        # Combined entry notional = 60000 (known 1 BTC) + 100000 (pre-recording 2 BTC) = 160000
+        self.assertAlmostEqual(t["entry_notional"], 160000.0, places=2)
+        self.assertAlmostEqual(t["entry_price"], 160000.0 / 3.0, places=2)
+        # Unified gross pnl_pct = 26000 / 160000 * 100 = 16.25%
+        self.assertAlmostEqual(t["pnl_pct"], 16.25, places=2)
+
+    def test_both_mode_genuine_flip_still_opens_reverse_lot(self):
+        # Open LONG 1 @ 100, then SELL 3 @ 110 (closes 1 LONG with +10 PnL, opens 2 SHORT @ 110),
+        # then BUY 2 @ 105 (closes 2 SHORT with +10 PnL).
+        fills = [
+            {"symbol": "ETHUSDT", "id": 1, "orderId": 1, "side": "BUY", "positionSide": "BOTH", "time": 1000, "price": "100", "qty": "1", "quoteQty": "100"},
+            {"symbol": "ETHUSDT", "id": 2, "orderId": 2, "side": "SELL", "positionSide": "BOTH", "time": 2000, "price": "110", "qty": "3", "quoteQty": "330", "realizedPnl": "10"},
+            {"symbol": "ETHUSDT", "id": 3, "orderId": 3, "side": "BUY", "positionSide": "BOTH", "time": 3000, "price": "105", "qty": "2", "quoteQty": "210", "realizedPnl": "10"},
+        ]
+        trades, open_fee = tr.reconstruct_binance_trades([], [], fills)
+        self.assertEqual(open_fee, 0.0)
+        self.assertEqual(len(trades), 2)
+        self.assertEqual(trades[0]["side"], "LONG")
+        self.assertAlmostEqual(trades[0]["amount"], 1.0)
+        self.assertAlmostEqual(trades[0]["realized_pnl"], 10.0)
+        self.assertEqual(trades[1]["side"], "SHORT")
+        self.assertAlmostEqual(trades[1]["amount"], 2.0)
+        self.assertAlmostEqual(trades[1]["entry_price"], 110.0)
+        self.assertAlmostEqual(trades[1]["exit_price"], 105.0)
+        self.assertAlmostEqual(trades[1]["realized_pnl"], 10.0)
+
+    def test_hedge_partial_queue_consume_preserves_exact_open_notional(self):
+        # Hedge mode: pre-recording LONG 1 @ 50000, post-start LONG 1 @ 60000, close 2 @ 65000 (PnL = 15000 + 5000 = 20000).
+        fills = [
+            {"symbol": "BTCUSDT", "id": 1, "orderId": 1, "side": "BUY", "positionSide": "LONG", "time": 1000, "price": "60000", "qty": "1", "quoteQty": "60000"},
+            {"symbol": "BTCUSDT", "id": 2, "orderId": 2, "side": "SELL", "positionSide": "LONG", "time": 2000, "price": "65000", "qty": "2", "quoteQty": "130000"},
+        ]
+        income = [
+            {"symbol": "BTCUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "tradeId": "2", "time": 2000, "income": "20000", "asset": "USDT"},
+        ]
+        trades, _ = tr.reconstruct_binance_trades(income, [], fills)
+        self.assertEqual(len(trades), 1)
+        self.assertAlmostEqual(trades[0]["entry_notional"], 110000.0, places=2)
+        self.assertAlmostEqual(trades[0]["entry_price"], 55000.0, places=2)
+        self.assertAlmostEqual(trades[0]["realized_pnl"], 20000.0, places=2)
+        self.assertAlmostEqual(trades[0]["pnl_pct"], round(20000.0 / 110000.0 * 100.0, 2), places=2)
+
+    def test_pnl_pct_unified_gross_with_fees_across_all_paths(self):
+        # Fills path with fee: entry 1000, exit 1100, fee 10 -> realized_pnl=100, net_pnl=90, gross pnl_pct=10.0
+        fills = [
+            {"symbol": "SOLUSDT", "id": 1, "orderId": 1, "side": "BUY", "positionSide": "LONG", "time": 1000, "price": "100", "qty": "10", "quoteQty": "1000"},
+            {"symbol": "SOLUSDT", "id": 2, "orderId": 2, "side": "SELL", "positionSide": "LONG", "time": 2000, "price": "110", "qty": "10", "quoteQty": "1100"},
+        ]
+        income = [
+            {"symbol": "SOLUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "tradeId": "2", "time": 2000, "income": "100", "asset": "USDT"},
+            {"symbol": "SOLUSDT", "incomeType": "COMMISSION", "tranId": 2, "tradeId": "2", "time": 2000, "income": "-10", "asset": "USDT"},
+        ]
+        trades_fills, _ = tr.reconstruct_binance_trades(income, [], fills)
+        self.assertAlmostEqual(trades_fills[0]["net_pnl"], 90.0)
+        self.assertAlmostEqual(trades_fills[0]["pnl_pct"], 10.0, places=2)
+
+        # Income-cluster path with matched local trade: same gross pnl_pct=10.0
+        local_hist = [{
+            "symbol": "SOLUSDT",
+            "side": "LONG",
+            "entry_price": 100.0,
+            "exit_price": 110.0,
+            "amount": 10.0,
+            "leverage": 5,
+            "closed_at": "2026-11-25 10:00:00+08:00",
+            "status": "MANUAL_CLOSE",
+        }]
+        t_ms = int(tr.parse_to_timestamp("2026-11-25 10:00:00+08:00") * 1000)
+        inc_only = [
+            {"symbol": "SOLUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "tradeId": "9", "time": t_ms, "income": "100", "asset": "USDT"},
+            {"symbol": "SOLUSDT", "incomeType": "COMMISSION", "tranId": 2, "tradeId": "9", "time": t_ms, "income": "-10", "asset": "USDT"},
+        ]
+        trades_inc, _ = tr.reconstruct_binance_trades(inc_only, local_hist, [])
+        self.assertAlmostEqual(trades_inc[0]["net_pnl"], 90.0)
+        self.assertAlmostEqual(trades_inc[0]["pnl_pct"], 10.0, places=2)
+        self.assertAlmostEqual(trades_inc[0]["roe_pct"], 50.0, places=2)
+
+    def test_merge_active_positions_supports_normalized_snake_case_payload(self):
+        normalized_binance = [{
+            "symbol": "BTCUSDT",
+            "side": "LONG",
+            "amount": 0.5,
+            "signed_amount": 0.5,
+            "entry_price": 90000.0,
+            "mark_price": 92000.0,
+            "unrealized_pnl": 1000.0,
+            "leverage": 10,
+            "position_side": "BOTH",
+            "update_time": 1795260000000,
+        }]
+        local_pos = [{
+            "symbol": "BTCUSDT",
+            "side": "LONG",
+            "amount": 0.5,
+            "trendline": {"id": "TL_BTC"},
+            "highest_price": 93000.0,
+        }]
+        merged = tr.merge_active_positions(normalized_binance, local_pos, positions_available=True)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["source"], "BINANCE_SYNC")
+        self.assertEqual(merged[0]["trendline_id"], "TL_BTC")
+        self.assertEqual(merged[0]["highest_price"], 93000.0)
+        self.assertAlmostEqual(merged[0]["unrealized_pnl"], 1000.0)
+
+
+class TestDbStoreAndLedgerSyncP0Fixes(unittest.TestCase):
+    def test_normalize_beijing_iso_rejects_empty_string(self):
+        with self.assertRaises(ValueError):
+            db_store.normalize_beijing_iso("")
+        with self.assertRaises(ValueError):
+            db_store.normalize_beijing_iso("   ")
+        self.assertTrue(db_store.normalize_beijing_iso(None).endswith("+08:00"))
+
+    def test_load_position_history_limit_returns_latest_n_chronologically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "hist.sqlite3"
+            for i in range(1, 6):
+                db_store.append_position_history(
+                    db_path,
+                    {
+                        "symbol": "BTCUSDT" if i % 2 == 1 else "ETHUSDT",
+                        "seq": i,
+                        "closed_at": f"2026-11-25 10:0{i}:00+08:00",
+                    },
+                )
+            latest2 = db_store.load_position_history(db_path, limit=2)
+            self.assertEqual([r["seq"] for r in latest2], [4, 5])
+
+            latest2_btc = db_store.load_position_history(db_path, symbol="BTCUSDT", limit=2)
+            self.assertEqual([r["seq"] for r in latest2_btc], [3, 5])
+            self.assertEqual(db_store.load_position_history(db_path, limit=0), [])
+
+    def test_snapshot_loss_preserves_historical_equity_observations(self):
+        start_ms = 1795200000000
+        t1 = start_ms + 600_000
+        t2 = start_ms + 1_200_000
+        client = bc.BinanceFuturesClient("k", "s")
+        engine = aae.AccountAnalyticsEngine(client=client)
+
+        initial_report = {
+            "recording": {"start_ms": start_ms, "started_at": "2026-11-21 00:00:00", "initial_equity": 1000.0},
+            "equity_curve": [
+                {"timestamp": start_ms, "datetime": "2026-11-21 00:00:00", "equity": 1000.0, "cash": 1000.0, "drawdown_usd": 0.0, "drawdown_pct": 0.0, "event": "开始记录"},
+                {"timestamp": t1, "datetime": "2026-11-21 00:10:00", "equity": 1150.0, "cash": 1150.0, "drawdown_usd": 0.0, "drawdown_pct": 0.0, "event": "币安账户快照"},
+            ],
+            "summary": {"total_equity": 1150.0},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "account.sqlite3"
+            db_store.publish_report(db_path, initial_report)
+            # Simulate account_snapshot being lost/deleted while account_recording & equity_observations remain.
+            with db_store.transaction(db_path) as conn:
+                conn.execute("DELETE FROM account_snapshot")
+
+            self.assertIsNone(db_store.load_report(db_path))
+            self.assertIsNotNone(db_store.load_recording(db_path))
+
+            status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+            with patch.object(
+                engine,
+                "fetch_binance_data",
+                return_value=({"totalWalletBalance": "1200", "totalMarginBalance": "1200"}, [], [], status),
+            ), patch.object(client, "get_server_time", return_value=t2), patch.object(
+                client, "_send_signed_request", return_value=[]
+            ), patch.object(ledger_sync.db_store, "load_ledger_bundle", wraps=db_store.load_ledger_bundle) as spy_bundle:
+                report = engine.run(database=db_path)
+
+            # Must not call load_ledger_bundle twice (uses load_recording first).
+            self.assertEqual(spy_bundle.call_count, 1)
+            timestamps = [pt["timestamp"] for pt in report["equity_curve"]]
+            self.assertIn(start_ms, timestamps)
+            self.assertIn(t1, timestamps)
+            with closing(sqlite3.connect(db_path)) as conn:
+                obs_rows = conn.execute("SELECT timestamp FROM equity_observations ORDER BY timestamp").fetchall()
+            self.assertIn((t1,), obs_rows)
+
+    def test_fetch_paginated_range_chronological_order_and_server_time_end_ms(self):
+        records = [{"time": i, "id": i} for i in range(1, 11)]
+
+        def fake_fetch(s: int, e: int) -> list[dict]:
+            return [r for r in records if s <= r["time"] <= e]
+
+        got = ledger_sync.fetch_paginated_range(fake_fetch, 1, 10, page_limit=4)
+        self.assertEqual([r["time"] for r in got], list(range(1, 11)))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "sync.sqlite3"
+            start_ms = 1795200000000
+            server_now_ms = start_ms + 500_000
+            db_store.publish_report(
+                db_path,
+                {
+                    "recording": {"start_ms": start_ms, "started_at": "2026-11-21 00:00:00", "initial_equity": 1000.0},
+                    "equity_curve": [],
+                },
+            )
+            fake_client = MagicMock()
+            fake_client.get_server_time.return_value = server_now_ms
+            fake_client.get_income.return_value = []
+            rec, _, _, _, _, _, _ = ledger_sync.sync_db_ledger(
+                fake_client, db_path, {"totalMarginBalance": "1000"}, [], None
+            )
+            fake_client.get_server_time.assert_called_once()
+            self.assertEqual(rec["ledger_synced_until_ms"], server_now_ms)
+
+
+class TestBinancePositionSyncAndEngineP0Fixes(unittest.TestCase):
+    def test_drawings_fetched_outside_tx_single_save_and_relative_amount_tolerance(self):
+        now = int(1795200000)
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "pos.sqlite3"
+            store = tad.PositionStore(db_path)
+            store.add_position("ETHUSDT", entry_price=3000.0, amount=10.0, source="BINANCE_SYNC")
+            store.add_position("BTCUSDT", entry_price=90000.0, amount=0.001, source="BINANCE_SYNC", trendline={"id": "TL_BTC"})
+
+            client = bc.BinanceFuturesClient("k", "s")
+            active_longs = [
+                # BTCUSDT micro-amount changed by 5e-7 (< 1e-6 absolute, > 1e-6 relative)
+                {"symbol": "BTCUSDT", "amount": 0.0010005, "entry_price": 90000.0, "mark_price": 90500.0, "unrealized_pnl": 0.5, "leverage": 10},
+                # SOLUSDT is brand new
+                {"symbol": "SOLUSDT", "amount": 5.0, "entry_price": 150.0, "mark_price": 152.0, "unrealized_pnl": 10.0, "leverage": 5},
+                # ETHUSDT removed -> auto-closed
+            ]
+            tx_conn_during_drawings = []
+
+            def fake_drawings(_layout_id: str):
+                tx_conn_during_drawings.append(store._tx_conn)
+                return {"SOLUSDT": [{"id": "TL_SOL", "interval": "15", "p1": 160.0, "t1": now - 3600, "p2": 155.0, "t2": now - 600}]}
+
+            with patch.object(client, "get_active_positions", return_value=active_longs), patch.object(
+                store, "save", wraps=store.save
+            ) as spy_save:
+                res = bpc.sync_binance_positions(client, store, load_drawings=fake_drawings)
+
+            self.assertEqual(tx_conn_during_drawings, [None])
+            self.assertEqual(spy_save.call_count, 1)
+            self.assertEqual(res["new_added"], ["SOLUSDT"])
+            self.assertEqual(res["auto_closed"], ["ETHUSDT"])
+            btc = next(p for p in store.get_open_positions() if p["symbol"] == "BTCUSDT")
+            self.assertAlmostEqual(btc["amount"], 0.0010005, places=7)
+
+    def test_engine_unconfigured_vs_api_error_propagation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "eng.sqlite3"
+            unconfigured = bc.BinanceFuturesClient("", "")
+            eng_unconf = aae.AccountAnalyticsEngine(client=unconfigured, offline_mode=False)
+            _, _, _, status = eng_unconf.fetch_binance_data()
+            self.assertEqual(status["mode"], "NOT_CONFIGURED")
+            with self.assertRaises(bc.BinanceAPIError) as ctx_unconf:
+                eng_unconf.run(database=db_path)
+            self.assertEqual(ctx_unconf.exception.code, "NOT_CONFIGURED")
+
+            configured = bc.BinanceFuturesClient("k", "s")
+            eng_err = aae.AccountAnalyticsEngine(client=configured, offline_mode=False)
+            with patch.object(
+                configured,
+                "_send_signed_request",
+                side_effect=bc.BinanceAPIError("IP banned", code=418),
+            ):
+                with self.assertRaises(RuntimeError) as ctx_err:
+                    eng_err.run(database=db_path)
+            self.assertIn("418", str(ctx_err.exception))
+            self.assertIn("IP banned", str(ctx_err.exception))
+
+
+class TestDashboardAPIP0Fixes(unittest.TestCase):
+    def _invoke(self, handler_cls, method: str, raw_path: str, headers: dict | None = None):
+        handler = handler_cls.__new__(handler_cls)
+        handler.path = raw_path
+        handler.headers = headers or {}
+        handler.wfile = io.BytesIO()
+        status_box = {}
+        resp_headers = {}
+        handler.send_response = lambda code, message=None: status_box.__setitem__("code", code)
+        handler.send_header = lambda k, v: resp_headers.__setitem__(k.lower(), v)
+        handler.end_headers = lambda: None
+        handler.send_error = lambda code, message=None, explain=None: status_box.__setitem__("code", code)
+        handler.log_error = lambda *a, **kw: None
+        if method == "HEAD":
+            handler.do_HEAD()
+        else:
+            handler.do_GET()
+        return status_box.get("code", 0), resp_headers, handler.wfile.getvalue()
+
+    def test_account_uses_raw_cache_and_uniform_json_errors_and_upper_klines_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "api.sqlite3"
+            handler_cls = api.create_handler(db_path)
+
+            # 503 on missing DB returns JSON
+            code503, hdr503, body503 = self._invoke(handler_cls, "GET", "/api/account")
+            self.assertEqual(code503, 503)
+            self.assertIn("application/json", hdr503["content-type"])
+            self.assertIn("error", json.loads(body503))
+
+            # 404 on unknown /api/* returns JSON
+            code404, hdr404, body404 = self._invoke(handler_cls, "GET", "/api/does-not-exist")
+            self.assertEqual(code404, 404)
+            self.assertIn("application/json", hdr404["content-type"])
+            self.assertIn("error", json.loads(body404))
+
+            db_store.publish_report(
+                db_path,
+                {"summary": {"total_equity": 888.0}, "active_positions": [], "trade_history": [], "equity_curve": [], "daily_pnl": []},
+            )
+            with patch.object(db_store, "load_report", side_effect=AssertionError("must not parse full report")):
+                c1, h1, b1 = self._invoke(handler_cls, "GET", "/api/account")
+                c2, _, b2 = self._invoke(handler_cls, "GET", "/api/account", headers={"If-None-Match": h1["etag"]})
+            self.assertEqual(c1, 200)
+            self.assertEqual(json.loads(b1)["summary"]["total_equity"], 888.0)
+            self.assertEqual(c2, 304)
+            self.assertEqual(b2, b"")
+
+            # klines normalizes symbol case in cache key & wraps non-JSON 4xx proxy errors
+            calls = []
+
+            def fake_req(url: str, **_kwargs) -> bytes:
+                calls.append(url)
+                return b"[[1,2,3]]"
+
+            with patch.object(http_client, "request_bytes", side_effect=fake_req):
+                ck1, _, _ = self._invoke(handler_cls, "GET", "/api/binance/klines?symbol=btcusdt&interval=15m&limit=10")
+                ck2, _, _ = self._invoke(handler_cls, "GET", "/api/binance/klines?symbol=BTCUSDT&interval=15m&limit=10")
+            self.assertEqual(ck1, 200)
+            self.assertEqual(ck2, 200)
+            self.assertEqual(len(calls), 1)
+
+            with patch.object(
+                http_client,
+                "request_bytes",
+                side_effect=http_client.HttpError("HTTP 403", status_code=403, body="<html>Forbidden</html>"),
+            ):
+                c403, h403, b403 = self._invoke(handler_cls, "GET", "/api/binance/klines?symbol=ETHUSDT&interval=15m&limit=10")
+            self.assertEqual(c403, 403)
+            self.assertIn("application/json", h403["content-type"])
+            self.assertIn("Forbidden", json.loads(b403)["error"])
+
+
+if __name__ == "__main__":
+    unittest.main()

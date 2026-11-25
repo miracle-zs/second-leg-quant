@@ -24,11 +24,12 @@ if str(SCRIPTS_DIR) not in sys.path:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from binance_client import BINANCE_FUTURES_BASE_URL  # noqa: E402
 import db_store  # noqa: E402
 import http_client  # noqa: E402
 
 _TEXT_CONTENT_TYPES = {"application/javascript", "application/json"}
-_BINANCE_FAPI_BASE = "https://fapi.binance.com"
+_BINANCE_FAPI_BASE = BINANCE_FUTURES_BASE_URL
 _BINANCE_ALLOWED_INTERVALS = frozenset({"15m", "1h", "4h", "1d"})
 _BINANCE_PROXY_TTL_SEC = 15.0
 _BINANCE_KLINES_TTL_SEC = 12.0
@@ -73,6 +74,8 @@ def create_handler(database: Path):
     static_lock = threading.Lock()
     candidates_cache: Optional[tuple[str, str, bytes, str]] = None
     candidates_lock = threading.Lock()
+    account_cache: Optional[tuple[str, bytes, str]] = None
+    account_lock = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -99,23 +102,39 @@ def create_handler(database: Path):
             if send_body:
                 self.wfile.write(body)
 
+        def _send_json_error(self, status: int, message: str, *, send_body: bool = True) -> None:
+            err_body = json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
+            self._send_bytes(
+                status,
+                err_body,
+                "application/json; charset=utf-8",
+                cache_control="no-store",
+                send_body=send_body,
+            )
+
         def _send_not_modified(self, etag: str) -> None:
             self.send_response(304)
             self.send_header("ETag", etag)
             self.send_header("Cache-Control", "no-cache")
             self.end_headers()
 
-        def _send_json_with_etag(self, body: bytes, *, send_body: bool = True) -> None:
-            etag = _etag_for(body)
-            if _matches_etag(self.headers.get("If-None-Match"), etag):
-                self._send_not_modified(etag)
+        def _send_json_with_etag(
+            self,
+            body: bytes,
+            *,
+            etag: Optional[str] = None,
+            send_body: bool = True,
+        ) -> None:
+            resolved_etag = etag or _etag_for(body)
+            if _matches_etag(self.headers.get("If-None-Match"), resolved_etag):
+                self._send_not_modified(resolved_etag)
                 return
             self._send_bytes(
                 200,
                 body,
                 "application/json; charset=utf-8",
                 cache_control="no-cache",
-                extra_headers={"ETag": etag},
+                extra_headers={"ETag": resolved_etag},
                 send_body=send_body,
             )
 
@@ -195,11 +214,17 @@ def create_handler(database: Path):
                 )
             except http_client.HttpError as exc:
                 if exc.status_code is not None and 400 <= exc.status_code < 500:
-                    err_body = (
-                        exc.body.encode("utf-8")
-                        if exc.body
-                        else json.dumps({"error": str(exc)}).encode("utf-8")
-                    )
+                    err_body = b""
+                    if exc.body:
+                        try:
+                            json.loads(exc.body)
+                            err_body = exc.body.encode("utf-8")
+                        except ValueError:
+                            err_body = b""
+                    if not err_body:
+                        err_body = json.dumps(
+                            {"error": exc.body or str(exc)}, ensure_ascii=False
+                        ).encode("utf-8")
                     self._send_bytes(
                         exc.status_code,
                         err_body,
@@ -209,25 +234,11 @@ def create_handler(database: Path):
                     )
                     return
                 self.log_error("Binance proxy error for %s: %s", url, exc)
-                err_body = json.dumps({"error": f"Binance upstream error: {exc}"}).encode("utf-8")
-                self._send_bytes(
-                    502,
-                    err_body,
-                    "application/json; charset=utf-8",
-                    cache_control="no-store",
-                    send_body=send_body,
-                )
+                self._send_json_error(502, f"Binance upstream error: {exc}", send_body=send_body)
                 return
             except (http.client.HTTPException, TimeoutError, OSError) as exc:
                 self.log_error("Binance proxy error for %s: %s", url, exc)
-                err_body = json.dumps({"error": f"Binance upstream error: {exc}"}).encode("utf-8")
-                self._send_bytes(
-                    502,
-                    err_body,
-                    "application/json; charset=utf-8",
-                    cache_control="no-store",
-                    send_body=send_body,
-                )
+                self._send_json_error(502, f"Binance upstream error: {exc}", send_body=send_body)
                 return
             if cache_key is not None:
                 store_now = time.monotonic()
@@ -248,7 +259,7 @@ def create_handler(database: Path):
             )
 
         def _handle_get(self, *, send_body: bool) -> None:
-            nonlocal candidates_cache
+            nonlocal candidates_cache, account_cache
             parsed = urlsplit(self.path)
             path = parsed.path
 
@@ -279,16 +290,22 @@ def create_handler(database: Path):
 
             if path == "/api/account":
                 try:
-                    report = db_store.load_report(database)
+                    payload_json = db_store.load_raw_report(database)
                 except sqlite3.Error as exc:
                     self.log_error("SQLite error reading account_snapshot: %s", exc)
-                    self.send_error(500, "Database error")
+                    self._send_json_error(500, "Database error", send_body=send_body)
                     return
-                if report is None:
-                    self.send_error(503, "Snapshot unavailable")
+                if payload_json is None:
+                    self._send_json_error(503, "Snapshot unavailable", send_body=send_body)
                     return
-                body = json.dumps(report, ensure_ascii=False, allow_nan=False).encode("utf-8")
-                self._send_json_with_etag(body, send_body=send_body)
+                with account_lock:
+                    if account_cache is not None and account_cache[0] == payload_json:
+                        body, etag = account_cache[1], account_cache[2]
+                    else:
+                        body = payload_json.encode("utf-8")
+                        etag = _etag_for(body)
+                        account_cache = (payload_json, body, etag)
+                self._send_json_with_etag(body, etag=etag, send_body=send_body)
                 return
 
             if path == "/api/candidate-version":
@@ -296,10 +313,10 @@ def create_handler(database: Path):
                     updated_at = db_store.load_candidate_version(database)
                 except sqlite3.Error as exc:
                     self.log_error("SQLite error reading candidate_snapshot version: %s", exc)
-                    self.send_error(500, "Database error")
+                    self._send_json_error(500, "Database error", send_body=send_body)
                     return
                 if updated_at is None:
-                    self.send_error(503, "Snapshot unavailable")
+                    self._send_json_error(503, "Snapshot unavailable", send_body=send_body)
                     return
                 body = json.dumps({"updated_at": updated_at}, ensure_ascii=False).encode("utf-8")
                 self._send_bytes(
@@ -316,10 +333,10 @@ def create_handler(database: Path):
                     row = db_store.load_candidates(database)
                 except sqlite3.Error as exc:
                     self.log_error("SQLite error reading candidate_snapshot: %s", exc)
-                    self.send_error(500, "Database error")
+                    self._send_json_error(500, "Database error", send_body=send_body)
                     return
                 if row is None:
-                    self.send_error(503, "Snapshot unavailable")
+                    self._send_json_error(503, "Snapshot unavailable", send_body=send_body)
                     return
                 updated_at, payload_json = row
                 with candidates_lock:
@@ -342,17 +359,7 @@ def create_handler(database: Path):
                         etag = _etag_for(body)
                         candidates_cache = (updated_at, payload_json, body, etag)
 
-                if _matches_etag(self.headers.get("If-None-Match"), etag):
-                    self._send_not_modified(etag)
-                    return
-                self._send_bytes(
-                    200,
-                    body,
-                    "application/json; charset=utf-8",
-                    cache_control="no-cache",
-                    extra_headers={"ETag": etag},
-                    send_body=send_body,
-                )
+                self._send_json_with_etag(body, etag=etag, send_body=send_body)
                 return
 
             if path == "/api/binance/ticker24hr":
@@ -375,7 +382,7 @@ def create_handler(database: Path):
 
             if path == "/api/binance/klines":
                 qs = parse_qs(parsed.query)
-                symbol = (qs.get("symbol") or [""])[0].strip()
+                symbol = (qs.get("symbol") or [""])[0].strip().upper()
                 interval = (qs.get("interval") or [""])[0].strip()
                 raw_limit = (qs.get("limit") or ["168"])[0].strip()
                 try:
@@ -387,14 +394,7 @@ def create_handler(database: Path):
                     or interval not in _BINANCE_ALLOWED_INTERVALS
                     or not (1 <= limit <= 500)
                 ):
-                    err_body = json.dumps({"error": "Invalid klines parameters"}).encode("utf-8")
-                    self._send_bytes(
-                        400,
-                        err_body,
-                        "application/json; charset=utf-8",
-                        cache_control="no-store",
-                        send_body=send_body,
-                    )
+                    self._send_json_error(400, "Invalid klines parameters", send_body=send_body)
                     return
                 upstream = (
                     f"{_BINANCE_FAPI_BASE}/fapi/v1/klines"
@@ -406,6 +406,10 @@ def create_handler(database: Path):
                     ttl_sec=_BINANCE_KLINES_TTL_SEC,
                     send_body=send_body,
                 )
+                return
+
+            if path.startswith("/api/"):
+                self._send_json_error(404, "Not found", send_body=send_body)
                 return
 
             self.send_error(404)

@@ -127,13 +127,13 @@ def normalize_beijing_iso(raw: Optional[str] = None) -> str:
     """
     Normalize a timestamp string to explicit ISO-8601 (+08:00 or UTC Z).
     Naive ISO/datetime strings are interpreted as Beijing time (+08:00).
-    Raises ValueError on malformed strings.
+    Raises ValueError on empty or malformed strings.
     """
     if raw is None:
         return now_beijing_iso()
     text = raw.strip()
     if not text:
-        return now_beijing_iso()
+        raise ValueError("Timestamp string cannot be empty")
     if text.endswith("Z"):
         datetime.fromisoformat(text[:-1] + "+00:00")
         return text
@@ -315,15 +315,34 @@ def publish_report(
         )
 
 
-def load_report(database: Path) -> Optional[dict[str, object]]:
-    """Load the latest persisted account report from SQLite if available."""
+def load_raw_report(database: Path) -> Optional[str]:
+    """Load the raw JSON payload string for the latest persisted account report if available."""
     with _read_conn(database, None) as conn:
         if conn is None or not _table_exists(conn, "account_snapshot"):
             return None
         row = conn.execute("SELECT payload FROM account_snapshot WHERE id = 1").fetchone()
     if row is None:
         return None
-    return _loads_dict(row[0], context="account_snapshot")
+    return str(row[0])
+
+
+def load_report(database: Path) -> Optional[dict[str, object]]:
+    """Load the latest persisted account report from SQLite if available."""
+    raw = load_raw_report(database)
+    if raw is None:
+        return None
+    return _loads_dict(raw, context="account_snapshot")
+
+
+def load_recording(database: Path) -> Optional[dict[str, object]]:
+    """Load persisted account recording metadata from `account_recording` if available."""
+    with _read_conn(database, None) as conn:
+        if conn is None or not _table_exists(conn, "account_recording"):
+            return None
+        row = conn.execute("SELECT payload FROM account_recording WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    return _loads_dict(row[0], context="account_recording")
 
 
 def load_ledger_bundle(
@@ -589,20 +608,27 @@ def load_position_history(
     limit: Optional[int] = None,
     conn: Optional[sqlite3.Connection] = None,
 ) -> list[dict[str, object]]:
-    """Load closed position history ordered chronologically (oldest first)."""
+    """Load closed position history ordered chronologically (oldest first; when limited, latest N)."""
+    if limit is not None and int(limit) <= 0:
+        return []
     with _read_conn(database, conn) as r_conn:
         if r_conn is None or not _table_exists(r_conn, "position_history"):
             return []
-        query = "SELECT payload FROM position_history"
+        where_clause = ""
         params: list[object] = []
         if symbol is not None:
             sym = clean_symbol(symbol)
-            query += " WHERE symbol = ?"
+            where_clause = " WHERE symbol = ?"
             params.append(sym)
-        query += " ORDER BY id ASC"
         if limit is not None:
-            query += " LIMIT ?"
+            query = (
+                "SELECT payload FROM ("
+                f"SELECT id, payload FROM position_history{where_clause} ORDER BY id DESC LIMIT ?"
+                ") ORDER BY id ASC"
+            )
             params.append(int(limit))
+        else:
+            query = f"SELECT payload FROM position_history{where_clause} ORDER BY id ASC"
         rows = r_conn.execute(query, params).fetchall()
     return [_loads_dict(row[0], context="position_history") for row in rows]
 

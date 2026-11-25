@@ -88,16 +88,14 @@ def main() -> None:
     print(f"🗄️  统一 SQLite 存储: {resolved_db}")
     print("=======================================================\n")
 
-    steps: list[tuple[str, list[str], bool]] = [
+    steps: list[tuple[str, list[str]]] = [
         (
             "扫描 CMC Pro 官方核验候选币池 (< $30M, 4h费率与机会区)",
             [sys.executable, "scripts/scan_second_leg_pool.py", "--database", resolved_db],
-            False,  # analytics and alerts do not require aborting on scanner failure
         ),
         (
             "更新账户数据分析与量化风控指标",
             [sys.executable, "scripts/account_analytics_engine.py", "--database", resolved_db],
-            False,
         ),
     ]
 
@@ -105,19 +103,15 @@ def main() -> None:
         steps.append(
             (
                 "执行交易风控与四重预警评测",
+                # trade_alert_daemon.py reads COIN_DATABASE from child_env (no --database CLI flag).
                 [sys.executable, "scripts/trade_alert_daemon.py", "--check-once"],
-                False,
             )
         )
 
     all_ok = True
-    for index, (desc, cmd, abort_on_fail) in enumerate(steps, start=1):
-        ok = run_step(f"{index}/{len(steps)} {desc}", cmd, env=child_env)
-        if not ok:
+    for index, (desc, cmd) in enumerate(steps, start=1):
+        if not run_step(f"{index}/{len(steps)} {desc}", cmd, env=child_env):
             all_ok = False
-            if abort_on_fail:
-                print("\n⛔ 关键上游步骤失败，已中止后续流程以避免基于陈旧数据预警。")
-                sys.exit(1)
 
     print("\n=======================================================")
     if all_ok:

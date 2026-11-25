@@ -398,7 +398,10 @@ def enrich_active_position(
         "trendline_break_sl_status": raw.get("trendline_break_sl_status", "SAFE"),
         "trendline_id": trendline_id,
         "trendline": trendline,
-        "source": raw.get("source", "BINANCE_SYNC" if raw.get("positionAmt") is not None else "MANUAL"),
+        "source": raw.get(
+            "source",
+            "BINANCE_SYNC" if (raw.get("positionAmt") is not None or raw.get("position_side") is not None) else "MANUAL",
+        ),
         "status": "OPEN",
         "notes": raw.get("notes", ""),
     }
@@ -430,12 +433,16 @@ def merge_active_positions(
     merged_raw: List[Mapping[str, Any]] = []
     for bp in active_positions_binance:
         sym = clean_symbol(str(bp["symbol"]))
-        raw_amt = float(bp["positionAmt"])
-        raw_side = str(bp.get("positionSide") or "BOTH").upper()
+        raw_amt_val = bp.get("positionAmt") if bp.get("positionAmt") is not None else bp.get("signed_amount")
+        if raw_amt_val is None:
+            raw_amt_val = bp.get("amount")
+        raw_amt = float(raw_amt_val) if raw_amt_val is not None else 0.0
+        raw_side = str(bp.get("side") or bp.get("positionSide") or bp.get("position_side") or "BOTH").upper()
         bp_side = raw_side if raw_side in ("LONG", "SHORT") else ("SHORT" if raw_amt < 0 else "LONG")
         local = local_by_key.get((sym, bp_side))
+        combined = dict(bp)
+        combined.setdefault("source", "BINANCE_SYNC")
         if local:
-            combined = dict(bp)
             for meta_key in (
                 "trendline",
                 "trendline_id",
@@ -449,9 +456,7 @@ def merge_active_positions(
             ):
                 if local.get(meta_key) is not None and combined.get(meta_key) is None:
                     combined[meta_key] = local[meta_key]
-            merged_raw.append(combined)
-        else:
-            merged_raw.append(bp)
+        merged_raw.append(combined)
 
     return [
         enrich_active_position(p, idx, default_leverage=default_leverage, now_ts=now_ts)
@@ -572,39 +577,54 @@ def pop_matching_local_trade(
     return None
 
 
-def _is_empty_queue_zero_close(
+def _precompute_both_zero_close(
     sorted_fills: Sequence[Mapping[str, Any]],
-    fill_idx: int,
-    sym: str,
-    fill_side: str,
-    price: float,
     realized_by_trade: Mapping[Tuple[str, str], float],
-) -> bool:
-    """单向持仓空队列且无 realizedPnl 时，根据后续同/反向成交上下文识别 0 盈亏平仓。"""
-    for g in sorted_fills[fill_idx + 1 :]:
-        if clean_symbol(str(g["symbol"])) != sym:
-            continue
-        if str(g.get("positionSide") or "BOTH").upper() != "BOTH":
-            continue
-        g_side = str(g["side"]).upper()
-        g_key = (sym, str(g["id"]))
-        g_income_rpnl = realized_by_trade.get(g_key)
-        g_raw_rpnl = g.get("realizedPnl")
-        g_has_nonzero_rpnl = g_raw_rpnl is not None and abs(float(g_raw_rpnl)) > 1e-12
-        if g_side == fill_side:
-            if g_income_rpnl is not None or g_has_nonzero_rpnl or bool(g.get("reduceOnly")):
-                return True
-        else:
+) -> set[int]:
+    """O(N) 反向扫描预计算单向模式 (BOTH) 空队列 0 盈亏平仓下标集合。"""
+    both_indices_by_sym: Dict[str, List[int]] = {}
+    for idx, f in enumerate(sorted_fills):
+        if str(f.get("positionSide") or "BOTH").upper() == "BOTH":
+            sym = clean_symbol(str(f["symbol"]))
+            both_indices_by_sym.setdefault(sym, []).append(idx)
+
+    zero_close_indices: set[int] = set()
+    for sym, indices in both_indices_by_sym.items():
+        has_close_before_opp: Dict[str, bool] = {"BUY": False, "SELL": False}
+        next_opp: Dict[str, Optional[Tuple[Optional[float], object, float]]] = {"BUY": None, "SELL": None}
+        for idx in reversed(indices):
+            g = sorted_fills[idx]
+            g_side = str(g["side"]).upper()
+            opp_side = "SELL" if g_side == "BUY" else "BUY"
             g_price = float(g["price"])
-            if (
-                g_income_rpnl is None
-                and g_raw_rpnl is not None
-                and abs(float(g_raw_rpnl)) <= 1e-12
-                and abs(g_price - price) > max(1e-8, price * 1e-6)
-            ):
-                return True
-            return False
-    return False
+            g_key = (sym, str(g["id"]))
+            g_income_rpnl = realized_by_trade.get(g_key)
+            g_raw_rpnl = g.get("realizedPnl")
+            g_has_nonzero_rpnl = g_raw_rpnl is not None and abs(float(g_raw_rpnl)) > 1e-12
+
+            is_zero_close = False
+            if has_close_before_opp.get(g_side):
+                is_zero_close = True
+            else:
+                opp_info = next_opp.get(g_side)
+                if opp_info is not None:
+                    opp_inc, opp_raw, opp_price = opp_info
+                    if (
+                        opp_inc is None
+                        and opp_raw is not None
+                        and abs(float(opp_raw)) <= 1e-12
+                        and abs(opp_price - g_price) > max(1e-8, g_price * 1e-6)
+                    ):
+                        is_zero_close = True
+            if is_zero_close:
+                zero_close_indices.add(idx)
+
+            if g_income_rpnl is not None or g_has_nonzero_rpnl or bool(g.get("reduceOnly")):
+                has_close_before_opp[g_side] = True
+            has_close_before_opp[opp_side] = False
+            next_opp[opp_side] = (g_income_rpnl, g_raw_rpnl, g_price)
+
+    return zero_close_indices
 
 
 def _consume_fifo_lots(
@@ -624,6 +644,9 @@ def _consume_fifo_lots(
     slices: List[dict] = []
     remaining = qty
     direction = 1.0 if close_side == "LONG" else -1.0
+    total_queue_qty = sum((lot["qty"] for lot in queue), Decimal("0"))
+    has_pre_recording_remainder = qty > total_queue_qty
+    known_realized_sum = 0.0
 
     while remaining > 0 and queue:
         lot = queue[0]
@@ -646,10 +669,11 @@ def _consume_fifo_lots(
         close_notional_slice = quote_qty * fill_frac
         close_fee_slice = fill_fee_usdt * fill_frac
         close_non_usdt_slice = {a: v * fill_frac for a, v in fill_non_usdt.items()}
-        if fill_realized is not None:
-            realized_slice = fill_realized * fill_frac
-        else:
+        if has_pre_recording_remainder or fill_realized is None:
             realized_slice = (close_notional_slice - open_notional_slice) * direction
+        else:
+            realized_slice = fill_realized * fill_frac
+        known_realized_sum += realized_slice
 
         slices.append({
             "symbol": sym,
@@ -672,7 +696,7 @@ def _consume_fifo_lots(
         close_notional_slice = quote_qty * fill_frac
         close_fee_slice = fill_fee_usdt * fill_frac
         close_non_usdt_slice = {a: v * fill_frac for a, v in fill_non_usdt.items()}
-        realized_slice = (fill_realized * fill_frac) if fill_realized is not None else 0.0
+        realized_slice = (fill_realized - known_realized_sum) if fill_realized is not None else 0.0
         open_notional_slice = close_notional_slice - direction * realized_slice
         slices.append({
             "symbol": sym,
@@ -737,6 +761,7 @@ def reconstruct_binance_trades(
     consumed_comm_keys: set[Tuple[str, str]] = set()
 
     sorted_fills = sorted(fills, key=lambda f: (int(f["time"]), int(f["id"])))
+    both_zero_close_indices = _precompute_both_zero_close(sorted_fills, realized_by_trade)
     for fill_idx, f in enumerate(sorted_fills):
         sym = clean_symbol(str(f["symbol"]))
         tid = str(f["id"])
@@ -811,7 +836,21 @@ def reconstruct_binance_trades(
                     })
                 else:
                     total_open_qty = sum((lot["qty"] for lot in queue), Decimal("0"))
-                    close_part = qty if is_reduce_only else min(qty, total_open_qty)
+                    if is_reduce_only or qty <= total_open_qty:
+                        close_part = qty
+                    else:
+                        # Distinguish closing pre-recording inventory from an actual position flip.
+                        direction = 1.0 if active_side == "LONG" else -1.0
+                        known_ratio = float(total_open_qty / qty)
+                        known_close_notional = quote_qty * known_ratio
+                        known_open_notional = sum(lot["notional"] for lot in queue)
+                        expected_known_rpnl = (known_close_notional - known_open_notional) * direction
+                        tol = max(1e-3, abs(expected_known_rpnl) * 0.02, known_close_notional * 1e-4)
+                        is_pre_recording_close = (
+                            (fill_realized is not None and abs(fill_realized - expected_known_rpnl) > tol)
+                            or fill_idx in both_zero_close_indices
+                        )
+                        close_part = qty if is_pre_recording_close else total_open_qty
                     open_rem = qty - close_part
                     close_ratio = float(close_part / qty)
                     matched_trade_keys.add(t_key)
@@ -843,7 +882,7 @@ def reconstruct_binance_trades(
             elif (
                 fill_realized is not None
                 or is_reduce_only
-                or _is_empty_queue_zero_close(sorted_fills, fill_idx, sym, fill_side, price, realized_by_trade)
+                or fill_idx in both_zero_close_indices
             ):
                 effective_realized = (
                     fill_realized
@@ -894,7 +933,7 @@ def reconstruct_binance_trades(
         realized_pnl = round(sum(s["realized_pnl"] for s in slices), 4)
         fee = round(sum(s["open_fee_usdt"] + s["close_fee_usdt"] for s in slices), 4)
         net_pnl = round(realized_pnl - fee, 4)
-        pnl_pct = round(net_pnl / entry_notional * 100.0, 2) if entry_notional > 0 else None
+        pnl_pct = round(realized_pnl / entry_notional * 100.0, 2) if entry_notional > 0 else None
 
         non_usdt: Dict[str, float] = {}
         for s in slices:
@@ -1054,7 +1093,7 @@ def reconstruct_binance_trades(
                 enriched["net_pnl"] = net_pnl
                 enriched["outcome"] = classify_outcome(net_pnl)
                 if enriched["entry_notional"] > 0:
-                    enriched["pnl_pct"] = round(net_pnl / enriched["entry_notional"] * 100.0, 2)
+                    enriched["pnl_pct"] = round(realized_pnl / enriched["entry_notional"] * 100.0, 2)
                     enriched["roe_pct"] = (
                         round(enriched["pnl_pct"] * enriched["leverage"], 2) if enriched.get("leverage") else None
                     )
