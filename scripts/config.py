@@ -178,6 +178,14 @@ def clean_symbol(raw: str) -> str:
     return sym
 
 
+def normalize_futures_symbol(symbol: str) -> str:
+    """标准化合约交易对名称，为裸币种补齐 USDT 计价后缀。"""
+    sym = clean_symbol(symbol)
+    if sym and not sym.endswith(("USDT", "USDC", "BUSD")):
+        sym = f"{sym}USDT"
+    return sym
+
+
 def get_beijing_time_str(ts_sec: Optional[float] = None) -> str:
     """格式化东八区北京时间 YYYY-MM-DD HH:MM:SS。"""
     dt = datetime.fromtimestamp(ts_sec if ts_sec is not None else time.time(), tz=BEIJING_TZ)

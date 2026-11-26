@@ -114,13 +114,15 @@ def fetch_json_with_retry(
     url: str,
     *,
     headers: Optional[dict[str, str]] = None,
+    session: Optional[http_client.HttpClient] = None,
     timeout: int = 15,
     max_retries: int = 2,
     backoff: float = 0.8,
 ) -> Any:
     """带指数退避重试的通用 HTTP GET JSON 请求（max_retries 为首次失败后的重试次数）。"""
+    requester = session if session is not None else http_client
     try:
-        return http_client.request_json(
+        return requester.request_json(
             url,
             method="GET",
             headers=headers,
@@ -504,20 +506,13 @@ class BinanceFuturesClient:
             query_params["endTime"] = int(end_time_ms)
         url = f"{self.base_url}/fapi/v1/klines?{urllib.parse.urlencode(query_params)}"
         req_timeout = max(self.timeout, 10)
-        if session is None:
-            data = fetch_json_with_retry(url, timeout=req_timeout, max_retries=max_retries, backoff=backoff)
-        else:
-            try:
-                data = session.request_json(
-                    url,
-                    method="GET",
-                    timeout=float(req_timeout),
-                    max_retries=max_retries,
-                    backoff_base=backoff,
-                    retry_statuses=RETRYABLE_STATUS_CODES,
-                )
-            except HttpError as e:
-                raise _http_error_to_binance_error(e, endpoint=url) from e
+        data = fetch_json_with_retry(
+            url,
+            session=session,
+            timeout=req_timeout,
+            max_retries=max_retries,
+            backoff=backoff,
+        )
         if not isinstance(data, list):
             raise BinanceAPIError(
                 f"Expected list from /fapi/v1/klines for {clean_sym} ({interval}), got {type(data).__name__}",

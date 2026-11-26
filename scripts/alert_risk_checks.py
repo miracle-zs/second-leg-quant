@@ -33,6 +33,7 @@ from config import (  # noqa: E402
     RUNS_DIR,
     clean_symbol,
     get_beijing_time_str,
+    normalize_futures_symbol,
 )
 import db_store  # noqa: E402
 import tv_trendline_engine as tve  # noqa: E402
@@ -70,13 +71,6 @@ def _shutdown_candle_executor() -> None:
 
 
 atexit.register(_shutdown_candle_executor)
-
-
-def _normalize_futures_symbol(symbol: str) -> str:
-    sym = clean_symbol(symbol)
-    if sym and not sym.endswith(("USDT", "USDC", "BUSD")):
-        sym = f"{sym}USDT"
-    return sym
 
 
 def _parse_optional_finite_float(val: Any) -> Optional[float]:
@@ -166,7 +160,7 @@ def check_feature_1_resonance(
             logger.warning(f"跳过第 {idx} 条非字典候选记录: {type(c).__name__}")
             continue
         raw_sym = c.get("symbol")
-        sym = _normalize_futures_symbol(raw_sym) if isinstance(raw_sym, str) else ""
+        sym = normalize_futures_symbol(raw_sym) if isinstance(raw_sym, str) else ""
         if not sym:
             logger.warning(f"跳过缺失有效 symbol 的候选记录: {c!r}")
             continue

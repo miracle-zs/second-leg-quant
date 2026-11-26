@@ -64,6 +64,7 @@ from config import (  # noqa: E402
     clean_symbol,
     get_beijing_time_str,
     get_env_setting,
+    normalize_futures_symbol,
     open_sqlite_connection,
     resolve_database_path,
 )
@@ -212,6 +213,8 @@ class PositionStore(_SqliteStore):
         amount: float = 0.0,
         trendline: Optional[dict] = None,
         notes: str = "",
+        *,
+        save: bool = True,
         **kwargs: Any,
     ) -> dict:
         entry_val = float(entry_price)
@@ -219,7 +222,7 @@ class PositionStore(_SqliteStore):
             raise ValueError(f"entry_price must be positive for {symbol}: {entry_price}")
 
         with self.transaction():
-            sym = arc._normalize_futures_symbol(symbol)
+            sym = normalize_futures_symbol(symbol)
             for p in self.get_open_positions():
                 if p["symbol"] == sym:
                     old_entry = float(p["entry_price"])
@@ -242,7 +245,8 @@ class PositionStore(_SqliteStore):
                         p["notes"] = notes
                     p.update(kwargs)
                     p["updated_at"] = get_beijing_time_str()
-                    self.save()
+                    if save:
+                        self.save()
                     return p
 
             pos = {
@@ -262,7 +266,8 @@ class PositionStore(_SqliteStore):
             }
             pos.update(kwargs)
             self._open_positions.append(pos)
-            self.save()
+            if save:
+                self.save()
             logger.info(f"✅ 成功录入新持仓: {sym} @ {entry_val} (数量: {amount})")
             return pos
 
@@ -271,9 +276,11 @@ class PositionStore(_SqliteStore):
         symbol: str,
         reason: str = "MANUAL_CLOSE",
         exit_price: Optional[float] = None,
+        *,
+        save: bool = True,
     ) -> Optional[dict]:
         with self.transaction():
-            sym = arc._normalize_futures_symbol(symbol)
+            sym = normalize_futures_symbol(symbol)
             target_pos = None
             for p in self._open_positions:
                 if p["symbol"] == sym and p["status"] == "OPEN":
@@ -294,7 +301,8 @@ class PositionStore(_SqliteStore):
                     target_pos["realized_pnl_pct"] = round(pnl_pct, 2)
 
             self._open_positions.remove(target_pos)
-            self.save()
+            if save:
+                self.save()
             db_store.append_position_history(self.database, target_pos, conn=self._tx_conn)
             logger.info(f"✅ 成功平仓/移除持仓: {sym} (原因: {reason})")
             return target_pos
@@ -541,25 +549,21 @@ class TradeAlertDaemon:
         now_ts = now if now is not None else time.time()
         layout_id = self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
 
-        positions_synced = False
         if self.binance_client.is_configured():
             try:
-                sync_res = bpc.sync_binance_positions(
+                bpc.sync_binance_positions(
                     self.binance_client,
                     self.pos_store,
                     layout_id,
                     load_drawings=arc.fetch_layout_drawings,
                 )
-                if sync_res["synced"]:
-                    positions_synced = True
             except (BinanceAPIError, HttpError, TimeoutError, OSError) as e:
                 logger.warning(f"后台自动同步币安持仓异常: {e}")
 
-        if not positions_synced:
-            self.pos_store.load()
+        open_positions = self.pos_store.get_open_positions()
         has_pending_stop_loss = any(
-            p["status"] == "OPEN" and "pending_stop_loss_candle" in p
-            for p in self.pos_store._open_positions
+            "pending_stop_loss_candle" in p
+            for p in open_positions
         )
 
         current_bucket = int(now_ts // 900) * 900
@@ -652,7 +656,7 @@ class TradeAlertDaemon:
                     current_bucket=current_bucket,
                 )
 
-        if any(p["status"] == "OPEN" for p in self.pos_store._open_positions):
+        if self.pos_store.get_open_positions():
             check_feature_4_trailing_stops(
                 self.notifier,
                 self.pos_store,
