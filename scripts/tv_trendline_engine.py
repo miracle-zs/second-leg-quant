@@ -40,6 +40,11 @@ from http_client import HttpError, request_bytes, request_json  # noqa: E402
 
 logger = logging.getLogger("tv_engine")
 
+
+class TradingViewError(RuntimeError):
+    """TradingView layout, token, or cloud drawing fetch/parse error."""
+
+
 TV_TOKEN_URLS = [
     "https://www.tradingview.com/chart-token/?image_url={layout_id}&user_id=-1",
     "https://cn.tradingview.com/chart-token/?image_url={layout_id}&user_id=-1",
@@ -130,7 +135,7 @@ def get_chart_token(layout_id: str = DEFAULT_TV_LAYOUT_ID, force_refresh: bool =
                 errors.append(f"{url}: {e}")
                 logger.warning("Failed to fetch token from %s: %s", url, e)
 
-        raise RuntimeError(f"Unable to obtain chart token for TradingView layout {layout_id}: {'; '.join(errors)}")
+        raise TradingViewError(f"Unable to obtain chart token for TradingView layout {layout_id}: {'; '.join(errors)}")
 
 
 def get_layout_chart_ids(layout_id: str = DEFAULT_TV_LAYOUT_ID) -> list[str]:
@@ -145,25 +150,25 @@ def get_layout_chart_ids(layout_id: str = DEFAULT_TV_LAYOUT_ID) -> list[str]:
             max_retries=1,
         )
     except HttpError as e:
-        raise RuntimeError(f"Failed to fetch TradingView layout page {layout_id}: {e}") from e
+        raise TradingViewError(f"Failed to fetch TradingView layout page {layout_id}: {e}") from e
 
     try:
         html = raw.decode("utf-8")
     except UnicodeDecodeError as e:
-        raise RuntimeError(f"Invalid UTF-8 in TradingView layout HTML for {layout_id}: {e}") from e
+        raise TradingViewError(f"Invalid UTF-8 in TradingView layout HTML for {layout_id}: {e}") from e
     match = re.search(r"initData\.content\s*=\s*(\{.*?\});\s*initData\.", html, re.S)
     if not match:
-        raise RuntimeError(f"Could not locate initData.content in TradingView layout HTML for {layout_id}")
+        raise TradingViewError(f"Could not locate initData.content in TradingView layout HTML for {layout_id}")
     try:
         content = json.loads(match.group(1))
     except json.JSONDecodeError as e:
-        raise RuntimeError(f"Invalid initData.content JSON in layout {layout_id}: {e}") from e
+        raise TradingViewError(f"Invalid initData.content JSON in layout {layout_id}: {e}") from e
 
     if not isinstance(content, dict) or not isinstance(content.get("charts"), list):
-        raise RuntimeError(f"Missing 'charts' list in initData.content for layout {layout_id}")
+        raise TradingViewError(f"Missing 'charts' list in initData.content for layout {layout_id}")
     for c in content["charts"]:
         if not isinstance(c, dict) or not isinstance(c.get("chartId"), str) or not c["chartId"].strip():
-            raise RuntimeError(f"Malformed chart entry in initData.content for layout {layout_id}: {c!r}")
+            raise TradingViewError(f"Malformed chart entry in initData.content for layout {layout_id}: {c!r}")
         cid = c["chartId"].strip()
         if cid not in chart_ids:
             chart_ids.append(cid)
@@ -173,20 +178,23 @@ def get_layout_chart_ids(layout_id: str = DEFAULT_TV_LAYOUT_ID) -> list[str]:
 def _fetch_chart_sources(layout_id: str, chart_id: str, token: str) -> dict[str, Any]:
     query = urllib.parse.urlencode({"chart_id": chart_id, "jwt": token})
     url = f"{TV_SOURCES_URL.format(layout_id=layout_id)}?{query}"
-    data = request_json(
-        url,
-        headers={"User-Agent": USER_AGENT},
-        timeout=15.0,
-        max_retries=2,
-    )
+    try:
+        data = request_json(
+            url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=15.0,
+            max_retries=2,
+        )
+    except HttpError:
+        raise
     if not isinstance(data, dict):
-        raise RuntimeError(f"Unexpected sources payload for chart_id '{chart_id}': {type(data).__name__}")
+        raise TradingViewError(f"Unexpected sources payload for chart_id '{chart_id}': {type(data).__name__}")
     payload = data.get("payload")
     if not isinstance(payload, dict):
-        raise RuntimeError(f"Missing payload dict for chart_id '{chart_id}'")
+        raise TradingViewError(f"Missing payload dict for chart_id '{chart_id}'")
     sources = payload.get("sources")
     if not isinstance(sources, dict):
-        raise RuntimeError(f"Missing sources dict for chart_id '{chart_id}'")
+        raise TradingViewError(f"Missing sources dict for chart_id '{chart_id}'")
     return sources
 
 
@@ -227,7 +235,7 @@ def _fetch_all_chart_sources(
                 if e.status_code in (401, 403):
                     auth_failed.append(cid)
                 else:
-                    raise RuntimeError(f"Failed to fetch sources for chart_id '{cid}': {e}") from e
+                    raise TradingViewError(f"Failed to fetch sources for chart_id '{cid}': {e}") from e
             return results, auth_failed
 
         with ThreadPoolExecutor(max_workers=min(6, len(cids))) as executor:
@@ -239,7 +247,7 @@ def _fetch_all_chart_sources(
                     if e.status_code in (401, 403):
                         auth_failed.append(cid)
                     else:
-                        raise RuntimeError(f"Failed to fetch sources for chart_id '{cid}': {e}") from e
+                        raise TradingViewError(f"Failed to fetch sources for chart_id '{cid}': {e}") from e
         return results, auth_failed
 
     sources_by_chart, auth_failed = _run_batch(chart_ids, token)
@@ -247,7 +255,7 @@ def _fetch_all_chart_sources(
         refreshed = get_chart_token(layout_id=layout_id, force_refresh=True)
         retry_results, retry_auth_failed = _run_batch(auth_failed, refreshed)
         if retry_auth_failed:
-            raise RuntimeError(
+            raise TradingViewError(
                 f"Unauthorized (401/403) fetching sources for chart_ids {retry_auth_failed} after token refresh"
             )
         sources_by_chart.update(retry_results)
@@ -257,7 +265,7 @@ def _fetch_all_chart_sources(
         sources = sources_by_chart[chart_id]
         for sid, sval in sources.items():
             if not isinstance(sval, dict):
-                raise RuntimeError(
+                raise TradingViewError(
                     f"Malformed source entry {sid!r} in chart_id '{chart_id}': expected dict, got {type(sval).__name__}"
                 )
             if sid not in raw_sources:
@@ -394,7 +402,7 @@ def get_layout_drawings(
             layout_id,
         )
     if trendline_seen_count > 0 and not symbol_to_trendlines:
-        raise RuntimeError(
+        raise TradingViewError(
             f"All {trendline_seen_count} LineToolTrendLine drawings failed parsing for layout {layout_id}; "
             "refusing to overwrite drawings cache"
         )

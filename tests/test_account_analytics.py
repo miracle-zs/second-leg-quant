@@ -159,6 +159,7 @@ class TestDataEnrichment(unittest.TestCase):
             "amount": 0.5,
             "mark_price": 94500.0,
             "leverage": 10,
+            "liquidation_price": 81900.0,
             "entry_time": "2026-11-22 12:00:00",
         }
         enriched = te.enrich_active_position(raw, 0)
@@ -169,6 +170,17 @@ class TestDataEnrichment(unittest.TestCase):
         self.assertAlmostEqual(enriched["pnl_pct"], 5.0, places=2)
         self.assertAlmostEqual(enriched["roe_pct"], 50.0, places=2)
         self.assertAlmostEqual(enriched["liquidation_price"], 81900.0, places=1)
+        self.assertNotIn("trendline_break_sl_status", enriched)
+
+        raw_no_liq = {
+            "symbol": "BTCUSDT",
+            "entry_price": 90000.0,
+            "amount": 0.5,
+            "mark_price": 94500.0,
+        }
+        no_liq_enriched = te.enrich_active_position(raw_no_liq, 0)
+        self.assertIsNone(no_liq_enriched["liquidation_price"])
+        self.assertIsNone(no_liq_enriched["initial_margin"])
 
     def test_enrich_active_position_uses_update_time_and_merges_local_meta(self):
         update_ms = int((time.time() - 600) * 1000)
@@ -229,7 +241,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": 0.0, "fee": 0.0, "net_pnl": 0.0, "pnl_pct": 0.0, "closed_ts": 3000, "closed_at": "2026-11-21 09:00:00", "duration_seconds": 30, "symbol": "C", "close_reason": "MC"},
             {"realized_pnl": 150.0, "fee": 1.5, "net_pnl": 148.5, "pnl_pct": 15.0, "closed_ts": 4000, "closed_at": "2026-11-21 12:00:00", "duration_seconds": 90, "symbol": "D", "close_reason": "TP"},
         ]
-        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, initial_capital=10000.0)
 
         self.assertEqual(summary["closed_trades"], 4)
         self.assertEqual(summary["win_count"], 2)
@@ -249,7 +261,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": 50.0, "fee": 0.1, "net_pnl": 49.9, "pnl_pct": 5.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
             {"realized_pnl": 80.0, "fee": 0.1, "net_pnl": 79.9, "pnl_pct": 8.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"},
         ]
-        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, initial_capital=10000.0)
         self.assertEqual(summary["win_rate_pct"], 100.0)
         self.assertIsNone(summary["profit_factor"])
         self.assertIsNone(summary["sortino_ratio"])
@@ -261,14 +273,14 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": -30.0, "fee": 0.1, "net_pnl": -30.1, "pnl_pct": -3.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "SL"},
             {"realized_pnl": -70.0, "fee": 0.1, "net_pnl": -70.1, "pnl_pct": -7.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
         ]
-        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, initial_capital=10000.0)
         self.assertEqual(summary["win_rate_pct"], 0.0)
         self.assertEqual(summary["profit_factor"], 0.0)
         self.assertEqual(summary["max_consecutive_losses"], 2)
         self.assertAlmostEqual(summary["max_drawdown_usd"], 100.2, places=1)
 
     def test_zero_trades_empty_state_robustness(self):
-        summary, eq_curve, daily_pnl = qm.calculate_quant_risk_metrics([], [], None, default_initial_capital=10000.0)
+        summary, eq_curve, daily_pnl = qm.calculate_quant_risk_metrics([], [], None, initial_capital=10000.0)
         self.assertEqual(summary["closed_trades"], 0)
         self.assertEqual(summary["win_rate_pct"], 0.0)
         self.assertIsNone(summary["profit_factor"])
@@ -287,7 +299,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             "totalMarginBalance": "0.0",
             "availableBalance": "0.0",
         }
-        summary, _, _ = qm.calculate_quant_risk_metrics([], [], account_info, default_initial_capital=10000.0)
+        summary, _, _ = qm.calculate_quant_risk_metrics([], [], account_info, initial_capital=10000.0)
         self.assertEqual(summary["wallet_balance"], 0.0)
         self.assertEqual(summary["total_equity"], 0.0)
         self.assertEqual(summary["available_margin"], 0.0)
@@ -299,7 +311,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": -200.0, "fee": 0.0, "net_pnl": -200.0, "pnl_pct": -2.0, "closed_ts": 3000, "closed_at": "2026-11-20 12:00:00", "duration_seconds": 60, "symbol": "C", "close_reason": "SL"},
             {"realized_pnl": 1000.0, "fee": 0.0, "net_pnl": 1000.0, "pnl_pct": 10.0, "closed_ts": 4000, "closed_at": "2026-11-20 13:00:00", "duration_seconds": 60, "symbol": "D", "close_reason": "TP"},
         ]
-        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, initial_capital=10000.0)
         self.assertEqual(summary["max_drawdown_usd"], 500.0)
         self.assertAlmostEqual(summary["max_drawdown_pct"], 4.76, places=2)
 
@@ -310,7 +322,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": 30.0, "fee": 0.0, "net_pnl": 30.0, "pnl_pct": 3.0, "closed_ts": 3000, "closed_at": "2026-11-20 12:00:00", "duration_seconds": 300, "symbol": "C", "close_reason": "TP"},
             {"realized_pnl": -5.0, "fee": 0.0, "net_pnl": -5.0, "pnl_pct": -0.5, "closed_ts": 4000, "closed_at": "2026-11-20 13:00:00", "duration_seconds": 400, "symbol": "D", "close_reason": "SL"},
         ]
-        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, initial_capital=10000.0)
         self.assertEqual(summary["max_consecutive_wins"], 3)
         self.assertEqual(summary["max_consecutive_losses"], 1)
         self.assertEqual(summary["avg_hold_duration_seconds"], 250)
@@ -324,7 +336,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": 200.0, "fee": 0.0, "net_pnl": 200.0, "pnl_pct": 2.0, "closed_ts": 1000, "closed_at": "2026-11-01 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
             {"realized_pnl": -102.0, "fee": 0.0, "net_pnl": -102.0, "pnl_pct": -1.0, "closed_ts": 2000, "closed_at": "2026-11-05 10:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
         ]
-        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, initial_capital=10000.0)
         rets = [0.02, 0.0, 0.0, 0.0, -0.01]
         mean_r = sum(rets) / 5
         std_r = math.sqrt(sum((r - mean_r) ** 2 for r in rets) / 4)
@@ -338,7 +350,7 @@ class TestQuantRiskCalculations(unittest.TestCase):
             {"realized_pnl": 100.0, "fee": 0.0, "net_pnl": 100.0, "pnl_pct": 1.0, "closed_ts": 1000, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
             {"realized_pnl": 100.0, "fee": 0.0, "net_pnl": 100.0, "pnl_pct": 1.0, "closed_ts": 2000, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"},
         ]
-        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, initial_capital=10000.0)
         self.assertIsNone(summary["sharpe_ratio"])
         self.assertIsNone(summary["sortino_ratio"])
 
@@ -376,7 +388,7 @@ class TestDataAggregation(unittest.TestCase):
         ]
         active_positions = [{"symbol": "SOLUSDT", "unrealized_pnl": 35.0, "initial_margin": 200.0}]
         summary, eq_curve, _ = qm.calculate_quant_risk_metrics(
-            trades, active_positions, None, default_initial_capital=10000.0
+            trades, active_positions, None, initial_capital=10000.0
         )
 
         self.assertEqual(len(eq_curve), 4)
@@ -398,7 +410,7 @@ class TestDataAggregation(unittest.TestCase):
             {"realized_pnl": 50.0, "fee": 0.5, "net_pnl": 49.5, "pnl_pct": 0.5, "closed_ts": 2000, "closed_at": "2026-11-20 15:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "TP"},
             {"realized_pnl": -30.0, "fee": 0.3, "net_pnl": -30.3, "pnl_pct": -0.3, "closed_ts": 3000, "closed_at": "2026-11-21 10:00:00", "duration_seconds": 60, "symbol": "C", "close_reason": "SL"},
         ]
-        _, _, daily_pnl = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
+        _, _, daily_pnl = qm.calculate_quant_risk_metrics(trades, [], None, initial_capital=10000.0)
         self.assertEqual(len(daily_pnl), 2)
         self.assertEqual(daily_pnl[0]["date"], "2026-11-20")
         self.assertEqual(daily_pnl[0]["trades_count"], 2)
@@ -1066,7 +1078,7 @@ class TestP0AnalyticsFixes(unittest.TestCase):
             {"realized_pnl": 100.0, "fee": 0.0, "net_pnl": 100.0, "pnl_pct": 1.0, "closed_at": "2026-11-20 10:00:00", "duration_seconds": 60, "symbol": "A", "close_reason": "TP"},
             {"realized_pnl": -50.0, "fee": 0.0, "net_pnl": -50.0, "pnl_pct": -0.5, "closed_at": "2026-11-20 11:00:00", "duration_seconds": 60, "symbol": "B", "close_reason": "SL"},
         ]
-        summary, _, daily_pnl = qm.calculate_quant_risk_metrics(trades, [], None, default_initial_capital=10000.0)
+        summary, _, daily_pnl = qm.calculate_quant_risk_metrics(trades, [], None, initial_capital=10000.0)
         self.assertEqual(len(daily_pnl), 1)
         self.assertIsNone(summary["sharpe_ratio"])
         self.assertIsNone(summary["sortino_ratio"])

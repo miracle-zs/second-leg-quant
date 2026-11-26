@@ -583,13 +583,19 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
             const candCode = fs.readFileSync(path.join(root, 'web/candidates.js'), 'utf8');
             const acctCode = fs.readFileSync(path.join(root, 'web/account.js'), 'utf8');
 
-            // 1. common.js getTvSymbol fails fast on empty symbol
+            // 1. common.js getTvSymbol & getTvUrl fail fast on empty symbol / unconfigured layout ID
             {
               const win = {};
               win.window = win;
               vm.runInNewContext(commonCode, win);
               assert.throws(() => win.SecondLegCommon.getTvSymbol(''), /non-empty symbol/);
               assert.strictEqual(win.SecondLegCommon.getTvSymbol('BTCUSDT'), 'BINANCE:BTCUSDT.P');
+              assert.throws(() => win.SecondLegCommon.getTvUrl('BTCUSDT'), /not been configured/);
+              win.SecondLegCommon.setTvLayoutId('TestLayout9');
+              assert.strictEqual(
+                win.SecondLegCommon.getTvUrl('BTCUSDT', null, '15m'),
+                'https://cn.tradingview.com/chart/TestLayout9/?symbol=BINANCE%3ABTCUSDT.P&interval=15'
+              );
             }
 
             // 2. candidates.js: null funding_rate_4h_pct / turnover_ratio skipped in KPI, corrupt sessionStorage warns & clears, malformed /api/candidates fails fast
@@ -690,6 +696,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               };
               win2.window = win2;
               vm.runInNewContext(commonCode, win2);
+              win2.SecondLegCommon.setTvLayoutId('ig0LuDL8');
               vm.runInNewContext(klineModalCode, win2);
               const candTestCode = candCode.replace(
                 /\\}\\)\\(\\);\\s*$/,
@@ -746,6 +753,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               };
               win3.window = win3;
               vm.runInNewContext(commonCode, win3);
+              win3.SecondLegCommon.setTvLayoutId('ig0LuDL8');
               const acctTestCode = acctCode.replace(
                 /\\}\\)\\(\\);\\s*$/,
                 'window.__acctTest = { renderDashboard, updateKpis };})();'
@@ -1133,6 +1141,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               };
               winCand.window = winCand;
               vm.runInNewContext(commonCode, winCand);
+              winCand.SecondLegCommon.setTvLayoutId('ig0LuDL8');
               vm.runInNewContext(klineModalCode, winCand);
               const candTestCode = candCode.replace(
                 /\\}\\)\\(\\);\\s*$/,

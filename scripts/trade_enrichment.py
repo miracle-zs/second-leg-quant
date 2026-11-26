@@ -412,7 +412,9 @@ def enrich_active_position(
         raise ValueError(f"Active position {sym} has invalid mark_price: {raw_mark!r}")
 
     notional = round(mark_price * amount, 4)
-    initial_margin = round(notional / leverage, 4) if (leverage is not None and leverage > 0) else notional
+    initial_margin: Optional[float] = (
+        round(notional / leverage, 4) if (leverage is not None and leverage > 0) else None
+    )
 
     raw_upnl = raw.get("unrealized_pnl")
     unrealized_pnl = float(raw_upnl) if raw_upnl is not None else ((mark_price - entry_price) * amount * direction)
@@ -422,12 +424,15 @@ def enrich_active_position(
     roe_pct: Optional[float] = round(pnl_pct * leverage, 2) if leverage is not None else None
 
     raw_liq = raw.get("liquidation_price")
-    if raw_liq is not None and float(raw_liq) > 0:
-        est_liq_price: Optional[float] = round(float(raw_liq), 6)
-    elif leverage is not None and leverage > 1:
-        est_liq_price = round(entry_price * (1.0 - 0.9 / leverage * direction), 6)
+    if raw_liq is not None:
+        if isinstance(raw_liq, bool):
+            raise ValueError(f"Active position {sym} has invalid liquidation_price: {raw_liq!r}")
+        liq_val = float(raw_liq)
+        if not math.isfinite(liq_val) or liq_val < 0:
+            raise ValueError(f"Active position {sym} has invalid liquidation_price: {raw_liq!r}")
+        liq_price: Optional[float] = round(liq_val, 6) if liq_val > 0 else None
     else:
-        est_liq_price = None
+        liq_price = None
 
     entry_time_raw = raw.get("entry_time")
     entry_ts = parse_to_timestamp(entry_time_raw)
@@ -467,7 +472,7 @@ def enrich_active_position(
         "unrealized_pnl": unrealized_pnl,
         "pnl_pct": pnl_pct,
         "roe_pct": roe_pct,
-        "liquidation_price": est_liq_price,
+        "liquidation_price": liq_price,
         "entry_time": entry_time_str,
         "entry_ts": entry_ts_ms,
         "holding_seconds": holding_seconds,
@@ -476,7 +481,6 @@ def enrich_active_position(
         "trailing_stop_triggered": bool(raw.get("trailing_stop_triggered", False)),
         "trailing_stop_price": raw.get("trailing_stop_price"),
         "stop_loss_notified": bool(raw.get("stop_loss_notified", False)),
-        "trendline_break_sl_status": raw.get("trendline_break_sl_status", "SAFE"),
         "trendline_id": trendline_id,
         "trendline": trendline,
         "source": raw.get(
@@ -534,7 +538,6 @@ def merge_active_positions(
                 "trailing_stop_price",
                 "trailing_stop_triggered",
                 "stop_loss_notified",
-                "trendline_break_sl_status",
                 "highest_price",
                 "notes",
                 "entry_time",

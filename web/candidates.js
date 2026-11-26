@@ -2,13 +2,13 @@
   const Common = window.SecondLegCommon;
   const KlineModal = window.SecondLegKlineModal;
   const {
-    TV_LAYOUT_ID,
     escapeHtml,
     isFiniteNum,
     formatCryptoPrice,
     formatSignedPct,
     getTvSymbol,
     getTvUrl,
+    ensureConfig,
     fetchJsonWithTimeout,
     toBeijingDate,
   } = Common;
@@ -438,7 +438,7 @@
       const safeSym = escapeHtml(sym);
       const tvSym = getTvSymbol(sym);
       const safeTvSym = escapeHtml(tvSym);
-      const tvUrl = getTvUrl(tvSym, TV_LAYOUT_ID, '15m');
+      const tvUrl = getTvUrl(tvSym, null, '15m');
       const binanceUrl = `https://www.binance.com/zh-CN/futures/${encodeURIComponent(sym)}`;
 
       const pStr = escapeHtml(formatCryptoPrice(c.price));
@@ -914,11 +914,14 @@
     if (!force && lastEtag) headers['If-None-Match'] = lastEtag;
 
     try {
-      const { notModified, etag, data: payload } = await fetchJsonWithTimeout(
-        'api/candidates',
-        { cache: 'no-store', headers, signal: snapshotController.signal },
-        12000
-      );
+      const [, { notModified, etag, data: payload }] = await Promise.all([
+        ensureConfig(),
+        fetchJsonWithTimeout(
+          'api/candidates',
+          { cache: 'no-store', headers, signal: snapshotController.signal },
+          12000
+        ),
+      ]);
       if (fetchId !== activeSnapshotFetchId) return;
       if (notModified) return;
       if (etag) lastEtag = etag;

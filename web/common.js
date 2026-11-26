@@ -1,7 +1,8 @@
 (function (global) {
   'use strict';
 
-  const TV_LAYOUT_ID = 'ig0LuDL8';
+  let activeTvLayoutId = '';
+  let configPromise = null;
   const TV_INTERVAL_MAP = Object.freeze({
     '15m': '15',
     '1h': '60',
@@ -82,9 +83,63 @@
     return CHINESE_TV_MAP[sym] || `BINANCE:${sym}.P`;
   }
 
+  function getTvLayoutId() {
+    if (!activeTvLayoutId) {
+      throw new Error('TradingView layout ID has not been configured');
+    }
+    return activeTvLayoutId;
+  }
+
+  function applyTvLayoutLinks() {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function' || !activeTvLayoutId) {
+      return;
+    }
+    const baseUrl = `https://cn.tradingview.com/chart/${encodeURIComponent(activeTvLayoutId)}/`;
+    document.querySelectorAll('a[data-tv-layout-link]').forEach((el) => {
+      el.href = baseUrl;
+      if (el.getAttribute('data-tv-layout-title')) {
+        el.title = `打开 TradingView 专属画线布局 (${activeTvLayoutId})`;
+      }
+    });
+  }
+
+  function setTvLayoutId(layoutId) {
+    if (typeof layoutId !== 'string' || !layoutId.trim()) {
+      throw new Error('TradingView layout ID must be a non-empty string');
+    }
+    activeTvLayoutId = layoutId.trim();
+    applyTvLayoutLinks();
+    return activeTvLayoutId;
+  }
+
+  function ensureConfig() {
+    if (activeTvLayoutId) return Promise.resolve(activeTvLayoutId);
+    if (
+      typeof global.fetch !== 'function' ||
+      typeof global.document === 'undefined' ||
+      typeof global.document.querySelector !== 'function'
+    ) {
+      return Promise.resolve(activeTvLayoutId);
+    }
+    if (!configPromise) {
+      configPromise = fetchJsonWithTimeout('api/config', { cache: 'no-store' }, 8000)
+        .then(({ data }) => {
+          if (!data || typeof data.tradingview_layout_id !== 'string' || !data.tradingview_layout_id.trim()) {
+            throw new Error('Invalid /api/config payload: missing tradingview_layout_id');
+          }
+          return setTvLayoutId(data.tradingview_layout_id);
+        })
+        .catch((err) => {
+          configPromise = null;
+          throw err;
+        });
+    }
+    return configPromise;
+  }
+
   function getTvUrl(symbol, layoutId, interval) {
     const tvSym = getTvSymbol(symbol);
-    const lid = layoutId || TV_LAYOUT_ID;
+    const lid = (typeof layoutId === 'string' && layoutId.trim()) ? layoutId.trim() : getTvLayoutId();
     let url = `https://cn.tradingview.com/chart/${encodeURIComponent(lid)}/?symbol=${encodeURIComponent(tvSym)}`;
     if (interval) {
       const tvInterval = TV_INTERVAL_MAP[interval] || interval;
@@ -139,14 +194,27 @@
     return new Date(tsMs + 8 * 3600 * 1000);
   }
 
+  if (typeof global.document !== 'undefined' && typeof global.document.querySelector === 'function') {
+    const syncLinks = () => {
+      ensureConfig().catch((err) => console.error('Failed to load /api/config:', err));
+    };
+    if (global.document.readyState === 'loading' && typeof global.document.addEventListener === 'function') {
+      global.document.addEventListener('DOMContentLoaded', syncLinks);
+    } else {
+      syncLinks();
+    }
+  }
+
   global.SecondLegCommon = Object.freeze({
-    TV_LAYOUT_ID,
     TV_INTERVAL_MAP,
     escapeHtml,
     isFiniteNum,
     formatCryptoPrice,
     formatSignedPct,
     getTvSymbol,
+    getTvLayoutId,
+    setTvLayoutId,
+    ensureConfig,
     getTvUrl,
     fetchJsonWithTimeout,
     toBeijingDate,

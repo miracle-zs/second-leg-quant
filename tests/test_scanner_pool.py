@@ -416,7 +416,7 @@ class TestScannerPool(unittest.TestCase):
         self.assertEqual(stored[0]["symbol"], "ALPHAUSDT")
         self.assertEqual(stored[0]["resonance_duration_hours"], 3)
 
-    def test_malformed_resonance_history_warns_and_recovers(self) -> None:
+    def test_malformed_resonance_history_raises_value_error(self) -> None:
         closed_times = [self.FIXED_NOW_MS - (12 - i) * 3_600_000 for i in range(12)]
         bull_klines = _make_klines([1.0 + 0.1 * i for i in range(12)], closed_times)
 
@@ -429,49 +429,34 @@ class TestScannerPool(unittest.TestCase):
                 "market_cap": 20_000_000.0,
                 "volume_usd": 40_000_000.0,
             },
-            {
-                "symbol": "BETAUSDT",
-                "base": "BETA",
-                "price": 2.1,
-                "circulating_supply": 11_000_000.0,
-                "market_cap": 22_000_000.0,
-                "volume_usd": 44_000_000.0,
-            },
         ]
-        now_dt = datetime.datetime.fromtimestamp(self.FIXED_NOW_TS, BEIJING_TZ)
-        expected_now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        # Case 1: malformed per-symbol history entries (non-dict entry & invalid first_detected)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = Path(tmpdir) / "scanner.sqlite3"
-            db_store.save_resonance_state(
-                db_path,
-                {
-                    "version": 1,
-                    "initialized": True,
-                    "active_resonance_symbols": ["ALPHAUSDT", "BETAUSDT"],
-                    "history": {
-                        "ALPHAUSDT": {"first_detected": "not-a-valid-datetime"},
-                        "BETAUSDT": "corrupted-entry",
-                    },
-                },
-            )
-            candidates, out = self._run_scan(
-                db_path,
-                symbols=symbols,
-                klines_by_symbol={"ALPHAUSDT": bull_klines, "BETAUSDT": bull_klines},
-            )
-            snapshot = db_store.load_candidates(db_path)
+        # Case 1: malformed per-symbol first_detected or non-dict history entry raises ValueError
+        for bad_history in (
+            {"ALPHAUSDT": {"first_detected": "not-a-valid-datetime"}},
+            {"ALPHAUSDT": "corrupted-entry"},
+            ["not-a-dict"],
+        ):
+            with self.subTest(bad_history=bad_history):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    db_path = Path(tmpdir) / "scanner.sqlite3"
+                    db_store.save_resonance_state(
+                        db_path,
+                        {
+                            "version": 1,
+                            "initialized": True,
+                            "active_resonance_symbols": ["ALPHAUSDT"],
+                            "history": bad_history,
+                        },
+                    )
+                    with self.assertRaises(ValueError):
+                        self._run_scan(
+                            db_path,
+                            symbols=symbols,
+                            klines_by_symbol={"ALPHAUSDT": bull_klines},
+                        )
 
-        self.assertIn("first_detected 格式非法", out)
-        self.assertIn("缺少有效 first_detected", out)
-        self.assertIsNotNone(snapshot)
-        for c in candidates:
-            self.assertTrue(c["is_resonance"])
-            self.assertEqual(c["resonance_duration_hours"], 0)
-            self.assertEqual(c["resonance_detected_at"], expected_now_str)
-
-        # Case 2: malformed top-level history type (list instead of dict)
+        # Case 2: non-list active_resonance_symbols raises ValueError
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "scanner2.sqlite3"
             db_store.save_resonance_state(
@@ -479,20 +464,16 @@ class TestScannerPool(unittest.TestCase):
                 {
                     "version": 1,
                     "initialized": True,
-                    "active_resonance_symbols": ["ALPHAUSDT"],
-                    "history": ["not-a-dict"],
+                    "active_resonance_symbols": "ALPHAUSDT",
+                    "history": {},
                 },
             )
-            candidates2, out2 = self._run_scan(
-                db_path,
-                symbols=symbols[:1],
-                klines_by_symbol={"ALPHAUSDT": bull_klines},
-            )
-            snapshot2 = db_store.load_candidates(db_path)
-
-        self.assertIn("resonance_state history 格式异常", out2)
-        self.assertIsNotNone(snapshot2)
-        self.assertEqual(candidates2[0]["resonance_duration_hours"], 0)
+            with self.assertRaises(ValueError):
+                self._run_scan(
+                    db_path,
+                    symbols=symbols,
+                    klines_by_symbol={"ALPHAUSDT": bull_klines},
+                )
 
 
 class TestSyncAll(unittest.TestCase):

@@ -27,6 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from binance_client import BINANCE_FUTURES_BASE_URL  # noqa: E402
+from config import DEFAULT_TV_LAYOUT_ID, get_env_setting  # noqa: E402
 import db_store  # noqa: E402
 import http_client  # noqa: E402
 
@@ -453,6 +454,18 @@ def create_handler(database: Path):
 
             if path in ("/account.html", "/playbook.html"):
                 self._send_static_file(web_root / path.lstrip("/"), send_body=send_body)
+                return
+
+            if path == "/api/config":
+                layout_id = get_env_setting("TRADINGVIEW_LAYOUT_ID", DEFAULT_TV_LAYOUT_ID)
+                body = json.dumps({"tradingview_layout_id": layout_id}, ensure_ascii=False).encode("utf-8")
+                self._send_bytes(
+                    200,
+                    body,
+                    "application/json; charset=utf-8",
+                    cache_control="no-store",
+                    send_body=send_body,
+                )
                 return
 
             if path == "/api/account":

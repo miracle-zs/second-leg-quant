@@ -3,7 +3,6 @@
 
   const Common = global.SecondLegCommon;
   const {
-    TV_LAYOUT_ID,
     TV_INTERVAL_MAP,
     isFiniteNum,
     formatCryptoPrice,
@@ -556,7 +555,7 @@
     clearModalChartDisplay();
 
     if (modalChartTitle) modalChartTitle.textContent = sym;
-    if (modalExternalLink) modalExternalLink.href = getTvUrl(tvSym, TV_LAYOUT_ID, modalCurrentInterval);
+    if (modalExternalLink) modalExternalLink.href = getTvUrl(tvSym, null, modalCurrentInterval);
     if (!chartModal.open) {
       chartModal.showModal();
     }
@@ -673,7 +672,7 @@
       }
       modalCurrentInterval = nextInterval;
       if (modalExternalLink && modalCurrentTvSymbol) {
-        modalExternalLink.href = getTvUrl(modalCurrentTvSymbol, TV_LAYOUT_ID, modalCurrentInterval);
+        modalExternalLink.href = getTvUrl(modalCurrentTvSymbol, null, modalCurrentInterval);
       }
       if (modalActiveEngine === 'native') {
         fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);

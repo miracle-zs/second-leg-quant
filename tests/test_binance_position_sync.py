@@ -143,7 +143,11 @@ class TestBinanceFuturesClient(unittest.TestCase):
                 "entryPrice": "0.0",
                 "markPrice": "90000.0",
                 "unRealizedProfit": "0.0",
+                "liquidationPrice": "0",
                 "leverage": "20",
+                "positionSide": "BOTH",
+                "updateTime": 0,
+                "notional": "0",
             },
             {
                 "symbol": "YBUSDT",
@@ -151,9 +155,11 @@ class TestBinanceFuturesClient(unittest.TestCase):
                 "entryPrice": "0.0520",
                 "markPrice": "0.0550",
                 "unRealizedProfit": "6.0",
+                "liquidationPrice": "0.0468",
                 "leverage": "10",
                 "positionSide": "BOTH",
                 "updateTime": 1795260000000,
+                "notional": "110.0",
             },
             {
                 "symbol": "ETHUSDT",
@@ -161,7 +167,11 @@ class TestBinanceFuturesClient(unittest.TestCase):
                 "entryPrice": "3100.0",
                 "markPrice": "3050.0",
                 "unRealizedProfit": "75.0",
+                "liquidationPrice": "3255.0",
                 "leverage": "20",
+                "positionSide": "BOTH",
+                "updateTime": 1795260001000,
+                "notional": "-4575.0",
             },
             {
                 "symbol": "BINANCE:RAREUSDT.P",
@@ -169,7 +179,11 @@ class TestBinanceFuturesClient(unittest.TestCase):
                 "entryPrice": "0.0150",
                 "markPrice": "0.0160",
                 "unRealizedProfit": "0.5",
+                "liquidationPrice": "0.0120",
                 "leverage": "5",
+                "positionSide": "BOTH",
+                "updateTime": 1795260002000,
+                "notional": "8.0",
             },
         ]
 
@@ -182,6 +196,7 @@ class TestBinanceFuturesClient(unittest.TestCase):
             self.assertEqual(yb["entry_price"], 0.0520)
             self.assertEqual(yb["mark_price"], 0.0550)
             self.assertEqual(yb["unrealized_pnl"], 6.0)
+            self.assertEqual(yb["liquidation_price"], 0.0468)
             self.assertEqual(yb["leverage"], 10)
 
             rare = next(p for p in active_longs if p["symbol"] == "RAREUSDT")

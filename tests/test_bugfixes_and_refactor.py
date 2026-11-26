@@ -150,6 +150,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
             "entry_price": 3000.0,
             "mark_price": 2850.0,
             "leverage": 10,
+            "liquidation_price": 3270.0,
         }
         enriched = te.enrich_active_position(raw_short, 0)
         self.assertEqual(enriched["side"], "SHORT")
@@ -157,7 +158,10 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
         self.assertEqual(enriched["amount"], 2.0)
         self.assertAlmostEqual(enriched["unrealized_pnl"], 300.0, places=2)
         self.assertAlmostEqual(enriched["pnl_pct"], 5.0, places=2)
-        self.assertGreater(enriched["liquidation_price"], 3000.0)
+        self.assertAlmostEqual(enriched["liquidation_price"], 3270.0, places=2)
+
+        raw_short_no_liq = {k: v for k, v in raw_short.items() if k != "liquidation_price"}
+        self.assertIsNone(te.enrich_active_position(raw_short_no_liq, 0)["liquidation_price"])
 
         # 验证纯静态壳 + account.js 明确提示空单未纳入自动风控
         html_out = (ROOT_DIR / "web" / "account.html").read_text(encoding="utf-8")

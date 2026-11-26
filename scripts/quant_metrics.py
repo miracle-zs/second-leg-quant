@@ -555,15 +555,18 @@ def calculate_quant_risk_metrics(
     active_positions: Sequence[Mapping[str, Any]],
     account_info: Optional[Mapping[str, Any]],
     *,
-    default_initial_capital: float = 10000.0,
-    custom_initial_capital: Optional[float] = None,
-    net_transfers: Optional[float] = None,
+    initial_capital: float,
     total_funding_fee: float = 0.0,
     daily_pnl_override: Optional[List[dict]] = None,
     equity_curve_override: Optional[List[dict]] = None,
-    initial_capital_override: Optional[float] = None,
 ) -> Tuple[dict, List[dict], List[dict]]:
     """基于统一净盈亏 (net_pnl) 口径计算全部账户绩效、风控比值、净值曲线与逐日盈亏。"""
+    if isinstance(initial_capital, bool):
+        raise ValueError(f"initial_capital must be a non-negative finite number, got {initial_capital!r}")
+    initial_capital_val = float(initial_capital)
+    if not math.isfinite(initial_capital_val) or initial_capital_val < 0:
+        raise ValueError(f"initial_capital must be a non-negative finite number, got {initial_capital!r}")
+
     sorted_trades = sorted(trades, key=lambda x: x.get("closed_ts") or 0)
 
     normalized_trades: List[dict] = []
@@ -601,7 +604,9 @@ def calculate_quant_risk_metrics(
     net_realized_pnl = round(sum(float(t["net_pnl"]) for t in priced_trades), 4)
 
     total_unrealized_pnl = round(sum(float(p["unrealized_pnl"]) for p in active_positions), 4)
-    total_position_margin = round(sum(float(p["initial_margin"]) for p in active_positions), 4)
+    total_position_margin = round(
+        sum(float(p["initial_margin"]) for p in active_positions if p.get("initial_margin") is not None), 4
+    )
 
     if account_info is not None:
         if not isinstance(account_info, Mapping):
@@ -612,22 +617,15 @@ def calculate_quant_risk_metrics(
         available_margin = (
             float(raw_avail) if raw_avail is not None else max(0.0, total_equity - total_position_margin)
         )
-        if initial_capital_override is not None:
-            initial_capital = float(initial_capital_override)
-        elif custom_initial_capital is not None:
-            initial_capital = custom_initial_capital
-        elif net_transfers is not None and net_transfers > 0:
-            initial_capital = round(net_transfers, 2)
-        else:
-            initial_capital = default_initial_capital
     else:
-        initial_capital = float(initial_capital_override) if initial_capital_override is not None else default_initial_capital
-        wallet_balance = round(initial_capital + net_realized_pnl + total_funding_fee, 4)
+        wallet_balance = round(initial_capital_val + net_realized_pnl + total_funding_fee, 4)
         total_equity = round(wallet_balance + total_unrealized_pnl, 4)
         available_margin = round(max(0.0, total_equity - total_position_margin), 4)
 
     total_return_pct = (
-        round(((total_equity - initial_capital) / initial_capital * 100.0), 2) if initial_capital > 0 else 0.0
+        round(((total_equity - initial_capital_val) / initial_capital_val * 100.0), 2)
+        if initial_capital_val > 0
+        else 0.0
     )
 
     priced_count = len(priced_trades)
@@ -709,18 +707,18 @@ def calculate_quant_risk_metrics(
         )
     else:
         equity_curve, max_drawdown_usd, max_drawdown_pct = build_trade_equity_curve(
-            priced_trades, initial_capital, total_unrealized_pnl
+            priced_trades, initial_capital_val, total_unrealized_pnl
         )
 
     daily_pnl = (
         daily_pnl_override
         if daily_pnl_override is not None
-        else build_trade_daily_pnl(priced_trades, initial_capital)
+        else build_trade_daily_pnl(priced_trades, initial_capital_val)
     )
-    sharpe_ratio, sortino_ratio, sharpe_method = compute_risk_ratios(daily_pnl, initial_capital)
+    sharpe_ratio, sortino_ratio, sharpe_method = compute_risk_ratios(daily_pnl, initial_capital_val)
 
     summary = {
-        "initial_capital": round(initial_capital, 2),
+        "initial_capital": round(initial_capital_val, 2),
         "total_equity": round(total_equity, 2),
         "wallet_balance": round(wallet_balance, 2),
         "available_margin": round(available_margin, 2),

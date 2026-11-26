@@ -130,7 +130,7 @@ def sync_binance_positions(
         fetcher = load_drawings if load_drawings is not None else tve.get_layout_drawings
         try:
             raw_drawings = fetcher(layout_id)
-        except (BinanceAPIError, RuntimeError, TimeoutError, OSError) as e:
+        except (BinanceAPIError, tve.TradingViewError, TimeoutError, OSError) as e:
             logger.warning("同步拉取 TV 画线失败: %s", e)
         else:
             if not isinstance(raw_drawings, Mapping):

@@ -259,8 +259,6 @@ class AccountAnalyticsEngine:
                 default_leverage=self.default_leverage,
             )
             income_agg = aggregate_income_ledger(income_list, start_ms=cutoff)
-            net_transfers_val = float(income_agg["net_transfer_usdt"])
-            effective_transfers = net_transfers_val if net_transfers_val > 0 else None
             funding_fee_usdt = float(income_agg["funding_fee_usdt"])
             initial_equity = float(recording["initial_equity"])
             if not math.isfinite(initial_equity) or initial_equity < 0:
@@ -283,13 +281,10 @@ class AccountAnalyticsEngine:
                 trades=trade_history,
                 active_positions=active_positions,
                 account_info=account_info,
-                default_initial_capital=self.initial_capital if self.initial_capital is not None else 0.0,
-                custom_initial_capital=self.initial_capital,
-                net_transfers=effective_transfers,
+                initial_capital=initial_equity,
                 total_funding_fee=funding_fee_usdt,
                 daily_pnl_override=daily_pnl_db,
                 equity_curve_override=equity_curve_db,
-                initial_capital_override=initial_equity,
             )
             equity_now = float(account_info["totalMarginBalance"])
             capital_base = initial_equity + max(0.0, net_flow)
@@ -309,14 +304,14 @@ class AccountAnalyticsEngine:
                 for idx, t in enumerate(local_history)
             ]
             income_agg = aggregate_income_ledger(())
-            offline_initial_override: Optional[float] = None
             if self.initial_capital is not None:
+                offline_initial_capital = self.initial_capital
                 principal_source = "configured"
             else:
                 persisted_recording = db_store.load_recording(db_path)
                 if persisted_recording is not None:
-                    offline_initial_override = float(persisted_recording["initial_equity"])
-                    if not math.isfinite(offline_initial_override) or offline_initial_override <= 0:
+                    offline_initial_capital = float(persisted_recording["initial_equity"])
+                    if not math.isfinite(offline_initial_capital) or offline_initial_capital <= 0:
                         raise ValueError(
                             f"Invalid persisted recording.initial_equity: {persisted_recording['initial_equity']!r}"
                         )
@@ -329,9 +324,7 @@ class AccountAnalyticsEngine:
                 trades=trade_history,
                 active_positions=active_positions,
                 account_info=None,
-                default_initial_capital=self.initial_capital if self.initial_capital is not None else 0.0,
-                custom_initial_capital=self.initial_capital,
-                initial_capital_override=offline_initial_override,
+                initial_capital=offline_initial_capital,
             )
 
         income_breakdown = build_income_breakdown(

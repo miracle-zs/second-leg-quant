@@ -630,26 +630,21 @@ class BinanceFuturesClient:
                 mark_p = _finite_float(p["markPrice"])
                 pnl = _finite_float(p["unRealizedProfit"])
                 leverage = _strict_int(p["leverage"])
-                if "positionSide" in p:
-                    raw_ps = p["positionSide"]
-                    if not isinstance(raw_ps, str) or not raw_ps.strip():
-                        raise ValueError(f"Invalid positionSide: {raw_ps!r}")
-                    raw_side = raw_ps.strip().upper()
-                    if raw_side not in ("BOTH", "LONG", "SHORT"):
-                        raise ValueError(f"Unexpected positionSide: {raw_ps!r}")
-                else:
-                    raw_side = "BOTH"
+                raw_ps = p["positionSide"]
+                if not isinstance(raw_ps, str) or not raw_ps.strip():
+                    raise ValueError(f"Invalid positionSide: {raw_ps!r}")
+                raw_side = raw_ps.strip().upper()
+                if raw_side not in ("BOTH", "LONG", "SHORT"):
+                    raise ValueError(f"Unexpected positionSide: {raw_ps!r}")
                 side = raw_side if raw_side in ("LONG", "SHORT") else ("LONG" if amt > 0 else "SHORT")
-                if "updateTime" in p:
-                    update_time: Optional[int] = _strict_int(p["updateTime"])
-                    if update_time < 0:
-                        raise ValueError(f"Negative updateTime: {update_time}")
-                else:
-                    update_time = None
-                if "notional" in p:
-                    notional = abs(_finite_float(p["notional"]))
-                else:
-                    notional = abs(amt * mark_p)
+                update_time = _strict_int(p["updateTime"])
+                if update_time < 0:
+                    raise ValueError(f"Negative updateTime: {update_time}")
+                notional = abs(_finite_float(p["notional"]))
+                raw_liq = _finite_float(p["liquidationPrice"])
+                if raw_liq < 0:
+                    raise ValueError(f"Negative liquidationPrice: {raw_liq}")
+                liquidation_price: Optional[float] = raw_liq if raw_liq > 0 else None
             except (KeyError, TypeError, ValueError) as e:
                 raise BinanceAPIError(
                     f"Malformed position payload in {POSITION_RISK_ENDPOINT}: {p}",
@@ -665,6 +660,7 @@ class BinanceFuturesClient:
                 "entry_price": entry_p,
                 "mark_price": mark_p,
                 "unrealized_pnl": pnl,
+                "liquidation_price": liquidation_price,
                 "leverage": leverage,
                 "position_side": raw_side,
                 "update_time": update_time,

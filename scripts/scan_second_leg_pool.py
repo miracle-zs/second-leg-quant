@@ -192,15 +192,14 @@ def _parse_detected_datetime(
     if sym not in active_res_symbols or sym not in res_history:
         return None
     res_hist_item = res_history[sym]
-    if not isinstance(res_hist_item, dict) or not isinstance(res_hist_item.get("first_detected"), str):
-        print(f"⚠️ 共振状态历史缺少有效 first_detected ({sym}): {res_hist_item!r}，将使用当前时间")
-        return None
-    candidate_detected = res_hist_item["first_detected"].strip()
-    try:
-        return datetime.datetime.strptime(candidate_detected, "%Y-%m-%d %H:%M:%S")
-    except ValueError as exc:
-        print(f"⚠️ 共振状态 first_detected 格式非法 ({sym}={candidate_detected!r}): {exc}，将使用当前时间")
-        return None
+    if not isinstance(res_hist_item, dict):
+        raise ValueError(
+            f"Corrupt resonance_state history entry for {sym}: expected dict, got {type(res_hist_item).__name__}"
+        )
+    raw_detected = res_hist_item.get("first_detected")
+    if not isinstance(raw_detected, str) or not raw_detected.strip():
+        raise ValueError(f"Corrupt resonance_state history entry for {sym}: missing valid first_detected ({raw_detected!r})")
+    return datetime.datetime.strptime(raw_detected.strip(), "%Y-%m-%d %H:%M:%S")
 
 
 def scan_pool(database: Optional[Path] = None) -> list[_CandidateRecord]:
@@ -465,7 +464,7 @@ def scan_pool(database: Optional[Path] = None) -> list[_CandidateRecord]:
                 try:
                     res = fut.result()
                     kline_results[sym] = res[1:]
-                except (HttpError, BinanceAPIError, RuntimeError, ValueError, TypeError, KeyError, IndexError) as exc:
+                except (HttpError, BinanceAPIError) as exc:
                     kline_errors[sym] = str(exc)
 
         if kline_errors:
@@ -477,17 +476,15 @@ def scan_pool(database: Optional[Path] = None) -> list[_CandidateRecord]:
 
     res_state = db_store.load_resonance_state(db_path)
     raw_history = res_state.get("history", {})
-    if isinstance(raw_history, dict):
-        res_history = raw_history
-    else:
-        print(f"⚠️ resonance_state history 格式异常 ({type(raw_history).__name__})，已忽略")
-        res_history = {}
+    if not isinstance(raw_history, dict):
+        raise ValueError(f"Corrupt resonance_state.history: expected dict, got {type(raw_history).__name__}")
+    res_history = raw_history
     raw_active = res_state.get("active_resonance_symbols", [])
-    if isinstance(raw_active, list):
-        active_res_symbols = {str(s) for s in raw_active}
-    else:
-        print(f"⚠️ resonance_state active_resonance_symbols 格式异常 ({type(raw_active).__name__})，已忽略")
-        active_res_symbols = set()
+    if not isinstance(raw_active, list):
+        raise ValueError(
+            f"Corrupt resonance_state.active_resonance_symbols: expected list, got {type(raw_active).__name__}"
+        )
+    active_res_symbols = {str(s) for s in raw_active}
 
     verified_candidates: list[_CandidateRecord] = []
     for base_c in base_candidates:

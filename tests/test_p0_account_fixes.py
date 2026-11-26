@@ -16,6 +16,7 @@ Regression test suite for P0/P1 account pipeline fixes:
 
 from contextlib import closing
 import gzip
+import http.client
 import io
 import json
 import sqlite3
@@ -715,6 +716,7 @@ class TestAccountFailFastRegressionFixes(unittest.TestCase):
         self.assertIsNone(no_lev_pos["leverage"])
         self.assertIsNone(no_lev_pos["roe_pct"])
         self.assertIsNone(no_lev_pos["liquidation_price"])
+        self.assertIsNone(no_lev_pos["initial_margin"])
 
     def test_reconstruct_binance_trades_fails_fast_on_malformed_income_fills_or_local_history(self):
         # Missing income amount or incomeType or time fails fast
@@ -1009,7 +1011,7 @@ class TestLedgerBugfixRegressions(unittest.TestCase):
             {"symbol": "A", "net_pnl": -50.0, "realized_pnl": -50.0, "fee": 0.0, "closed_at": "2026-11-20 10:00:00", "close_reason": "SL"},
             {"symbol": "B", "net_pnl": -20.0, "realized_pnl": -20.0, "fee": 0.0, "closed_at": "2026-11-20 11:00:00", "close_reason": "SL"},
         ]
-        loss_summary, _, _ = qm.calculate_quant_risk_metrics(all_losses, [], None)
+        loss_summary, _, _ = qm.calculate_quant_risk_metrics(all_losses, [], None, initial_capital=1000.0)
         self.assertEqual(loss_summary["largest_win_usd"], 0.0)
         self.assertEqual(loss_summary["largest_loss_usd"], -50.0)
 
@@ -1017,7 +1019,7 @@ class TestLedgerBugfixRegressions(unittest.TestCase):
             {"symbol": "A", "net_pnl": 20.0, "realized_pnl": 20.0, "fee": 0.0, "closed_at": "2026-11-20 10:00:00", "close_reason": "TP"},
             {"symbol": "B", "net_pnl": 80.0, "realized_pnl": 80.0, "fee": 0.0, "closed_at": "2026-11-20 11:00:00", "close_reason": "TP"},
         ]
-        win_summary, _, _ = qm.calculate_quant_risk_metrics(all_wins, [], None)
+        win_summary, _, _ = qm.calculate_quant_risk_metrics(all_wins, [], None, initial_capital=1000.0)
         self.assertEqual(win_summary["largest_win_usd"], 80.0)
         self.assertEqual(win_summary["largest_loss_usd"], 0.0)
 
@@ -1089,7 +1091,7 @@ class TestLedgerBugfixRegressions(unittest.TestCase):
         self.assertEqual(flow4, -400.0)
         self.assertEqual(eq4[1]["bucket_max_dd_usd"], 150.0)
         self.assertEqual(eq4[1]["drawdown_usd"], 150.0)
-        summary, _, _ = qm.calculate_quant_risk_metrics([], [], None, equity_curve_override=eq4)
+        summary, _, _ = qm.calculate_quant_risk_metrics([], [], None, initial_capital=1000.0, equity_curve_override=eq4)
         self.assertEqual(summary["max_drawdown_usd"], 150.0)
 
         # 2) Delayed deposit: +500 arrives at +20s before income syncs it, inflating peak to 1500,
@@ -1108,6 +1110,26 @@ class TestLedgerBugfixRegressions(unittest.TestCase):
         self.assertEqual(dep3[1]["peak_adjusted_equity"], 1000.0)
         self.assertEqual(dep3[1]["drawdown_usd"], 0.0)
         self.assertEqual(dep3[-1]["drawdown_usd"], 0.0)
+
+    def test_api_config_returns_env_tradingview_layout_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cfg.sqlite3"
+            server = api.DashboardHTTPServer(("127.0.0.1", 0), api.create_handler(db_path))
+            port = server.server_address[1]
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            try:
+                with patch.dict("os.environ", {"TRADINGVIEW_LAYOUT_ID": "CustomLayout99"}):
+                    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                    conn.request("GET", "/api/config")
+                    resp = conn.getresponse()
+                    body = resp.read().decode("utf-8")
+                    conn.close()
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(json.loads(body), {"tradingview_layout_id": "CustomLayout99"})
+            finally:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":

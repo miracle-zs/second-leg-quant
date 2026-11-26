@@ -6,6 +6,7 @@
     formatCryptoPrice: commonFormatCryptoPrice,
     formatSignedPct,
     getTvUrl,
+    ensureConfig,
     fetchJsonWithTimeout,
   } = Common;
 
@@ -1091,11 +1092,14 @@
     try {
       const headers = {};
       if (lastEtag) headers['If-None-Match'] = lastEtag;
-      const { notModified, etag, data, text: snapshot } = await fetchJsonWithTimeout(
-        'api/account',
-        { cache: 'no-store', headers, signal: controller.signal },
-        12000
-      );
+      const [, { notModified, etag, data, text: snapshot }] = await Promise.all([
+        ensureConfig(),
+        fetchJsonWithTimeout(
+          'api/account',
+          { cache: 'no-store', headers, signal: controller.signal },
+          12000
+        ),
+      ]);
       if (loadId !== activeLoadId) return;
       lastSuccessfulLoadAt = Date.now();
       if (notModified) {

@@ -116,7 +116,7 @@ class TestQuantMetricsFixes(unittest.TestCase):
         )
         self.assertEqual(len(eq3), 2)
         self.assertEqual(eq3[-1]["drawdown_usd"], 0.0)
-        summary, _, _ = qm.calculate_quant_risk_metrics([], [], None, equity_curve_override=eq3)
+        summary, _, _ = qm.calculate_quant_risk_metrics([], [], None, initial_capital=1000.0, equity_curve_override=eq3)
         self.assertEqual(summary["max_drawdown_usd"], 200.0)
 
     def test_duration_seconds_none_with_entry_time_and_invalid_closed_at(self) -> None:
@@ -134,7 +134,7 @@ class TestQuantMetricsFixes(unittest.TestCase):
                 "close_reason": "TP",
             }
         ]
-        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None)
+        summary, _, _ = qm.calculate_quant_risk_metrics(trades, [], None, initial_capital=1000.0)
         self.assertEqual(summary["avg_hold_duration_seconds"], 0)
         self.assertEqual(summary["avg_hold_duration_str"], "--")
 
@@ -535,13 +535,20 @@ class TestCrashEarlyNoFallbackRegressions(unittest.TestCase):
         with self.assertRaises(KeyError):
             qm.build_db_equity_curve(recording, 1_800_000_000_000, None, {"totalMarginBalance": "1000"}, [])
 
-        # calculate_quant_risk_metrics: empty {} account_info & missing drawdown fields fail fast
+        # calculate_quant_risk_metrics: explicit initial_capital required, empty {} account_info & missing drawdown fields fail fast
+        with self.assertRaises(TypeError):
+            qm.calculate_quant_risk_metrics([], [], None)  # type: ignore[call-arg]
+        for bad_cap in (-10.0, float("nan"), True):
+            with self.assertRaises(ValueError):
+                qm.calculate_quant_risk_metrics([], [], None, initial_capital=bad_cap)
         with self.assertRaises(KeyError):
-            qm.calculate_quant_risk_metrics([], [], {})
+            qm.calculate_quant_risk_metrics([], [], {}, initial_capital=1000.0)
         with self.assertRaises(KeyError):
-            qm.calculate_quant_risk_metrics([], [], {"totalWalletBalance": "1000"})
+            qm.calculate_quant_risk_metrics([], [], {"totalWalletBalance": "1000"}, initial_capital=1000.0)
         with self.assertRaises(KeyError):
-            qm.calculate_quant_risk_metrics([], [], None, equity_curve_override=[{"equity": 1000.0}])
+            qm.calculate_quant_risk_metrics(
+                [], [], None, initial_capital=1000.0, equity_curve_override=[{"equity": 1000.0}]
+            )
 
         # compute_risk_ratios: missing/empty date raises ValueError
         with self.assertRaises((KeyError, ValueError)):
@@ -611,28 +618,39 @@ class TestCrashEarlyNoFallbackRegressions(unittest.TestCase):
             "entryPrice": "90000.0",
             "markPrice": "91000.0",
             "unRealizedProfit": "1000.0",
+            "liquidationPrice": "81000.0",
             "leverage": "10",
+            "positionSide": "BOTH",
+            "updateTime": 1_800_000_000_000,
+            "notional": "91000.0",
         }
-        # Omitted updateTime yields None (not 0)
         with patch.object(client, "get_account_positions", return_value=[base_pos]):
             pos = client.get_active_positions()[0]
-            self.assertIsNone(pos["update_time"])
+            self.assertEqual(pos["update_time"], 1_800_000_000_000)
             self.assertAlmostEqual(pos["notional"], 91000.0)
+            self.assertAlmostEqual(pos["liquidation_price"], 81000.0)
 
-        # Explicit malformed optional-when-omitted fields or NaN/bool fail fast
-        for overrides in (
-            {"updateTime": None},
-            {"updateTime": "bad"},
-            {"updateTime": True},
-            {"notional": None},
-            {"notional": "nan"},
-            {"positionSide": None},
-            {"positionSide": "UNKNOWN"},
-            {"markPrice": "nan"},
-            {"leverage": True},
+        with patch.object(client, "get_account_positions", return_value=[{**base_pos, "liquidationPrice": "0"}]):
+            self.assertIsNone(client.get_active_positions()[0]["liquidation_price"])
+
+        # Missing required Binance fields or malformed values fail fast
+        for bad_pos in (
+            {k: v for k, v in base_pos.items() if k != "updateTime"},
+            {k: v for k, v in base_pos.items() if k != "notional"},
+            {k: v for k, v in base_pos.items() if k != "positionSide"},
+            {k: v for k, v in base_pos.items() if k != "liquidationPrice"},
+            {**base_pos, "updateTime": None},
+            {**base_pos, "updateTime": "bad"},
+            {**base_pos, "updateTime": True},
+            {**base_pos, "notional": None},
+            {**base_pos, "notional": "nan"},
+            {**base_pos, "liquidationPrice": "-10"},
+            {**base_pos, "positionSide": None},
+            {**base_pos, "positionSide": "UNKNOWN"},
+            {**base_pos, "markPrice": "nan"},
+            {**base_pos, "leverage": True},
         ):
-            bad_pos = {**base_pos, **overrides}
-            with self.subTest(overrides=overrides):
+            with self.subTest(bad_pos=bad_pos):
                 with patch.object(client, "get_account_positions", return_value=[bad_pos]):
                     with self.assertRaises(bc.BinanceAPIError):
                         client.get_active_positions()

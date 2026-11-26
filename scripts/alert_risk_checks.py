@@ -554,7 +554,7 @@ def check_feature_2_breakout(
     )
     try:
         drawings_map = fetch_drawings_fn(layout_id)
-    except (BinanceAPIError, RuntimeError, TimeoutError, urllib.error.URLError) as e:
+    except (BinanceAPIError, tve.TradingViewError, TimeoutError, OSError) as e:
         logger.warning(f"获取 TV 布局画线异常，跳过本轮突破扫描: {e}")
         _flush_retried_breakouts(state_store, retried_succeeded)
         if status is not None:
@@ -762,7 +762,7 @@ def check_feature_3_stop_loss(
             )
             try:
                 drawings_map = fetch_drawings_fn(layout_id)
-            except (BinanceAPIError, RuntimeError, TimeoutError, urllib.error.URLError) as e:
+            except (BinanceAPIError, tve.TradingViewError, TimeoutError, OSError) as e:
                 logger.warning(f"获取 TV 画线失败，仅校验已缓存趋势线的持仓: {e}")
                 if status is not None:
                     status["had_error"] = True
