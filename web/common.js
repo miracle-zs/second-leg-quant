@@ -145,7 +145,7 @@
     if (!headers || typeof headers.forEach !== 'function') return;
     headers.forEach((th) => {
       if (!th || typeof th.getAttribute !== 'function') return;
-      const col = th.getAttribute('data-sort');
+      const col = (th.dataset && th.dataset.sort) || (typeof th.getAttribute === 'function' ? th.getAttribute('data-sort') : null);
       if (activeColumn && col === activeColumn) {
         if (typeof th.setAttribute === 'function') {
           th.setAttribute('aria-sort', sortAsc ? 'ascending' : 'descending');
