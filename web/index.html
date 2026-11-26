@@ -116,7 +116,7 @@
 
       <!-- Signature Swiss Zone Schedule Strip (Connected 1px Hairline Matrix) -->
       <section aria-label="交易机会区分区时刻表" class="ledger-grid grid grid-cols-2 lg:grid-cols-5 text-xs">
-        <div data-zone="resonance" role="button" tabindex="0" aria-pressed="true" class="kpi-card card-resonance active px-3 sm:px-3.5 pt-2.5 pb-2 flex flex-col justify-between gap-2">
+        <div data-zone="resonance" role="button" tabindex="0" aria-pressed="true" class="kpi-card card-resonance active px-3 sm:px-3.5 py-2 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
             <span class="kpi-zone-title text-xs truncate">顺势高换手共振区</span>
             <div class="flex items-center gap-1.5 shrink-0">
@@ -134,7 +134,7 @@
           </div>
         </div>
 
-        <div data-zone="neg_fr" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-neg-fr px-3 sm:px-3.5 pt-2.5 pb-2 flex flex-col justify-between gap-2">
+        <div data-zone="neg_fr" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-neg-fr px-3 sm:px-3.5 py-2 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
             <span class="kpi-zone-title text-xs truncate">负费率贴水区</span>
             <div class="flex items-center gap-1.5 shrink-0">
@@ -151,7 +151,7 @@
           </div>
         </div>
 
-        <div data-zone="high_tr" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-high-tr px-3 sm:px-3.5 pt-2.5 pb-2 flex flex-col justify-between gap-2">
+        <div data-zone="high_tr" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-high-tr px-3 sm:px-3.5 py-2 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
             <span class="kpi-zone-title text-xs truncate">巨量高换手区</span>
             <div class="flex items-center gap-1.5 shrink-0">
@@ -168,7 +168,7 @@
           </div>
         </div>
 
-        <div data-zone="ema_bull" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-ema-bull px-3 sm:px-3.5 pt-2.5 pb-2 flex flex-col justify-between gap-2">
+        <div data-zone="ema_bull" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-ema-bull px-3 sm:px-3.5 py-2 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
             <span class="kpi-zone-title text-xs truncate">1h EMA 顺势区</span>
             <div class="flex items-center gap-1.5 shrink-0">
@@ -185,7 +185,7 @@
           </div>
         </div>
 
-        <div data-zone="all" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-all px-3 sm:px-3.5 pt-2.5 pb-2 flex flex-col justify-between gap-2 col-span-2 lg:col-span-1">
+        <div data-zone="all" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-all px-3 sm:px-3.5 py-2 flex flex-col justify-between gap-2 col-span-2 lg:col-span-1">
           <div class="flex items-center justify-between gap-1.5">
             <span class="kpi-zone-title text-xs truncate">全量候选底池</span>
             <div class="flex items-center gap-1.5 shrink-0">
@@ -320,7 +320,7 @@
 
   <!-- Native Top-Layer Interactive 15m/1h Candlestick & TV Chart Dialog -->
   <dialog id="chart-modal" tabindex="-1" closedby="any" aria-labelledby="modal-chart-title" class="chart-modal-dialog bg-[#10151d] border border-[#324055] rounded-[6px] w-[calc(100vw-1rem)] max-w-5xl h-[85vh] max-h-[740px] flex-col overflow-hidden">
-    <div id="modal-header-toolbar" class="px-2.5 sm:px-3 py-1.5 sm:py-2 bg-[#0d1219] border-b border-[#222b38] flex flex-wrap items-center justify-between gap-1 sm:gap-1.5 shrink-0">
+    <div id="modal-header-toolbar" class="px-2.5 sm:px-3 py-1.5 bg-[#0d1219] border-b border-[#222b38] flex flex-wrap items-center justify-between gap-1 sm:gap-2 shrink-0">
       <div class="flex items-center gap-1 sm:gap-2 flex-wrap">
         <span id="modal-nav-group" hidden class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13]">
           <button type="button" id="modal-prev-btn" class="w-8 h-8 sm:w-6 sm:h-6 hover:bg-[#192231] text-[#9fb0c5] hover:text-[#f1f5f9] inline-flex items-center justify-center transition-colors" title="上一个标的 (←)" aria-label="上一个标的">
@@ -335,20 +335,20 @@
         <span id="modal-chart-price" class="font-mono tabular-nums text-[#38d99f] font-bold text-xs sm:text-[13px]">--</span>
 
         <span role="group" aria-label="K线时间周期" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-mono">
-          <button type="button" aria-pressed="true" class="modal-interval-btn px-1 sm:px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-interval="15m">15m</button>
-          <button type="button" aria-pressed="false" class="modal-interval-btn px-1 sm:px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1h">1h</button>
-          <button type="button" aria-pressed="false" class="modal-interval-btn px-1 sm:px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="4h">4h</button>
-          <button type="button" aria-pressed="false" class="modal-interval-btn px-1 sm:px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1d">1D</button>
+          <button type="button" aria-pressed="true" class="modal-interval-btn px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-interval="15m">15m</button>
+          <button type="button" aria-pressed="false" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1h">1h</button>
+          <button type="button" aria-pressed="false" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="4h">4h</button>
+          <button type="button" aria-pressed="false" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1d">1D</button>
         </span>
 
         <span id="modal-bars-group" role="group" aria-label="显示K线根数" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-sans tabular-nums" title="显示 K 线根数">
-          <button type="button" aria-pressed="false" class="modal-bars-btn px-1 sm:px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="60">60根</button>
-          <button type="button" aria-pressed="true" class="modal-bars-btn px-1 sm:px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-bars="120">120根</button>
-          <button type="button" aria-pressed="false" class="modal-bars-btn px-1 sm:px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="168">168根</button>
+          <button type="button" aria-pressed="false" class="modal-bars-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="60">60根</button>
+          <button type="button" aria-pressed="true" class="modal-bars-btn px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-bars="120">120根</button>
+          <button type="button" aria-pressed="false" class="modal-bars-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="168">168根</button>
         </span>
       </div>
 
-      <div class="flex items-center gap-1 sm:gap-1.5 ml-auto">
+      <div class="flex items-center gap-1 sm:gap-2 ml-auto">
         <span role="group" aria-label="图表引擎切换" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-sans">
           <button type="button" id="btn-chart-engine-native" aria-pressed="true" class="px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold">极速K线</button>
           <button type="button" id="btn-chart-engine-tv" aria-pressed="false" class="px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]">TV内嵌</button>
@@ -383,7 +383,7 @@
       </div>
       <div id="modal-tv-view" class="w-full h-full hidden relative bg-[#0b0e13]">
         <iframe id="modal-tv-iframe" class="w-full h-full border-0" title="TradingView 实时图表" referrerpolicy="no-referrer" allowfullscreen></iframe>
-        <div id="modal-tv-loading" class="hidden absolute inset-0 bg-[#0b0e13]/85 flex flex-col items-center justify-center gap-2 text-[#9fb0c5] text-xs font-sans font-medium z-20">
+        <div id="modal-tv-loading" class="hidden absolute inset-0 bg-[#0b0e13]/80 flex flex-col items-center justify-center gap-2 text-[#9fb0c5] text-xs font-sans font-medium z-20">
           <span>正在加载 TradingView 图表...</span>
         </div>
         <div id="modal-tv-fallback" class="hidden absolute inset-0 bg-[#0b0e13]/90 flex flex-col items-center justify-center gap-3 text-xs font-sans z-30 px-4 text-center">

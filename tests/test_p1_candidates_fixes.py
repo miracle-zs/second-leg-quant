@@ -75,6 +75,12 @@ class TestCandidatesAndModalP1Fixes(unittest.TestCase):
         self.assertIn("price-flash-down", cand_js)
         self.assertIn("touchend", modal_js)
 
+        # Ensure no uncompiled Tailwind utility classes are introduced
+        for bad_cls in ("pt-2.5", "pb-2", "bg-[#0b0e13]/85", "sm:py-2", "sm:gap-1.5", "sm:px-1.5"):
+            self.assertNotIn(bad_cls, index_html)
+        for bad_cls in ("min-w-0", "mt-3"):
+            self.assertNotIn(bad_cls, cand_js)
+
     def test_runtime_p1_fixes_in_node_vm(self):
         node_bin = shutil.which("node")
         self.assertIsNotNone(node_bin, "node is required to verify frontend P1 runtime behavior")

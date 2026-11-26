@@ -508,7 +508,7 @@
         <td colspan="11" class="py-14 text-center text-[#9fb0c5] font-sans">
           <div id="empty-state-title" class="text-sm font-semibold text-[#f1f5f9]">当前筛选下无匹配合约</div>
           <div id="empty-state-hint" class="text-xs text-[#7f91a8] mt-1">按 <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">Esc</kbd> 清空搜索词或点击下方按钮重置筛选</div>
-          <button type="button" id="btn-empty-reset-filter" class="mt-3 px-3 py-1.5 bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] rounded-[4px] border border-[#283446] hover:border-[#3b4d66] text-xs font-medium transition-colors">重置筛选</button>
+          <button type="button" id="btn-empty-reset-filter" class="retry-candidates-btn px-3 py-1.5 bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] rounded-[4px] border border-[#283446] hover:border-[#3b4d66] text-xs font-medium transition-colors">重置筛选</button>
         </td>
       </tr>`;
 
@@ -564,7 +564,7 @@
       return `<tr class="${getRowClass(c)}" data-sym="${safeSym}" data-tv-sym="${safeTvSym}">
         <td class="py-2.5 px-2 text-center text-[#7f91a8] font-mono tabular-nums text-[11px] sym-rank" style="position: sticky; inset-inline-start: 0; z-index: 5; width: 2.25rem; min-width: 2.25rem; max-width: 2.25rem; background-color: ${rankBg};">${idx + 1}</td>
         <th scope="row" class="py-2 px-3 font-normal sticky-col" style="inset-inline-start: 2.25rem; min-width: 112px; max-width: clamp(112px, 34vw, 190px);">
-          <div class="flex items-center gap-1 min-w-0">
+          <div class="flex items-center gap-1" style="min-width: 0;">
             <button type="button" class="btn-preview-kline row-symbol-btn" style="max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" data-sym="${safeSym}" data-tv-sym="${safeTvSym}" title="预览 ${safeSym} K线图表">${formatTickerDisplayHtml(sym)}</button>
             <span class="${resBadge.className}"${resBadge.title ? ` title="${resBadge.title}"` : ''}>${resBadge.text}</span>
           </div>
