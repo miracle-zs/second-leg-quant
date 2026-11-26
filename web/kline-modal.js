@@ -5,7 +5,6 @@
   const {
     TV_LAYOUT_ID,
     TV_INTERVAL_MAP,
-    escapeHtml,
     isFiniteNum,
     formatCryptoPrice,
     getTvUrl,
@@ -641,7 +640,6 @@
       if (e.cancelable) e.preventDefault();
       updateModalHoverAtClientX(e.touches[0].clientX);
     }, { passive: false });
-    modalNativeView.addEventListener('touchend', clearModalHover, { passive: true });
     modalNativeView.addEventListener('touchcancel', clearModalHover, { passive: true });
   }
 
