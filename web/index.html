@@ -235,6 +235,7 @@
               <tr>
                 <th scope="col" class="py-2 px-2 w-9 text-center">#</th>
                 <th scope="col" class="py-2 px-3 min-w-[156px] sticky-col">合约标的</th>
+                <th scope="col" class="py-2 px-2.5 whitespace-nowrap">快捷操作</th>
                 <th scope="col" class="sortable num-col min-w-[116px] text-right" data-sort="price" data-type="number">
                   <button type="button" class="sort-btn" commandfor="candidates-table" command="--sort">
                     <span>最新价 / 24h分位</span>
@@ -287,14 +288,14 @@
             </thead>
             <tbody id="candidate-table-body" class="divide-y divide-[#1c2532] text-[#f1f5f9]">
               <tr>
-                <td colspan="10" class="py-16 text-center text-[#9fb0c5] font-sans text-xs">正在同步候选币池快照...</td>
+                <td colspan="11" class="py-16 text-center text-[#9fb0c5] font-sans text-xs">正在同步候选币池快照...</td>
               </tr>
             </tbody>
           </table>
         </div>
 
         <footer class="flex flex-col sm:flex-row items-center justify-between text-[11px] text-[#7f91a8] px-3.5 py-2 bg-[#0e131b] border-t border-[#222b38] gap-1.5">
-          <span>点击行预览 K 线 · <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">Esc</kbd> 清空筛选</span>
+          <span>点击行或按 Enter 预览 K 线 · <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">Esc</kbd> 清空筛选</span>
           <span class="font-mono">CMC Pro 流通市值 &lt; $30M · 币安 USDⓈ-M 永续合约</span>
         </footer>
       </section>
@@ -365,7 +366,7 @@
         </div>
       </div>
       <div id="modal-tv-view" class="w-full h-full hidden relative bg-[#0b0e13]">
-        <iframe id="modal-tv-iframe" class="w-full h-full border-0" title="TradingView 实时图表" allowtransparency="true" scrolling="no" allowfullscreen></iframe>
+        <iframe id="modal-tv-iframe" class="w-full h-full border-0" title="TradingView 实时图表" referrerpolicy="no-referrer" allowfullscreen></iframe>
       </div>
     </div>
   </dialog>

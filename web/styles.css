@@ -336,6 +336,33 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
   background-color: rgba(50, 64, 85, 0.45);
 }
 
+.row-symbol-btn {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border-radius: 3px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  transition: background-color 120ms ease;
+}
+
+.row-symbol-btn:hover,
+#candidates-table tbody tr:hover .row-symbol-btn {
+  background-color: rgba(59, 130, 246, 0.12);
+}
+
+.retry-candidates-btn {
+  margin-top: 0.75rem;
+}
+
+#modal-tv-iframe {
+  background-color: transparent;
+  overflow: hidden;
+}
+
 /* Consistent Native Select Styling (rely on native dark-mode indicator to avoid double arrows in modern Chromium) */
 .ledger-select {
   color-scheme: dark;

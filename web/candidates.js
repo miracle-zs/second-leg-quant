@@ -423,7 +423,7 @@
 
     const emptyRowHtml = `
       <tr id="empty-search-row" class="hidden">
-        <td colspan="10" class="py-14 text-center text-[#9fb0c5] font-sans">
+        <td colspan="11" class="py-14 text-center text-[#9fb0c5] font-sans">
           <div class="text-sm font-semibold text-[#f1f5f9]">当前筛选下无匹配合约</div>
           <div class="text-xs text-[#7f91a8] mt-1">按 <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">Esc</kbd> 清空搜索词或点击重置返回全池</div>
         </td>
@@ -478,13 +478,15 @@
       return `<tr class="${getRowClass(c)}" data-sym="${safeSym}" data-tv-sym="${safeTvSym}">
         <td class="py-2.5 px-2 text-center text-[#7f91a8] font-mono tabular-nums text-[11px] sym-rank">${idx + 1}</td>
         <th scope="row" class="py-2 px-3 font-normal whitespace-nowrap sticky-col">
-          <div class="flex items-baseline gap-0.5">${formatTickerDisplayHtml(sym)}</div>
-          <div class="flex items-center gap-1 mt-1 -ml-1 font-sans">
+          <button type="button" class="btn-preview-kline row-symbol-btn" data-sym="${safeSym}" data-tv-sym="${safeTvSym}" title="预览 ${safeSym} K线图表">${formatTickerDisplayHtml(sym)}</button>
+        </th>
+        <td class="py-2 px-2.5 whitespace-nowrap font-sans">
+          <div class="flex items-center gap-1">
             <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="在 TradingView 打开 15m 专属画线布局"><span>TV</span>${EXT_ARROW_SVG}</a>
             <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="打开币安合约盘口"><span>币安</span>${EXT_ARROW_SVG}</a>
             <button type="button" class="btn-copy-sym row-micro-btn" data-copy="${safeTvSym}" data-label="复制" title="复制 TV 代码 (${safeTvSym})">复制</button>
           </div>
-        </th>
+        </td>
         <td class="py-2.5 px-2.5 whitespace-nowrap text-right">
           <div class="text-[#f1f5f9] font-mono tabular-nums font-semibold sym-price">${pStr}</div>
           <div class="sym-pos-box w-[76px] ml-auto mt-1 flex items-center justify-end gap-1.5 text-[10px]" title="${posTitle}">
@@ -761,17 +763,27 @@
     timerEl.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   }
 
+  function setSyncButtonBusy(busy) {
+    if (!syncBtn) return;
+    if (busy) {
+      syncBtn.setAttribute('aria-busy', 'true');
+      syncBtn.classList.add('opacity-75');
+    } else {
+      syncBtn.removeAttribute('aria-busy');
+      syncBtn.classList.remove('opacity-75');
+    }
+  }
+
   async function syncBinancePool() {
-    if (!candidatesState.length) return;
+    if (!candidatesState.length) {
+      return loadCandidateSnapshot({ force: true });
+    }
     if (pollController) pollController.abort();
     pollController = new AbortController();
     const fetchId = ++activeFetchId;
     const signal = pollController.signal;
 
-    if (syncBtn) {
-      syncBtn.setAttribute('aria-busy', 'true');
-      syncBtn.classList.add('opacity-75');
-    }
+    setSyncButtonBusy(true);
 
     try {
       const [tickerRes, premiumRes] = await Promise.all([
@@ -903,9 +915,8 @@
         }
       }
     } finally {
-      if (fetchId === activeFetchId && syncBtn) {
-        syncBtn.removeAttribute('aria-busy');
-        syncBtn.classList.remove('opacity-75');
+      if (fetchId === activeFetchId) {
+        setSyncButtonBusy(false);
       }
     }
   }
@@ -916,6 +927,18 @@
     const fetchId = ++activeSnapshotFetchId;
     const headers = {};
     if (!force && lastEtag) headers['If-None-Match'] = lastEtag;
+
+    const existingRetryBtn = typeof document !== 'undefined' && typeof document.getElementById === 'function'
+      ? document.getElementById('btn-retry-candidates')
+      : null;
+    const retryHadFocus = Boolean(existingRetryBtn && typeof document !== 'undefined' && document.activeElement === existingRetryBtn);
+    if (existingRetryBtn) {
+      existingRetryBtn.disabled = true;
+      existingRetryBtn.setAttribute('aria-busy', 'true');
+      existingRetryBtn.textContent = '正在重试...';
+    }
+    setSyncButtonBusy(true);
+    let handedOffToSync = false;
 
     try {
       const [, { notModified, etag, data: payload }] = await Promise.all([
@@ -981,6 +1004,7 @@
       updateKpiCards(candidatesState);
       if (sortColumn) applySortOrder();
       applyFilter();
+      handedOffToSync = true;
       syncBinancePool();
     } catch (err) {
       if (err && err.name === 'AbortError') return;
@@ -991,7 +1015,19 @@
         poolUpdatedEl.className = 'px-2 py-0.5 font-mono text-[#f8717e] bg-[#f25565]/10 inline-flex';
       }
       if (!candidatesState.length && tableBody) {
-        tableBody.innerHTML = `<tr><td colspan="10" class="py-14 text-center text-[#f8717e] font-sans text-xs">候选币池读取失败 (${escapeHtml(err.message)})，请检查后台 API 服务是否在线。</td></tr>`;
+        tableBody.innerHTML = `<tr><td colspan="11" class="py-14 text-center font-sans text-xs"><div class="text-[#f8717e]">候选币池读取失败 (${escapeHtml(err.message)})，请检查后台 API 服务是否在线。</div><button type="button" id="btn-retry-candidates" class="retry-candidates-btn px-3 py-1.5 bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] rounded-[4px] border border-[#324055] text-xs font-medium inline-flex items-center transition-colors">立即重试</button></td></tr>`;
+        if (retryHadFocus) {
+          const nextRetryBtn = typeof document !== 'undefined' && typeof document.getElementById === 'function'
+            ? document.getElementById('btn-retry-candidates')
+            : null;
+          if (nextRetryBtn && typeof nextRetryBtn.focus === 'function') {
+            nextRetryBtn.focus();
+          }
+        }
+      }
+    } finally {
+      if (fetchId === activeSnapshotFetchId && !handedOffToSync) {
+        setSyncButtonBusy(false);
       }
     }
   }
@@ -1135,14 +1171,14 @@
     });
   }
 
-  function openCandidateChartModal(sym, tvSym) {
+  function openCandidateChartModal(sym, tvSym, triggerEl) {
     if (!KlineModal) return;
     const visible = candidatesState.filter(matchesCurrentFilter);
     const idx = visible.findIndex((c) => c.symbol === sym);
     if (typeof KlineModal.setNavMeta === 'function') {
       KlineModal.setNavMeta(idx, visible.length);
     }
-    KlineModal.open(sym, tvSym);
+    KlineModal.open(sym, tvSym, triggerEl);
   }
 
   function navigateModalSymbol(delta) {
@@ -1158,6 +1194,24 @@
 
   if (tableBody) {
     tableBody.addEventListener('click', async (e) => {
+      const retryBtn = e.target.closest('#btn-retry-candidates');
+      if (retryBtn) {
+        e.stopPropagation();
+        loadCandidateSnapshot({ force: true });
+        return;
+      }
+
+      const previewBtn = e.target.closest('.btn-preview-kline');
+      if (previewBtn) {
+        e.stopPropagation();
+        const sym = previewBtn.getAttribute('data-sym');
+        const tvSym = previewBtn.getAttribute('data-tv-sym');
+        if (sym && tvSym) {
+          openCandidateChartModal(sym, tvSym, previewBtn);
+        }
+        return;
+      }
+
       const copyBtn = e.target.closest('.btn-copy-sym');
       if (copyBtn) {
         e.stopPropagation();
@@ -1186,7 +1240,8 @@
         const sym = row.getAttribute('data-sym');
         const tvSym = row.getAttribute('data-tv-sym');
         if (sym && tvSym) {
-          openCandidateChartModal(sym, tvSym);
+          const triggerEl = row.querySelector('.btn-preview-kline');
+          openCandidateChartModal(sym, tvSym, triggerEl);
         }
       }
     });

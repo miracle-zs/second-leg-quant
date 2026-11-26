@@ -26,6 +26,7 @@
   let onVisibleBarsChange = null;
   let onNavigateSymbol = null;
   let supportsDisplayTransition;
+  let lastFocusedElement = null;
 
   const chartModal = document.getElementById('chart-modal');
   const modalCloseBtn = document.getElementById('modal-close-btn');
@@ -480,6 +481,10 @@
     if (!tvInterval) {
       throw new Error(`Unsupported modal interval: ${modalCurrentInterval}`);
     }
+    modalTvIframe.setAttribute('referrerpolicy', 'no-referrer');
+    modalTvIframe.referrerPolicy = 'no-referrer';
+    modalTvIframe.removeAttribute('allowtransparency');
+    modalTvIframe.removeAttribute('scrolling');
     modalTvIframe.src = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(modalCurrentTvSymbol)}&interval=${tvInterval}&theme=dark&style=1&timezone=Asia%2FShanghai&locale=zh_CN`;
   }
 
@@ -547,8 +552,13 @@
     }
   }
 
-  function openTvModal(sym, tvSym) {
+  function openTvModal(sym, tvSym, triggerEl) {
     if (!chartModal) return;
+    if (!chartModal.open) {
+      const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+      const bodyEl = typeof document !== 'undefined' ? document.body : null;
+      lastFocusedElement = (activeEl && activeEl !== bodyEl) ? activeEl : (triggerEl || activeEl);
+    }
     chartModal.removeAttribute('data-closing');
     modalCurrentSymbol = sym;
     modalCurrentTvSymbol = tvSym;
@@ -571,11 +581,24 @@
     }
   }
 
+  function restoreFocusAfterClose() {
+    const target = lastFocusedElement;
+    lastFocusedElement = null;
+    if (!target || typeof target.focus !== 'function') return;
+    if (target.isConnected === false) return;
+    try {
+      target.focus({ preventScroll: true });
+    } catch (_err) {
+      target.focus();
+    }
+  }
+
   function resetModalStateOnClose() {
     if (chartModal) chartModal.removeAttribute('data-closing');
     if (modalFetchController) modalFetchController.abort();
     if (modalTvIframe) modalTvIframe.src = 'about:blank';
     clearModalChartDisplay();
+    restoreFocusAfterClose();
   }
 
   function closeTvModal() {
