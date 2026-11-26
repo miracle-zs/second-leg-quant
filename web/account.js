@@ -44,8 +44,10 @@
     return '$' + absStr;
   }
 
-  function formatPct(val, options) {
-    return formatSignedPct(val, options || {});
+  function formatAxisUsd(v) {
+    const num = Number(v);
+    if (!Number.isFinite(num)) return '';
+    return (num < 0 ? '-$' : '$') + Math.abs(num).toLocaleString('en-US');
   }
 
   function formatCryptoPrice(val) {
@@ -133,7 +135,7 @@
       '本金: ' + (isFiniteNumber(summary.initial_capital) ? formatMoney(summary.initial_capital, { decimals: 0 }) : '--')
     );
 
-    const retEl = setText('kpi-total-return', formatPct(summary.total_return_pct));
+    const retEl = setText('kpi-total-return', formatSignedPct(summary.total_return_pct));
     setSignedColorClass(retEl, summary.total_return_pct);
 
     setText('kpi-available-margin', formatMoney(summary.available_margin));
@@ -158,10 +160,10 @@
 
     const unrealizedEl = setText('kpi-unrealized-pnl', formatMoney(summary.total_unrealized_pnl, { signed: true }));
     setSignedColorClass(unrealizedEl, summary.total_unrealized_pnl);
-    const openCountText = isFiniteNumber(summary.open_trades) ? (Number(summary.open_trades) + ' 笔在途') : '--';
+    const openCountText = isFiniteNumber(summary.open_trades) ? (Number(summary.open_trades) + ' 笔') : '--';
     setText('kpi-open-trades', openCountText);
 
-    setText('kpi-win-rate', formatPct(summary.win_rate_pct, { signed: false, decimals: 1 }));
+    setText('kpi-win-rate', formatSignedPct(summary.win_rate_pct, { signed: false, decimals: 1 }));
     const winCount = isFiniteNumber(summary.win_count) ? Number(summary.win_count) : null;
     const lossCount = isFiniteNumber(summary.loss_count) ? Number(summary.loss_count) : null;
     const beCount = isFiniteNumber(summary.breakeven_count) ? Number(summary.breakeven_count) : null;
@@ -275,7 +277,10 @@
     setText('active-pos-count-badge', positions.length + ' 活跃仓位');
 
     const posEmpty = document.getElementById('active-positions-empty');
-    if (posEmpty) posEmpty.classList.toggle('hidden', positions.length > 0);
+    if (posEmpty) {
+      posEmpty.classList.toggle('hidden', positions.length > 0);
+      posEmpty.classList.toggle('inline-flex', positions.length === 0);
+    }
     const posWrap = document.getElementById('active-positions-table-wrap');
     if (posWrap) posWrap.classList.toggle('hidden', positions.length === 0);
 
@@ -293,7 +298,7 @@
 
     if (!posTbody) return;
     if (positions.length === 0) {
-      posTbody.innerHTML = '<tr><td colspan="9" class="py-8 text-center text-[#9fb0c5] font-sans text-xs">当前空仓在岸，无活跃合约敞口</td></tr>';
+      posTbody.innerHTML = '';
       return;
     }
 
@@ -316,11 +321,11 @@
       const roeVal = isFiniteNumber(p.roe_pct) ? Number(p.roe_pct) : null;
       const pnlCls = pnlVal === null ? 'text-[#9fb0c5]' : (pnlVal > 0 ? 'text-[#38d99f]' : (pnlVal < 0 ? 'text-[#f8717e]' : 'text-[#f1f5f9]'));
       const pnlStr = formatMoney(pnlVal, { signed: true });
-      const roeStr = roeVal === null ? '--' : (formatPct(roeVal) + ' ROE');
+      const roeStr = roeVal === null ? '--' : (formatSignedPct(roeVal) + ' ROE');
 
       const levStr = isFiniteNumber(p.leverage) ? (Number(p.leverage) + 'x') : '--';
       const notionalStr = formatMoney(p.notional);
-      const amtStr = isFiniteNumber(p.amount) ? (Number(p.amount).toLocaleString('en-US') + ' 币') : '--';
+      const amtStr = isFiniteNumber(p.amount) ? Number(p.amount).toLocaleString('en-US') : '--';
 
       const tvUrl = getTvUrl(sym);
       const safeTlId = p.trendline_id ? escapeHtml(p.trendline_id) : '--';
@@ -441,7 +446,12 @@
 
     const fullHistory = currentAccountData.trade_history;
     const rows = getFilteredAndSortedHistory(fullHistory);
-    setText('history-count-badge', '显示 ' + rows.length + ' / 共 ' + fullHistory.length + ' 笔');
+    setText(
+      'history-count-badge',
+      rows.length === fullHistory.length
+        ? ('共 ' + fullHistory.length + ' 笔')
+        : ('显示 ' + rows.length + ' / 共 ' + fullHistory.length + ' 笔')
+    );
     updateSortIndicators();
 
     if (rows.length === 0) {
@@ -465,7 +475,7 @@
       const pnlCls = pnlVal === null ? 'text-[#7f91a8] font-normal' : (pnlVal > 0 ? 'text-[#38d99f] font-bold' : (pnlVal < 0 ? 'text-[#f8717e] font-bold' : 'text-[#f1f5f9] font-medium'));
       const pctVal = isFiniteNumber(h.pnl_pct) ? Number(h.pnl_pct) : null;
       const pctCls = pctVal === null ? 'text-[#7f91a8] font-normal' : (pctVal > 0 ? 'text-[#38d99f] font-bold' : (pctVal < 0 ? 'text-[#f8717e] font-bold' : 'text-[#f1f5f9] font-medium'));
-      const pctText = formatPct(h.pnl_pct);
+      const pctText = formatSignedPct(h.pnl_pct);
       const cTime = escapeHtml(h.closed_at || '--');
       const hasEntryTime = typeof h.entry_time === 'string' && h.entry_time.trim() !== '' && h.entry_time.trim() !== '--';
       const entryTimeHtml = hasEntryTime
@@ -476,7 +486,7 @@
 
       const entryStr = isFiniteNumber(h.entry_price) && Number(h.entry_price) > 0 ? ('$' + formatCryptoPrice(h.entry_price)) : '--';
       const exitStr = isFiniteNumber(h.exit_price) && Number(h.exit_price) > 0 ? ('$' + formatCryptoPrice(h.exit_price)) : '--';
-      const amtStr = isFiniteNumber(h.amount) && Number(h.amount) > 0 ? (Number(h.amount).toLocaleString('en-US') + ' 币') : '--';
+      const amtStr = isFiniteNumber(h.amount) && Number(h.amount) > 0 ? Number(h.amount).toLocaleString('en-US') : '--';
       const notionalStr = isFiniteNumber(h.entry_notional) && Number(h.entry_notional) > 0 ? formatMoney(h.entry_notional) : '--';
       const notionalCellHtml = (notionalStr === '--' && amtStr === '--')
         ? '<span class="text-[#7f91a8]">--</span>'
@@ -546,20 +556,32 @@
     afterDraw(chart) {
       if (!currentAccountData || !currentAccountData.summary || !chart.chartArea) return;
       const ctx = chart.ctx;
-      const meta = chart.getDatasetMeta(0);
-      if (!ctx || !meta || !meta.data || !meta.data.length) return;
-      const arc = meta.data[0];
-      const cx = arc.x;
-      const cy = arc.y;
+      if (!ctx) return;
       const s = currentAccountData.summary;
-      const winRateStr = isFiniteNumber(s.win_rate_pct) ? (Number(s.win_rate_pct).toFixed(1) + '%') : '--';
       const w = isFiniteNumber(s.win_count) ? Number(s.win_count) : 0;
       const l = isFiniteNumber(s.loss_count) ? Number(s.loss_count) : 0;
       const b = isFiniteNumber(s.breakeven_count) ? Number(s.breakeven_count) : 0;
-      const subStr = b > 0 ? (w + 'W · ' + l + 'L · ' + b + 'BE') : (w + 'W · ' + l + 'L');
+      const meta = chart.getDatasetMeta(0);
+      const arc = meta && Array.isArray(meta.data) ? meta.data[0] : null;
+      const cx = (arc && isFiniteNumber(arc.x)) ? arc.x : (chart.chartArea.left + chart.chartArea.right) / 2;
+      const cy = (arc && isFiniteNumber(arc.y)) ? arc.y : (chart.chartArea.top + chart.chartArea.bottom) / 2;
+
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
+      if (w + l + b === 0) {
+        ctx.fillStyle = '#7f91a8';
+        ctx.font = '500 12px "Inter", -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText('暂无交易样本', cx, cy);
+        ctx.restore();
+        return;
+      }
+      if (!arc) {
+        ctx.restore();
+        return;
+      }
+      const winRateStr = isFiniteNumber(s.win_rate_pct) ? (Number(s.win_rate_pct).toFixed(1) + '%') : '--';
+      const subStr = b > 0 ? (w + 'W · ' + l + 'L · ' + b + 'BE') : (w + 'W · ' + l + 'L');
       ctx.fillStyle = '#f1f5f9';
       ctx.font = '700 22px "JetBrains Mono", "SF Mono", monospace';
       ctx.fillText(winRateStr, cx, cy - 8);
@@ -663,7 +685,7 @@
       const eqValues = equityCurve.map(p => Number(p.equity));
       const hasInitialCapital = isFiniteNumber(summary.initial_capital);
       const datasets = [{
-        label: '账户总资产 ($)',
+        label: '账户总资产',
         data: eqValues,
         borderColor: '#3b82f6',
         backgroundColor: function(c) {
@@ -699,7 +721,7 @@
       if (hasInitialCapital) {
         const cap = Number(summary.initial_capital);
         datasets.push({
-          label: '本金基准线 ($)',
+          label: '本金基准线',
           data: equityCurve.map(() => cap),
           borderColor: '#5c6f89',
           borderDash: [4, 4],
@@ -730,11 +752,7 @@
               grid: { color: 'rgba(34, 43, 56, 0.6)' },
               ticks: {
                 font: { size: 10 },
-                callback: v => {
-                  const num = Number(v);
-                  if (!Number.isFinite(num)) return '';
-                  return (num < 0 ? '-$' : '$') + Math.abs(num).toLocaleString('en-US');
-                }
+                callback: formatAxisUsd
               }
             }
           }
@@ -748,7 +766,7 @@
         if (!d || typeof d !== 'object' || typeof d.date !== 'string' || !d.date) {
           throw new Error('Invalid daily_pnl entry missing date at index ' + idx);
         }
-        return d.date;
+        return d.date.length >= 10 && d.date[4] === '-' ? d.date.slice(5, 10) : d.date;
       });
       const dValues = dailyPnl.map((d, idx) => {
         if (!isFiniteNumber(d.net_pnl)) {
@@ -801,7 +819,7 @@
             legend: { display: false }
           },
           scales: {
-            x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+            x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 10 } } },
             y: {
               grid: {
                 color: (ctx) => (ctx && ctx.tick && ctx.tick.value === 0 ? '#3d4e66' : 'rgba(34, 43, 56, 0.55)'),
@@ -809,11 +827,7 @@
               },
               ticks: {
                 font: { size: 10 },
-                callback: v => {
-                  const num = Number(v);
-                  if (!Number.isFinite(num)) return '';
-                  return (num < 0 ? '-$' : '$') + Math.abs(num).toLocaleString('en-US');
-                }
+                callback: formatAxisUsd
               }
             }
           }
@@ -1022,9 +1036,9 @@
       refreshBtn.dataset.bound = 'true';
       refreshBtn.addEventListener('click', function() {
         const spinner = document.getElementById('refresh-spinner');
-        if (spinner) spinner.style.transform = 'rotate(360deg)';
+        if (spinner) spinner.classList.add('animate-spin');
         tryLoadData().finally(() => {
-          if (spinner) spinner.style.transform = '';
+          if (spinner) spinner.classList.remove('animate-spin');
         });
       });
     }
