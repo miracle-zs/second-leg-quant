@@ -142,7 +142,6 @@
   global.SecondLegCommon = Object.freeze({
     TV_LAYOUT_ID,
     TV_INTERVAL_MAP,
-    CHINESE_TV_MAP,
     escapeHtml,
     isFiniteNum,
     formatCryptoPrice,

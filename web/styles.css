@@ -79,11 +79,6 @@ html,
 }
 
 @supports not (scrollbar-color: auto) {
-  html,
-  .custom-scrollbar {
-    scrollbar-width: auto;
-  }
-
   html::-webkit-scrollbar,
   .custom-scrollbar::-webkit-scrollbar {
     width: 10px;
@@ -379,7 +374,7 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
   background-color: #2b384b;
 }
 
-li:last-child .step-spine::before {
+.step-timeline > li:last-child .step-spine::before {
   display: none;
 }
 
@@ -436,8 +431,6 @@ dialog.chart-modal-dialog::backdrop {
   background-color: rgba(5, 8, 13, 0);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
-  overflow: hidden;
-  overscroll-behavior: contain;
   transition-property: background-color, display, overlay;
   transition-duration: 180ms;
   transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
