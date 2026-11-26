@@ -245,10 +245,6 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
 }
 
 /* Sticky Table Headers & Sticky First Symbol Column */
-.table-scroll-region {
-  container-type: inline-size;
-}
-
 .sticky-header th {
   position: sticky;
   inset-block-start: 0;
@@ -448,11 +444,6 @@ dialog.chart-modal-dialog[open]:where(:not([data-closing]))::backdrop {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .animate-ping,
-  .animate-pulse {
-    animation: none !important;
-  }
-
   dialog.chart-modal-dialog,
   dialog.chart-modal-dialog::backdrop {
     transition-duration: 80ms;

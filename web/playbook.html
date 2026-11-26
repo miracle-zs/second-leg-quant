@@ -30,7 +30,7 @@
           <a href="playbook.html" aria-current="page" class="px-2.5 sm:px-3 py-1 text-xs font-semibold bg-[#192231] text-[#f1f5f9] transition-colors">二段爆发战法</a>
         </nav>
 
-        <a href="https://cn.tradingview.com/chart/ig0LuDL8/" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1 text-xs font-medium rounded-[4px] bg-[#3b82f6]/12 hover:bg-[#3b82f6]/22 text-[#8ab8ff] hover:text-white border border-[#3b82f6]/35 inline-flex items-center gap-1 transition-colors" title="打开 TradingView 专属画线布局 (ig0LuDL8)">
+        <a href="https://cn.tradingview.com/chart/ig0LuDL8/" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1 text-xs font-medium rounded-[4px] bg-[#3b82f6]/12 hover:bg-[#3b82f6]/22 text-[#8ab8ff] hover:text-white border border-[#3b82f6]/35 inline-flex items-center gap-1 transition-colors" title="打开 TradingView 专属画线布局">
           <span>TV 画线</span>
           <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true">
             <path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -40,7 +40,7 @@
     </div>
   </header>
 
-  <div class="w-full max-w-[1680px] mx-auto px-3 sm:px-5 py-4 space-y-3.5">
+  <div class="w-full max-w-[1680px] mx-auto px-3 sm:px-5 py-3 space-y-3.5">
     <main class="space-y-3.5">
       <!-- Three Core Trading Boundaries (Connected 3-Column Datum Strip) -->
       <section aria-label="行情取舍三项原则" class="ledger-grid grid grid-cols-1 md:grid-cols-3">
@@ -74,7 +74,8 @@
             <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-dashed border-[#f0b429] inline-block"></span>15m 对数下降趋势线</span>
             <span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-[#22c58b] inline-block"></span>实体收盘买点</span>
             <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-dashed border-[#f25565] inline-block"></span>破线止损</span>
-            <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-[#3b82f6] inline-block"></span>+6% 触发 / +1% 锁利</span>
+            <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-dashed border-[#3b82f6] inline-block"></span>≥+6% 激活</span>
+            <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-[#f0b429] inline-block"></span>+1% 保本线</span>
           </div>
         </div>
         <div class="bg-[#0b0e13] px-3 py-2 overflow-x-auto custom-scrollbar">
@@ -145,7 +146,7 @@
             <line x1="716" y1="72" x2="716" y2="168" stroke="#3b82f6" stroke-width="1" stroke-dasharray="2 2" opacity="0.65"/>
 
             <!-- Trendline Label -->
-            <text x="315" y="76" fill="#f5c451" font-family="ui-monospace, Menlo, monospace" font-size="10" transform="rotate(12 315 76)">15m 对数下降趋势线 (Alt+L)</text>
+            <text x="315" y="76" fill="#f5c451" font-family="ui-monospace, Menlo, monospace" font-size="10" transform="rotate(12 315 76)">15m 对数下降趋势线</text>
           </svg>
         </div>
         <div class="sm:hidden px-3 py-1.5 bg-[#0b0e13] border-t border-[#161f2c] text-[10px] font-mono text-[#7f91a8] text-right">← 左右滑动查看完整四阶段 →</div>
@@ -185,10 +186,7 @@
                 <div class="text-[11px] text-[#7f91a8] mt-0.5 whitespace-nowrap">人工定标画线</div>
               </div>
               <div class="space-y-1">
-                <div class="flex flex-wrap items-center justify-between gap-2">
-                  <h3 class="text-sm font-semibold text-[#f1f5f9]">TradingView 对数下降趋势线绘制</h3>
-                  <span class="font-mono text-[11px] text-[#8ab8ff]">布局 ig0LuDL8</span>
-                </div>
+                <h3 class="text-sm font-semibold text-[#f1f5f9]">TradingView 对数下降趋势线绘制</h3>
                 <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[66ch]">
                   在专属云端图表开启对数坐标（<kbd class="px-1 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] font-mono text-[#f1f5f9]">Alt+L</kbd>），切换至 15m 周期连接洗盘回踩高点绘制下降趋势线（<kbd class="px-1 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] font-mono text-[#f1f5f9]">Alt+T</kbd>）。后台引擎在 15m 收盘与持仓同步时自动解析云端画线几何参数。
                 </p>
