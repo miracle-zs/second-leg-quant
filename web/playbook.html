@@ -4,7 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <title>突破追多与移动保本系统 — 战法手册</title>
+  <title>突破追多与移动保本系统 — 二段爆发战法</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Crect width='16' height='16' rx='3' fill='%230b0e13'/%3E%3Cpath d='M1.5 3.5L14.5 11.5' stroke='%23f0b429' stroke-width='1.4' stroke-dasharray='2 2'/%3E%3Cpath d='M2 12.5L6 8.5L9.2 10.2L14 3.5' stroke='%23f1f5f9' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='10.8' cy='8' r='2' fill='%23f0b429'/%3E%3C/svg%3E">
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="api/config">
   <link rel="stylesheet" href="static/tailwind.css">
   <link rel="stylesheet" href="static/styles.css">
   <script src="static/common.js" defer></script>
@@ -31,7 +33,7 @@
           <a href="playbook.html" aria-current="page" class="px-2.5 sm:px-3 py-1 text-xs font-semibold bg-[#192231] text-[#f1f5f9] transition-colors">二段爆发战法</a>
         </nav>
 
-        <a data-tv-layout-link href="https://cn.tradingview.com/" target="_blank" rel="noopener noreferrer" class="btn-primary-cobalt px-2.5 py-1 text-xs rounded-[4px] inline-flex items-center gap-1" title="打开 TradingView 专属画线布局">
+        <a data-tv-layout-link data-tv-layout-title="true" href="https://cn.tradingview.com/" target="_blank" rel="noopener noreferrer" class="btn-primary-cobalt px-2.5 py-1 text-xs rounded-[4px] inline-flex items-center gap-1" title="打开 TradingView 专属画线布局">
           <span>TV 画线</span>
           <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true">
             <path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -59,7 +61,7 @@
           </p>
         </div>
 
-        <div class="bg-[#141d2a] p-4 space-y-1.5">
+        <div class="bg-[#151c27] p-4 space-y-1.5">
           <h2 class="text-sm font-bold text-[#38d99f]">只做二段突破追多</h2>
           <p class="text-xs leading-relaxed text-[#f1f5f9] max-w-[60ch]">
             聚焦顺势高换手共振标的，以趋势线实体收盘突破为唯一开多信号，跌回即止损。
@@ -75,14 +77,14 @@
             <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-dashed border-[#f0b429] inline-block"></span><span class="font-mono">15m</span> 对数下降趋势线</span>
             <span class="inline-flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-[#22c58b] inline-block"></span>实体收盘买点</span>
             <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-dashed border-[#f25565] inline-block"></span>破线止损</span>
-            <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-dashed border-[#3b82f6] inline-block"></span><span class="font-mono">≥+6%</span> 激活</span>
+            <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-dashed border-[#3b82f6] inline-block"></span><span class="font-mono">≥ +6%</span> 激活</span>
             <span class="inline-flex items-center gap-1.5"><span class="w-3 h-0 border-t border-[#f0b429] inline-block"></span><span class="font-mono">+1%</span> 保本线</span>
           </div>
         </div>
         <div class="bg-[#0b0e13] px-3 py-2 overflow-x-auto custom-scrollbar">
-          <svg viewBox="0 0 960 210" class="w-full min-w-[680px] h-auto block font-sans" role="img" aria-label="从第一段脉冲放弃、对数下降趋势线洗盘收敛、15m实体收盘突破开多、破线硬止损到浮盈+6%激活+1%移动保本的完整价格结构图">
+          <svg viewBox="0 0 960 210" class="w-full min-w-[680px] h-auto block font-sans" role="img" aria-label="从第一段脉冲放弃、对数下降趋势线洗盘收敛、15m 实体收盘突破开多、破线硬止损到浮盈 +6% 激活 +1% 移动保本的完整价格结构图">
             <!-- Subtle Coordinate Grid -->
-            <g stroke="#161f2c" stroke-width="1">
+            <g stroke="#1c2532" stroke-width="1">
               <line x1="20" y1="32" x2="940" y2="32"/>
               <line x1="20" y1="74" x2="940" y2="74"/>
               <line x1="20" y1="116" x2="940" y2="116"/>
@@ -108,7 +110,7 @@
 
             <!-- +6% Trigger Line & +1% Breakeven Lock Line -->
             <line x1="548" y1="68" x2="936" y2="68" stroke="#3b82f6" stroke-width="1" stroke-dasharray="3 3" opacity="0.8"/>
-            <text x="932" y="83" text-anchor="end" fill="#8ab8ff" class="font-sans" font-size="10"><tspan class="font-mono">≥+6%</tspan> 激活</text>
+            <text x="932" y="83" text-anchor="end" fill="#8ab8ff" class="font-sans" font-size="10"><tspan class="font-mono">≥ +6%</tspan> 激活</text>
 
             <line x1="548" y1="114" x2="936" y2="114" stroke="#f0b429" stroke-width="1.4"/>
             <text x="932" y="109" text-anchor="end" fill="#f5c451" class="font-sans" font-size="10" font-weight="600"><tspan class="font-mono">+1%</tspan> 保本线</text>
@@ -150,7 +152,7 @@
             <text x="315" y="76" fill="#f5c451" class="font-sans" font-size="10" transform="rotate(12 315 76)"><tspan class="font-mono">15m</tspan> 对数下降趋势线</text>
           </svg>
         </div>
-        <div class="sm:hidden px-3 py-1.5 bg-[#0b0e13] border-t border-[#161f2c] text-[10px] font-sans text-[#7f91a8] text-right">← 左右滑动查看完整四阶段 →</div>
+        <div class="sm:hidden px-3 py-1.5 bg-[#0b0e13] border-t border-[#1c2532] text-[10px] font-sans text-[#7f91a8] text-right">← 左右滑动查看完整四阶段 →</div>
       </section>
 
       <!-- Asymmetric Architectural Specification Grid: Execution Schedule + Risk Automation -->
@@ -158,8 +160,8 @@
 
         <!-- Left (7 cols): 4-Step Sequential Timetable with Spine -->
         <section aria-labelledby="execution-steps-heading" class="lg:col-span-7 ledger-frame overflow-hidden flex flex-col">
-          <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-[#121822] border-b border-[#222b38]">
-            <h2 id="execution-steps-heading" class="text-sm font-bold text-[#f1f5f9]">突破追多四步执行时刻表</h2>
+          <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-[#121822] border-b border-[#222b38]">
+            <h2 id="execution-steps-heading" class="text-xs font-semibold text-[#f1f5f9]">突破追多四步执行时刻表</h2>
           </div>
 
           <ol class="step-timeline divide-y divide-[#1c2532]">
@@ -187,7 +189,10 @@
                 <div class="text-[11px] text-[#7f91a8] mt-0.5 whitespace-nowrap">人工定标画线</div>
               </div>
               <div class="space-y-1">
-                <h3 class="text-sm font-semibold text-[#f1f5f9]">TradingView 对数下降趋势线绘制</h3>
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <h3 class="text-sm font-semibold text-[#f1f5f9]">TradingView 对数下降趋势线绘制</h3>
+                  <span class="font-sans text-[11px] text-[#9fb0c5]">15m 周期人工定标</span>
+                </div>
                 <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[66ch]">
                   在专属云端图表开启对数坐标（<kbd class="px-1 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] font-mono text-[#f1f5f9]">Alt+L</kbd>），切换至 15m 周期连接洗盘回踩高点绘制下降趋势线（<kbd class="px-1 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] font-mono text-[#f1f5f9]">Alt+T</kbd>）。后台引擎在 15m 收盘与持仓同步时自动解析云端画线几何参数。
                 </p>
@@ -201,7 +206,10 @@
                 <div class="text-[11px] text-[#7f91a8] mt-0.5 whitespace-nowrap"><span class="font-mono">15m</span> 整刻确认</div>
               </div>
               <div class="space-y-1">
-                <h3 class="text-sm font-semibold text-[#f1f5f9]">15m K 线实体收盘突破开多</h3>
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <h3 class="text-sm font-semibold text-[#f1f5f9]">15m K 线实体收盘突破开多</h3>
+                  <span class="font-sans text-[11px] text-[#9fb0c5]">Server酱买入推送</span>
+                </div>
                 <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[66ch]">
                   拒绝盘中上影线假突破诱多，严格等待 15m K 线闭合且收盘价站稳在对数趋势线上方。守护进程确认闭合突破后即时发送买入信号。
                 </p>
@@ -215,7 +223,10 @@
                 <div class="text-[11px] text-[#7f91a8] mt-0.5 whitespace-nowrap"><span class="font-mono">10s</span> 巡检护航</div>
               </div>
               <div class="space-y-1">
-                <h3 class="text-sm font-semibold text-[#f1f5f9]">破线硬止损与浮盈移动保本</h3>
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <h3 class="text-sm font-semibold text-[#f1f5f9]">破线硬止损与浮盈移动保本</h3>
+                  <span class="font-sans text-[11px] text-[#9fb0c5]">15m 破线 / 10s 巡检</span>
+                </div>
                 <p class="text-xs leading-relaxed text-[#9fb0c5] max-w-[66ch]">
                   入场后任一 15m 收盘跌回对数趋势线下方立即清仓止损；当浮盈达到安全垫激活阈值后，系统自动上移保本提醒线锁定利润。
                 </p>
@@ -226,8 +237,8 @@
 
         <!-- Right (5 cols): Automated Binance Futures API & Quant Threshold Matrix -->
         <section aria-labelledby="risk-daemon-heading" class="lg:col-span-5 ledger-frame overflow-hidden flex flex-col">
-          <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-[#121822] border-b border-[#222b38]">
-            <h2 id="risk-daemon-heading" class="text-sm font-bold text-[#f1f5f9]">币安实盘联动与风控守护机制</h2>
+          <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-[#121822] border-b border-[#222b38]">
+            <h2 id="risk-daemon-heading" class="text-xs font-semibold text-[#f1f5f9]">币安实盘联动与风控守护机制</h2>
           </div>
 
           <div class="divide-y divide-[#1c2532] flex-1 flex flex-col">
@@ -265,7 +276,7 @@
                 </div>
                 <div class="bg-[#0e131b] px-4 py-2.5">
                   <dt class="text-[#7f91a8] font-sans">共振换手 / 趋势</dt>
-                  <dd class="text-[#8ab8ff] mt-0.5 font-semibold font-mono tabular-nums">≥ 1.5x · 1h EMA5&gt;10</dd>
+                  <dd class="text-[#8ab8ff] mt-0.5 font-semibold font-mono tabular-nums">≥ 1.5x · 1h EMA5 &gt; 10</dd>
                 </div>
                 <div class="bg-[#0e131b] px-4 py-2.5">
                   <dt class="text-[#7f91a8] font-sans">破线硬止损</dt>

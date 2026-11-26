@@ -1,19 +1,31 @@
 :root {
   color-scheme: dark;
   --bg-canvas: #0b0e13;
+  --bg-header: #0d1219;
+  --bg-masthead: #0e131b;
   --bg-plate: #10151d;
+  --bg-toolbar: #121822;
   --bg-plate-elevated: #151c27;
   --bg-plate-active: #192231;
   --bg-row-hover: #17202e;
+  --border-subtle: #1c2532;
   --border-hairline: #222b38;
+  --border-control: #283446;
   --border-strong: #324055;
   --ink-primary: #f1f5f9;
   --ink-secondary: #9fb0c5;
   --ink-muted: #7f91a8;
   --sig-amber: #f0b429;
+  --ink-amber: #f5c451;
   --sig-crimson: #f25565;
+  --ink-crimson: #f8717e;
   --sig-emerald: #22c58b;
+  --ink-emerald: #38d99f;
   --sig-cobalt: #3b82f6;
+  --ink-cobalt: #8ab8ff;
+  --sky-turnover: #60a5fa;
+  --bg-resonance-neg: color-mix(in srgb, var(--sig-crimson) 4.5%, var(--bg-plate));
+  --bg-resonance-gold: color-mix(in srgb, var(--sig-amber) 4%, var(--bg-plate));
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", "Menlo", "Monaco", "Consolas", ui-monospace, monospace;
   accent-color: var(--sig-cobalt);
@@ -136,6 +148,17 @@ html::-webkit-scrollbar-track,
   color: #ffffff;
 }
 
+a[data-tv-layout-link][data-tv-pending="loading"] {
+  opacity: 0.78;
+  cursor: progress;
+}
+
+a[data-tv-layout-link][data-tv-pending="unconfigured"],
+a[data-tv-layout-link][data-tv-pending="error"] {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
 /* Swiss Timetable Hairline Ledger System */
 .ledger-frame {
   background-color: var(--bg-plate);
@@ -249,7 +272,7 @@ html::-webkit-scrollbar-track,
 /* Lightweight CSS Keyframe Price Flash (replaces bulk WAAPI element.animate) */
 @keyframes price-flash-up {
   0% {
-    color: #38d99f;
+    color: var(--ink-emerald);
   }
   100% {
     color: var(--ink-primary);
@@ -258,7 +281,7 @@ html::-webkit-scrollbar-track,
 
 @keyframes price-flash-down {
   0% {
-    color: #f8717e;
+    color: var(--ink-crimson);
   }
   100% {
     color: var(--ink-primary);
@@ -281,8 +304,9 @@ html::-webkit-scrollbar-track,
 }
 
 /* Sortable Table Headers & Accessible Sort Buttons */
+table thead th.sortable,
 th.sortable {
-  padding: 0 !important;
+  padding: 0;
   user-select: none;
 }
 
@@ -363,7 +387,7 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
   position: sticky;
   inset-block-start: 0;
   z-index: 10;
-  background-color: #0d1219;
+  background-color: var(--bg-header);
   box-shadow: 0 1px 0 var(--border-hairline);
 }
 
@@ -383,7 +407,7 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
 
 #candidates-table thead th.sticky-col {
   z-index: 20;
-  background-color: #0d1219;
+  background-color: var(--bg-header);
   box-shadow: inset -1px 0 0 var(--border-hairline), 0 1px 0 var(--border-hairline);
 }
 
@@ -404,7 +428,7 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
 }
 
 #candidates-table tbody tr.resonance-neg-row:not(:hover) th.sticky-col {
-  background-color: #16141c;
+  background-color: var(--bg-resonance-neg);
 }
 
 #candidates-table tbody tr.resonance-gold-row {
@@ -412,25 +436,27 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
 }
 
 #candidates-table tbody tr.resonance-gold-row:not(:hover) th.sticky-col {
-  background-color: #16181d;
+  background-color: var(--bg-resonance-gold);
 }
 
 #candidates-table tbody tr.resonance-neg-row > td:first-child {
   box-shadow: inset 1px 0 0 var(--sig-crimson);
-  color: #f8717e;
+  color: var(--ink-crimson);
 }
 
 #candidates-table tbody tr.resonance-gold-row > td:first-child {
   box-shadow: inset 1px 0 0 var(--sig-amber);
-  color: #f5c451;
+  color: var(--ink-amber);
 }
 
 /* Borderless Quiet Row Micro-Actions (Reveal full contrast on row hover) */
 .row-micro-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 1px 4px;
+  min-height: 26px;
+  padding: 3px 6px;
   border-radius: 3px;
   font-size: 11px;
   line-height: 1.35;
@@ -441,12 +467,20 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
   transition: color 120ms ease, background-color 120ms ease;
 }
 
+.row-micro-btn::after {
+  content: "";
+  position: absolute;
+  inset-block: -6px;
+  inset-inline: -2px;
+}
+
 #candidates-table tbody tr:hover .row-micro-btn {
   color: var(--ink-secondary);
 }
 
+#candidates-table tbody tr:hover .row-micro-btn:hover,
 .row-micro-btn:hover {
-  color: var(--ink-primary) !important;
+  color: var(--ink-primary);
   background-color: rgba(50, 64, 85, 0.45);
 }
 
@@ -495,7 +529,7 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
   top: 14px;
   bottom: -36px;
   width: 1px;
-  background-color: #2b384b;
+  background-color: var(--border-control);
 }
 
 .step-timeline > li:last-child .step-spine::before {

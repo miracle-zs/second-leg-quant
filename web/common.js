@@ -2,7 +2,9 @@
   'use strict';
 
   let activeTvLayoutId = '';
+  let tvConfigStatus = 'idle';
   let configPromise = null;
+  const boundTvLinks = typeof WeakSet === 'function' ? new WeakSet() : null;
   const TV_INTERVAL_MAP = Object.freeze({
     '15m': '15',
     '1h': '60',
@@ -97,17 +99,122 @@
     return num.toFixed(baseDec);
   }
 
+  function getExtArrowSvg(extraClass) {
+    const cls = typeof extraClass === 'string' && extraClass.trim()
+      ? `w-2.5 h-2.5 ${escapeHtml(extraClass.trim())} shrink-0`
+      : 'w-2.5 h-2.5 shrink-0';
+    return `<svg class="${cls}" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+
+  const EXT_ARROW_SVG = getExtArrowSvg();
+
+  function debounce(fn, delayMs) {
+    if (typeof fn !== 'function') {
+      throw new TypeError('debounce requires a function');
+    }
+    const wait = typeof delayMs === 'number' && Number.isFinite(delayMs) && delayMs >= 0 ? delayMs : 0;
+    let timerId = null;
+    function debounced(...args) {
+      if (timerId !== null) {
+        clearTimeout(timerId);
+      }
+      timerId = setTimeout(() => {
+        timerId = null;
+        fn.apply(this, args);
+      }, wait);
+    }
+    debounced.cancel = () => {
+      if (timerId !== null) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+    };
+    return debounced;
+  }
+
+  function syncAriaSort(rootElOrHeaders, activeColumn, sortAsc) {
+    if (!rootElOrHeaders) return;
+    let headers = null;
+    if (typeof rootElOrHeaders.querySelectorAll === 'function') {
+      headers = rootElOrHeaders.querySelectorAll('th.sortable');
+    } else if (typeof rootElOrHeaders.forEach === 'function') {
+      headers = rootElOrHeaders;
+    } else if (typeof rootElOrHeaders[Symbol.iterator] === 'function') {
+      headers = Array.from(rootElOrHeaders);
+    }
+    if (!headers || typeof headers.forEach !== 'function') return;
+    headers.forEach((th) => {
+      if (!th || typeof th.getAttribute !== 'function') return;
+      const col = th.getAttribute('data-sort');
+      if (activeColumn && col === activeColumn) {
+        if (typeof th.setAttribute === 'function') {
+          th.setAttribute('aria-sort', sortAsc ? 'ascending' : 'descending');
+        }
+      } else if (typeof th.removeAttribute === 'function') {
+        th.removeAttribute('aria-sort');
+      }
+    });
+  }
+
+  function bindSortButtons(rootEl, onSort) {
+    if (typeof onSort !== 'function') {
+      throw new TypeError('bindSortButtons requires an onSort callback');
+    }
+    if (!rootEl) {
+      return { syncAria: () => {} };
+    }
+    const supportsInvokerCommands = typeof global.HTMLButtonElement !== 'undefined' && 'commandForElement' in global.HTMLButtonElement.prototype;
+    if (supportsInvokerCommands) {
+      const alreadyBound = Boolean(rootEl.dataset && rootEl.dataset.sortBound === 'true');
+      if (!alreadyBound) {
+        if (rootEl.dataset) rootEl.dataset.sortBound = 'true';
+        if (typeof rootEl.addEventListener === 'function') {
+          rootEl.addEventListener('command', (e) => {
+            if (e && e.command === '--sort' && e.source && typeof e.source.closest === 'function') {
+              const th = e.source.closest('th.sortable');
+              if (th) onSort(th);
+            }
+          });
+        }
+      }
+    } else {
+      const headers = typeof rootEl.querySelectorAll === 'function' ? rootEl.querySelectorAll('th.sortable') : [];
+      if (headers && typeof headers.forEach === 'function') {
+        headers.forEach((th) => {
+          if (!th) return;
+          if (th.dataset && th.dataset.sortBound === 'true') return;
+          if (th.dataset) th.dataset.sortBound = 'true';
+          const btn = typeof th.querySelector === 'function' ? th.querySelector('button[command="--sort"]') : null;
+          const target = btn || th;
+          if (target && typeof target.addEventListener === 'function') {
+            target.addEventListener('click', () => onSort(th));
+          }
+        });
+      }
+    }
+    return {
+      syncAria(activeColumn, sortAsc) {
+        syncAriaSort(rootEl, activeColumn, sortAsc);
+      },
+    };
+  }
+
   function formatSignedPct(val, decimalsOrOpts) {
     if (!isFiniteNum(val)) return '--';
     const num = Number(val);
     const opts = typeof decimalsOrOpts === 'object' && decimalsOrOpts !== null
       ? decimalsOrOpts
-      : { decimals: decimalsOrOpts, plusOnZero: true };
+      : { decimals: decimalsOrOpts };
     const decimals = opts.decimals !== undefined ? opts.decimals : 2;
     const signed = opts.signed !== undefined ? opts.signed : true;
     const plusOnZero = opts.plusOnZero !== undefined ? opts.plusOnZero : false;
-    const prefix = signed && (num > 0 || (plusOnZero && num === 0)) ? '+' : '';
-    return prefix + num.toFixed(decimals) + '%';
+    let fixed = num.toFixed(decimals);
+    const isZeroDisplay = Number(fixed) === 0;
+    if (isZeroDisplay && fixed.startsWith('-')) {
+      fixed = (0).toFixed(decimals);
+    }
+    const prefix = signed && ((num > 0 && !isZeroDisplay) || (plusOnZero && isZeroDisplay)) ? '+' : '';
+    return prefix + fixed + '%';
   }
 
   function getTvSymbol(symbol) {
@@ -145,14 +252,64 @@
   }
 
   function applyTvLayoutLinks() {
-    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function' || !activeTvLayoutId) {
+    if (typeof global.document === 'undefined' || typeof global.document.querySelectorAll !== 'function') {
       return;
     }
-    const baseUrl = `https://cn.tradingview.com/chart/${encodeURIComponent(activeTvLayoutId)}/`;
-    document.querySelectorAll('a[data-tv-layout-link]').forEach((el) => {
-      el.href = baseUrl;
-      if (el.getAttribute('data-tv-layout-title')) {
-        el.title = `打开 TradingView 专属画线布局 (${activeTvLayoutId})`;
+    const links = global.document.querySelectorAll('a[data-tv-layout-link]');
+    if (!links || typeof links.forEach !== 'function') return;
+
+    const baseUrl = activeTvLayoutId
+      ? `https://cn.tradingview.com/chart/${encodeURIComponent(activeTvLayoutId)}/`
+      : '';
+    const pendingState = tvConfigStatus === 'unconfigured'
+      ? 'unconfigured'
+      : (tvConfigStatus === 'error' ? 'error' : 'loading');
+
+    links.forEach((el) => {
+      if (!el) return;
+      const canGetAttr = typeof el.getAttribute === 'function';
+      const canSetAttr = typeof el.setAttribute === 'function';
+      const canRemoveAttr = typeof el.removeAttribute === 'function';
+
+      if (canGetAttr && canSetAttr && !el.getAttribute('data-tv-default-title') && el.title) {
+        el.setAttribute('data-tv-default-title', el.title);
+      }
+
+      if (typeof el.addEventListener === 'function' && (!boundTvLinks || !boundTvLinks.has(el))) {
+        if (boundTvLinks) boundTvLinks.add(el);
+        el.addEventListener('click', (e) => {
+          if (!activeTvLayoutId) {
+            if (e && typeof e.preventDefault === 'function') e.preventDefault();
+            if (tvConfigStatus !== 'loading' && !configPromise) {
+              ensureConfig().catch((err) => console.error('Failed to load /api/config:', err));
+            }
+          }
+        });
+      }
+
+      if (activeTvLayoutId) {
+        el.href = baseUrl;
+        if (canRemoveAttr) {
+          el.removeAttribute('data-tv-pending');
+          el.removeAttribute('aria-disabled');
+        }
+        if (canGetAttr && el.getAttribute('data-tv-layout-title')) {
+          el.title = `打开 TradingView 专属画线布局 (${activeTvLayoutId})`;
+        } else if (canGetAttr && el.getAttribute('data-tv-default-title')) {
+          el.title = el.getAttribute('data-tv-default-title');
+        }
+      } else {
+        if (canSetAttr) {
+          el.setAttribute('data-tv-pending', pendingState);
+          el.setAttribute('aria-disabled', 'true');
+        }
+        if (pendingState === 'unconfigured') {
+          el.title = 'TradingView 布局 ID (tradingview_layout_id) 未配置，暂不可跳转';
+        } else if (pendingState === 'error') {
+          el.title = 'TradingView 布局配置加载失败，点击重试加载';
+        } else {
+          el.title = '正在加载 TradingView 专属画线布局配置，请稍候…';
+        }
       }
     });
   }
@@ -162,6 +319,7 @@
       throw new Error('TradingView layout ID must be a non-empty string');
     }
     activeTvLayoutId = layoutId.trim();
+    tvConfigStatus = 'ready';
     activeConfig = buildConfigSnapshot(activeTvLayoutId, activeChineseTvMap, activeConfig);
     applyTvLayoutLinks();
     return activeTvLayoutId;
@@ -177,9 +335,13 @@
       return Promise.resolve(activeTvLayoutId);
     }
     if (!configPromise) {
+      tvConfigStatus = 'loading';
+      applyTvLayoutLinks();
       configPromise = fetchJsonWithTimeout('api/config', { cache: 'no-store' }, 8000)
         .then(({ data }) => {
           if (!data || typeof data.tradingview_layout_id !== 'string' || !data.tradingview_layout_id.trim()) {
+            tvConfigStatus = 'unconfigured';
+            applyTvLayoutLinks();
             throw new Error('Invalid /api/config payload: missing tradingview_layout_id');
           }
           activeChineseTvMap = mergeChineseTvMap(data.chinese_tv_map);
@@ -188,6 +350,10 @@
         })
         .catch((err) => {
           configPromise = null;
+          if (tvConfigStatus !== 'unconfigured') {
+            tvConfigStatus = 'error';
+            applyTvLayoutLinks();
+          }
           throw err;
         });
     }
@@ -265,6 +431,11 @@
   global.SecondLegCommon = Object.freeze({
     TV_INTERVAL_MAP,
     CHINESE_TV_MAP,
+    EXT_ARROW_SVG,
+    getExtArrowSvg,
+    debounce,
+    bindSortButtons,
+    syncAriaSort,
     escapeHtml,
     isFiniteNum,
     formatCryptoPrice,
