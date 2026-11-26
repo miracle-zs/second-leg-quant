@@ -243,7 +243,7 @@
     if (sortinoRating) {
       sortinoRating.classList.remove('text-[#38d99f]', 'text-[#8ab8ff]', 'text-[#f5c451]', 'text-[#f8717e]', 'text-[#9fb0c5]');
       if (!isFiniteNumber(summary.sortino_ratio)) {
-        if (winCount !== null && lossCount !== null && winCount > 0 && lossCount === 0) {
+        if (summary.sharpe_method !== 'NONE' && winCount !== null && lossCount !== null && winCount > 0 && lossCount === 0) {
           sortinoRating.textContent = '零下行波动';
           sortinoRating.classList.add('text-[#38d99f]');
         } else {
@@ -667,7 +667,8 @@
       setText('equity-peak-label', '峰值: ' + formatMoney(peakEq));
       const currEl = setText('equity-current-label', '当前: ' + formatMoney(lastPt.equity));
       if (currEl && isFiniteNumber(summary.initial_capital)) {
-        const delta = Number(lastPt.equity) - Number(summary.initial_capital);
+        const netTransfers = isFiniteNumber(summary.net_external_transfers) ? Number(summary.net_external_transfers) : 0;
+        const delta = Number(lastPt.equity) - Number(summary.initial_capital) - netTransfers;
         setSignedColorClass(currEl, delta);
       }
     } else {
@@ -751,9 +752,12 @@
       }];
       if (hasInitialCapital) {
         const cap = Number(summary.initial_capital);
+        const hasTransfers = isFiniteNumber(summary.net_external_transfers);
+        const netTransfers = hasTransfers ? Number(summary.net_external_transfers) : 0;
+        const baseline = cap + netTransfers;
         datasets.push({
-          label: '本金基准线',
-          data: equityCurve.map(() => cap),
+          label: hasTransfers && netTransfers !== 0 ? '净投入基准线' : '本金基准线',
+          data: equityCurve.map(() => baseline),
           borderColor: '#5c6f89',
           borderDash: [4, 4],
           borderWidth: 1.2,

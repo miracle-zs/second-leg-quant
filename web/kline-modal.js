@@ -208,7 +208,8 @@
       if (c.high > maxP) maxP = c.high;
       if (c.volume > maxVol) maxVol = c.volume;
     });
-    const span = maxP - minP || 1;
+    const rawSpan = maxP - minP;
+    const span = rawSpan > 0 ? rawSpan : Math.max(Math.abs(maxP) * 0.02, 1e-8);
     minP -= span * 0.05;
     maxP += span * 0.05;
     const fullSpan = maxP - minP;

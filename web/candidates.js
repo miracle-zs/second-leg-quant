@@ -729,7 +729,7 @@
   }
 
   async function copyText(text, successMsg) {
-    if (!text) return;
+    if (!text) return false;
     let ok = false;
     try {
       if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
@@ -740,6 +740,7 @@
       console.warn('Clipboard write failed:', err);
     }
     showToast(ok ? successMsg : '复制失败，请手动选择复制');
+    return ok;
   }
 
   function updateSettleCountdown() {
@@ -816,26 +817,26 @@
           const highVal = parseFloat(t.highPrice);
           const lowVal = parseFloat(t.lowPrice);
           const volVal = parseFloat(t.quoteVolume);
-          if (!isFiniteNum(pVal) || pVal <= 0 || !isFiniteNum(chgVal) || !isFiniteNum(highVal) || !isFiniteNum(lowVal) || !isFiniteNum(volVal)) {
+          if (!isFiniteNum(pVal) || pVal <= 0 || !isFiniteNum(chgVal) || !isFiniteNum(highVal) || highVal <= 0 || !isFiniteNum(lowVal) || lowVal <= 0 || !isFiniteNum(volVal) || volVal < 0) {
             console.warn(`Malformed Binance ticker24hr fields for ${sym}:`, t);
           }
 
-          if (isFiniteNum(pVal)) {
+          if (isFiniteNum(pVal) && pVal > 0) {
             oldPrice = prevPriceBySym.get(sym);
             prevPriceBySym.set(sym, pVal);
             c.price = pVal;
           }
 
-          if (isFiniteNum(highVal)) c.high_24h = highVal;
-          if (isFiniteNum(lowVal)) c.low_24h = lowVal;
+          if (isFiniteNum(highVal) && highVal > 0) c.high_24h = highVal;
+          if (isFiniteNum(lowVal) && lowVal > 0) c.low_24h = lowVal;
           if (isFiniteNum(chgVal)) c.price_chg_24h = chgVal;
-          if (isFiniteNum(volVal)) c.volume_24h_usd = volVal;
+          if (isFiniteNum(volVal) && volVal >= 0) c.volume_24h_usd = volVal;
 
           const cs = getEffectiveSupply(c);
-          if (cs > 0 && isFiniteNum(c.price)) {
+          if (cs > 0 && isFiniteNum(c.price) && c.price > 0) {
             const currentMcap = c.price * cs;
             c.market_cap_usd = currentMcap;
-            if (isFiniteNum(c.volume_24h_usd) && currentMcap > 0) {
+            if (isFiniteNum(c.volume_24h_usd) && c.volume_24h_usd >= 0 && currentMcap > 0) {
               const trVal = c.volume_24h_usd / currentMcap;
               c.turnover_ratio = trVal;
             }
@@ -893,7 +894,7 @@
       if (e.name !== 'AbortError') {
         console.warn('Binance pool sync error:', e);
         if (syncStatusBadge) {
-          syncStatusBadge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/12 text-[#f5c451] inline-flex items-center gap-1.5';
+          syncStatusBadge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5';
           syncStatusBadge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安轮询异常</span>';
         }
       }
@@ -1156,17 +1157,19 @@
         const tvSym = copyBtn.getAttribute('data-copy');
         if (!tvSym) return;
         const label = copyBtn.getAttribute('data-label') || '复制';
-        const prevTimer = copyResetTimers.get(copyBtn);
-        if (prevTimer) clearTimeout(prevTimer);
-        await copyText(tvSym, `已复制: ${tvSym}`);
-        copyBtn.innerHTML = CHECK_SVG;
-        copyBtn.classList.add('text-[#38d99f]');
-        const timerId = setTimeout(() => {
-          copyBtn.textContent = label;
-          copyBtn.classList.remove('text-[#38d99f]');
-          copyResetTimers.delete(copyBtn);
-        }, 1200);
-        copyResetTimers.set(copyBtn, timerId);
+        const ok = await copyText(tvSym, `已复制: ${tvSym}`);
+        if (ok) {
+          const prevTimer = copyResetTimers.get(copyBtn);
+          if (prevTimer) clearTimeout(prevTimer);
+          copyBtn.innerHTML = CHECK_SVG;
+          copyBtn.classList.add('text-[#38d99f]');
+          const timerId = setTimeout(() => {
+            copyBtn.textContent = label;
+            copyBtn.classList.remove('text-[#38d99f]');
+            copyResetTimers.delete(copyBtn);
+          }, 1200);
+          copyResetTimers.set(copyBtn, timerId);
+        }
         return;
       }
 
@@ -1290,9 +1293,9 @@
 
   if (!document.hidden) {
     startCountdown();
+    startPolling();
   } else {
     updateSettleCountdown();
   }
   loadCandidateSnapshot({ force: true });
-  startPolling();
 })();
