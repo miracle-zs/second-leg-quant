@@ -41,6 +41,20 @@ _BINANCE_KLINES_TTL_SEC = 12.0
 _BINANCE_PROXY_CACHE_MAX_ENTRIES = 128
 _STATIC_CACHE_MAX_ENTRIES = 64
 _BINANCE_PROXY_TIMEOUT_SEC = 10.0
+_BINANCE_SINGLEFLIGHT_WAIT_TIMEOUT_SEC = 25.0
+_STATIC_IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+HIGH_TURNOVER_THRESHOLD = 1.5
+CHINESE_TV_MAP: dict[str, str] = {
+    "龙虾USDT": "BINANCE:LONGXIAUSDT.P",
+    "哈基米USDT": "BINANCE:HAJIMIUSDT.P",
+    "我踏马来了USDT": "BINANCE:WOTAMALAILIAOUSDT.P",
+    "币安人生USDT": "BINANCE:BIANRENSHENGUSDT.P",
+    "牛来USDT": "BINANCE:NIULAIUSDT.P",
+}
+_HTML_STATIC_ASSET_RE = re.compile(
+    r"""(?P<prefix>\b(?:href|src)\s*=\s*)(?P<quote>["'])(?P<path>static/[^"'?#\s]+)(?P<query>\?[^"'#\s]*)?(?P<frag>#[^"'\s]*)?(?P=quote)""",
+    re.IGNORECASE,
+)
 _BINANCE_RATE_LIMIT_MAX_REQUESTS = 30
 _BINANCE_RATE_LIMIT_WINDOW_SEC = 60.0
 _RATE_LIMIT_MAX_CLIENTS = 4096
@@ -179,6 +193,7 @@ def create_handler(
     *,
     rate_limit_max: int = _BINANCE_RATE_LIMIT_MAX_REQUESTS,
     rate_limit_window_sec: float = _BINANCE_RATE_LIMIT_WINDOW_SEC,
+    singleflight_timeout_sec: Optional[float] = None,
 ):
     """Build an HTTP request handler serving static HUD shells, /static/* assets, and JSON APIs."""
     web_root = WEB_DIR.resolve()
@@ -187,12 +202,120 @@ def create_handler(
     proxy_lock = threading.Lock()
     cand_symbols_state: dict[str, Any] = {"version": None, "symbols": frozenset()}
     filtered_proxy_cache: dict[str, tuple[str, bytes, bytes, Optional[bytes]]] = {}
-    static_cache: OrderedDict[Path, tuple[bytes, Optional[bytes], str, str, Optional[str], int]] = OrderedDict()
+    static_cache: OrderedDict[
+        Path, tuple[bytes, Optional[bytes], str, str, Optional[str], tuple[int, int]]
+    ] = OrderedDict()
+    html_cache: dict[
+        Path,
+        tuple[
+            tuple[int, int],
+            tuple[tuple[Path, tuple[int, int]], ...],
+            bytes,
+            Optional[bytes],
+            str,
+            Optional[str],
+        ],
+    ] = {}
     static_lock = threading.Lock()
     snapshot_cache: dict[str, tuple[Any, bytes, Optional[bytes], str, Optional[str]]] = {}
     snapshot_lock = threading.Lock()
     rate_limit_lock = threading.Lock()
     rate_limit_buckets: OrderedDict[str, deque[float]] = OrderedDict()
+
+    def _stat_stamp(target: Path) -> Optional[tuple[int, int]]:
+        try:
+            st = target.stat()
+        except OSError:
+            return None
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        return st.st_mtime_ns, st.st_size
+
+    def _load_static_entry(
+        asset: Path,
+    ) -> Optional[tuple[bytes, Optional[bytes], str, str, Optional[str], tuple[int, int]]]:
+        with static_lock:
+            cached = static_cache.get(asset)
+
+        if cached is not None:
+            stamp = _stat_stamp(asset)
+            if stamp is None:
+                return None
+            if cached[5] == stamp:
+                with static_lock:
+                    if asset in static_cache:
+                        static_cache.move_to_end(asset)
+                return cached
+
+        try:
+            with open(asset, "rb") as f:
+                st = os.fstat(f.fileno())
+                if not stat.S_ISREG(st.st_mode):
+                    return None
+                body = f.read()
+        except (FileNotFoundError, IsADirectoryError):
+            return None
+        fresh_stamp = (st.st_mtime_ns, st.st_size)
+        content_type = _content_type_for(asset)
+        gz_body = _maybe_gzip(body)
+        etag, gz_etag = _etag_pair(body, gz_body)
+        entry = (body, gz_body, content_type, etag, gz_etag, fresh_stamp)
+        with static_lock:
+            static_cache[asset] = entry
+            static_cache.move_to_end(asset)
+            while len(static_cache) > _STATIC_CACHE_MAX_ENTRIES:
+                static_cache.popitem(last=False)
+        return entry
+
+    def _load_html_entry(
+        html_path: Path,
+    ) -> Optional[tuple[bytes, Optional[bytes], str, str, Optional[str]]]:
+        raw_entry = _load_static_entry(html_path)
+        if raw_entry is None:
+            return None
+        html_stamp = raw_entry[5]
+        with static_lock:
+            cached_html = html_cache.get(html_path)
+        if cached_html is not None:
+            c_stamp, deps, c_body, c_gz, c_etag, c_gz_etag = cached_html
+            if c_stamp == html_stamp and all(_stat_stamp(dep_p) == dep_s for dep_p, dep_s in deps):
+                return c_body, c_gz, raw_entry[2], c_etag, c_gz_etag
+
+        dep_stamps: dict[Path, tuple[int, int]] = {}
+        html_text = raw_entry[0].decode("utf-8")
+
+        def _replace_asset(match: re.Match[str]) -> str:
+            query = match.group("query") or ""
+            if query and "v" in parse_qs(query[1:], keep_blank_values=True):
+                return match.group(0)
+            rel_name = match.group("path")[len("static/") :]
+            if not rel_name or rel_name.startswith("/"):
+                return match.group(0)
+            asset_path = (web_root / rel_name).resolve()
+            if not asset_path.is_relative_to(web_root):
+                return match.group(0)
+            asset_entry = _load_static_entry(asset_path)
+            if asset_entry is None:
+                return match.group(0)
+            dep_stamps[asset_path] = asset_entry[5]
+            short_hash = asset_entry[3].strip('"')[:10]
+            new_query = f"{query}&v={short_hash}" if query else f"?v={short_hash}"
+            frag = match.group("frag") or ""
+            return f'{match.group("prefix")}{match.group("quote")}{match.group("path")}{new_query}{frag}{match.group("quote")}'
+
+        rewritten = _HTML_STATIC_ASSET_RE.sub(_replace_asset, html_text).encode("utf-8")
+        gz_body = _maybe_gzip(rewritten)
+        etag, gz_etag = _etag_pair(rewritten, gz_body)
+        with static_lock:
+            html_cache[html_path] = (
+                html_stamp,
+                tuple(dep_stamps.items()),
+                rewritten,
+                gz_body,
+                etag,
+                gz_etag,
+            )
+        return rewritten, gz_body, raw_entry[2], etag, gz_etag
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -280,6 +403,7 @@ def create_handler(
             etag: str,
             gz_etag: Optional[str],
             *,
+            cache_control: str = "no-cache",
             send_body: bool = True,
         ) -> None:
             use_gzip = gz_body is not None and _accepts_gzip(self.headers)
@@ -288,7 +412,7 @@ def create_handler(
             if _matches_etag(self.headers.get("If-None-Match"), active_etag):
                 self.send_response(304)
                 self.send_header("ETag", active_etag)
-                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Cache-Control", cache_control)
                 if gz_body is not None:
                     self.send_header("Vary", "Accept-Encoding")
                 self._send_security_headers()
@@ -303,7 +427,7 @@ def create_handler(
                 200,
                 active_body,
                 content_type,
-                cache_control="no-cache",
+                cache_control=cache_control,
                 extra_headers=extra_headers,
                 send_body=send_body,
             )
@@ -339,54 +463,35 @@ def create_handler(
                 body, gz_body, "application/json; charset=utf-8", etag, gz_etag, send_body=send_body
             )
 
-        def _send_static_file(self, asset: Path, *, send_body: bool = True) -> None:
-            body: Optional[bytes] = None
-            gz_body: Optional[bytes] = None
-            content_type = ""
-            etag = ""
-            gz_etag: Optional[str] = None
-
-            with static_lock:
-                cached = static_cache.get(asset)
-
-            if cached is not None:
-                try:
-                    st = asset.stat()
-                except FileNotFoundError:
+        def _send_static_file(
+            self,
+            asset: Path,
+            *,
+            cache_control: str = "no-cache",
+            inject_static_versions: bool = False,
+            send_body: bool = True,
+        ) -> None:
+            if inject_static_versions:
+                html_entry = _load_html_entry(asset)
+                if html_entry is None:
                     self.send_error(404)
                     return
-                if not stat.S_ISREG(st.st_mode):
+                body, gz_body, content_type, etag, gz_etag = html_entry
+            else:
+                entry = _load_static_entry(asset)
+                if entry is None:
                     self.send_error(404)
                     return
-                if cached[5] == st.st_mtime_ns:
-                    with static_lock:
-                        if asset in static_cache:
-                            static_cache.move_to_end(asset)
-                    body, gz_body, content_type, etag, gz_etag, _ = cached
-
-            if body is None:
-                try:
-                    with open(asset, "rb") as f:
-                        st = os.fstat(f.fileno())
-                        if not stat.S_ISREG(st.st_mode):
-                            self.send_error(404)
-                            return
-                        body = f.read()
-                except (FileNotFoundError, IsADirectoryError):
-                    self.send_error(404)
-                    return
-                fresh_mtime_ns = st.st_mtime_ns
-                content_type = _content_type_for(asset)
-                gz_body = _maybe_gzip(body)
-                etag, gz_etag = _etag_pair(body, gz_body)
-                with static_lock:
-                    static_cache[asset] = (body, gz_body, content_type, etag, gz_etag, fresh_mtime_ns)
-                    static_cache.move_to_end(asset)
-                    while len(static_cache) > _STATIC_CACHE_MAX_ENTRIES:
-                        static_cache.popitem(last=False)
+                body, gz_body, content_type, etag, gz_etag, _ = entry
 
             self._send_cached_response(
-                body, gz_body, content_type, etag, gz_etag, send_body=send_body
+                body,
+                gz_body,
+                content_type,
+                etag,
+                gz_etag,
+                cache_control=cache_control,
+                send_body=send_body,
             )
 
         def _send_proxy_payload(
@@ -431,10 +536,9 @@ def create_handler(
             body: bytes,
             gz_body: Optional[bytes],
         ) -> tuple[bytes, Optional[bytes]]:
-            cand_row = db_store.load_candidates(database)
-            if cand_row is None:
+            cand_ver = db_store.load_candidate_version(database)
+            if cand_ver is None:
                 return body, gz_body
-            cand_ver, cand_json = cand_row
             with proxy_lock:
                 cached_filtered = filtered_proxy_cache.get(cache_key)
                 if (
@@ -448,6 +552,10 @@ def create_handler(
                 else:
                     symbols = None
             if symbols is None:
+                cand_row = db_store.load_candidates(database)
+                if cand_row is None:
+                    return body, gz_body
+                cand_ver, cand_json = cand_row
                 cand_items = json.loads(cand_json)
                 if not isinstance(cand_items, list):
                     raise ValueError(f"Expected list in candidate_snapshot, got {type(cand_items).__name__}")
@@ -510,7 +618,23 @@ def create_handler(
                 body, gz_body = cached_hit
             elif not is_leader:
                 assert flight is not None
-                flight.event.wait()
+                wait_timeout = (
+                    singleflight_timeout_sec
+                    if singleflight_timeout_sec is not None
+                    else _BINANCE_SINGLEFLIGHT_WAIT_TIMEOUT_SEC
+                )
+                if not flight.event.wait(timeout=wait_timeout):
+                    self.log_error(
+                        "Binance proxy singleflight timeout for %s after %.2fs",
+                        url,
+                        wait_timeout,
+                    )
+                    self._send_json_error(
+                        504,
+                        "Gateway timeout waiting for upstream response",
+                        send_body=send_body,
+                    )
+                    return
                 if flight.err_exc is not None:
                     raise flight.err_exc
                 status, body, gz_body = flight.status, flight.body, flight.gz_body
@@ -596,20 +720,39 @@ def create_handler(
                 ):
                     self.send_error(404)
                     return
-                self._send_static_file(static_file, send_body=send_body)
+                qs = parse_qs(parsed.query, keep_blank_values=False)
+                cache_control = _STATIC_IMMUTABLE_CACHE_CONTROL if qs.get("v") else "no-cache"
+                self._send_static_file(static_file, cache_control=cache_control, send_body=send_body)
                 return
 
             if path in ("/", "/index.html"):
-                self._send_static_file(web_root / "index.html", send_body=send_body)
+                self._send_static_file(
+                    web_root / "index.html",
+                    cache_control="no-cache",
+                    inject_static_versions=True,
+                    send_body=send_body,
+                )
                 return
 
             if path in ("/account.html", "/playbook.html"):
-                self._send_static_file(web_root / path.lstrip("/"), send_body=send_body)
+                self._send_static_file(
+                    web_root / path.lstrip("/"),
+                    cache_control="no-cache",
+                    inject_static_versions=True,
+                    send_body=send_body,
+                )
                 return
 
             if path == "/api/config":
                 layout_id = get_env_setting("TRADINGVIEW_LAYOUT_ID", DEFAULT_TV_LAYOUT_ID)
-                body = json.dumps({"tradingview_layout_id": layout_id}, ensure_ascii=False).encode("utf-8")
+                body = json.dumps(
+                    {
+                        "tradingview_layout_id": layout_id,
+                        "high_turnover_threshold": HIGH_TURNOVER_THRESHOLD,
+                        "chinese_tv_map": CHINESE_TV_MAP,
+                    },
+                    ensure_ascii=False,
+                ).encode("utf-8")
                 self._send_bytes(
                     200,
                     body,

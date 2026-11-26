@@ -1179,7 +1179,10 @@ class TestLedgerBugfixRegressions(unittest.TestCase):
                     body = resp.read().decode("utf-8")
                     conn.close()
                 self.assertEqual(resp.status, 200)
-                self.assertEqual(json.loads(body), {"tradingview_layout_id": "CustomLayout99"})
+                payload = json.loads(body)
+                self.assertEqual(payload["tradingview_layout_id"], "CustomLayout99")
+                self.assertEqual(payload["high_turnover_threshold"], api.HIGH_TURNOVER_THRESHOLD)
+                self.assertEqual(payload["chinese_tv_map"], api.CHINESE_TV_MAP)
             finally:
                 server.shutdown()
                 server.server_close()
