@@ -1160,10 +1160,10 @@
         if (prevTimer) clearTimeout(prevTimer);
         await copyText(tvSym, `已复制: ${tvSym}`);
         copyBtn.innerHTML = CHECK_SVG;
-        copyBtn.classList.add('text-[#38d99f]', 'border-[#22c58b]/40');
+        copyBtn.classList.add('text-[#38d99f]');
         const timerId = setTimeout(() => {
           copyBtn.textContent = label;
-          copyBtn.classList.remove('text-[#38d99f]', 'border-[#22c58b]/40');
+          copyBtn.classList.remove('text-[#38d99f]');
           copyResetTimers.delete(copyBtn);
         }, 1200);
         copyResetTimers.set(copyBtn, timerId);

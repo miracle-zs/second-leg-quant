@@ -604,9 +604,9 @@
   }
 
   if (modalNativeView) {
-    modalNativeView.addEventListener('mousemove', (e) => {
+    const updateModalHoverAtClientX = (clientX) => {
       const rect = modalNativeView.getBoundingClientRect();
-      const x = e.clientX - rect.left;
+      const x = clientX - rect.left;
       const chartW = modalNativeView.clientWidth - RIGHT_AXIS_WIDTH;
       const visibleCount = Math.min(modalVisibleBars, modalCandles.length);
       if (x >= 0 && x <= chartW && visibleCount > 0) {
@@ -620,13 +620,29 @@
         modalHoverIndex = -1;
         scheduleModalRender();
       }
-    });
-    modalNativeView.addEventListener('mouseleave', () => {
+    };
+    const clearModalHover = () => {
       if (modalHoverIndex !== -1) {
         modalHoverIndex = -1;
         scheduleModalRender();
       }
+    };
+
+    modalNativeView.addEventListener('mousemove', (e) => {
+      updateModalHoverAtClientX(e.clientX);
     });
+    modalNativeView.addEventListener('mouseleave', clearModalHover);
+    modalNativeView.addEventListener('touchstart', (e) => {
+      if (!e.touches || !e.touches.length) return;
+      updateModalHoverAtClientX(e.touches[0].clientX);
+    }, { passive: true });
+    modalNativeView.addEventListener('touchmove', (e) => {
+      if (!e.touches || !e.touches.length) return;
+      if (e.cancelable) e.preventDefault();
+      updateModalHoverAtClientX(e.touches[0].clientX);
+    }, { passive: false });
+    modalNativeView.addEventListener('touchend', clearModalHover, { passive: true });
+    modalNativeView.addEventListener('touchcancel', clearModalHover, { passive: true });
   }
 
   modalBarsBtns.forEach((btn) => {
