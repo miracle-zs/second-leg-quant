@@ -364,6 +364,54 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         self.assertEqual(reloaded.data.get("pending_breakouts"), {})
         self.assertTrue(reloaded.has_breakout_notified("YBUSDT_L1"))
 
+    def test_daemon_start_reuses_shared_ro_conn_and_detects_external_writes_via_data_version(self):
+        db_store.publish_candidates(
+            self.db_path,
+            [{"symbol": "BTCUSDT", "is_resonance": False}],
+            updated_at="2026-11-25 12:00:00+08:00",
+        )
+        daemon = tad.TradeAlertDaemon({"database_path": str(self.db_path)}, dry_run=True)
+        daemon.state_store.data["initialized"] = True
+        daemon.state_store.save()
+        sleep_calls = 0
+
+        def fake_sleep(_sec):
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls == 2:
+                # Simulate external writer committing a new resonance candidate snapshot
+                db_store.publish_candidates(
+                    self.db_path,
+                    [{"symbol": "NEWUSDT", "is_resonance": True}],
+                    updated_at="2026-11-25 12:05:00+08:00",
+                )
+            elif sleep_calls >= 3:
+                daemon.running = False
+
+        with patch.object(tad.signal, "signal"), patch.object(
+            tad,
+            "run_evaluation_cycle",
+            return_value={"feature_2_had_error": False, "feature_3_had_error": False},
+        ), patch.object(tad.time, "sleep", side_effect=fake_sleep), patch.object(
+            tad.time, "time", return_value=1800000005
+        ), patch.object(
+            db_store, "load_candidate_version", wraps=db_store.load_candidate_version
+        ) as ver_spy, patch.object(
+            daemon.pos_store, "load", wraps=daemon.pos_store.load
+        ) as pos_load_spy, patch.object(
+            daemon.state_store, "load", wraps=daemon.state_store.load
+        ) as state_load_spy, patch.object(
+            daemon.notifier, "send_alert", return_value=True
+        ) as send_spy:
+            daemon.start()
+
+        # Startup sets _last_pool_stamp (1x ver_spy); Tick 1 reads DB (1x); Tick 2 skips all 3 via data_version; Tick 3 detects external write (1x + f1 tx load)
+        self.assertEqual(ver_spy.call_count, 3)  # startup + Tick 1 + Tick 3 (Tick 2 skipped)
+        self.assertEqual(pos_load_spy.call_count, 2)  # Tick 1 + Tick 3 (Tick 2 skipped)
+        self.assertEqual(state_load_spy.call_count, 4)  # Tick 1 + Tick 3 f1 (2 tx loads) + Tick 3 else-load (Tick 2 skipped)
+        self.assertEqual(send_spy.call_count, 1)
+        self.assertIsNone(daemon._shared_ro_conn)
+
     def test_feature_4_skips_transaction_when_no_prices_and_no_pending_alerts(self):
         db_store.upsert_open_position(
             self.db_path,

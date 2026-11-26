@@ -180,18 +180,29 @@ class PositionStore(_SqliteStore):
     def __init__(self, database: Optional[Path] = None):
         super().__init__(database)
         self._open_positions: list[dict[str, Any]] = []
+        self._loaded: bool = False
         self.load()
 
-    def load(self) -> None:
-        self._open_positions = db_store.load_open_positions(self.database, conn=self._tx_conn)
+    def _on_tx_rollback(self) -> None:
+        self._loaded = False
+
+    def load(self, *, conn: Optional[sqlite3.Connection] = None) -> None:
+        read_conn = self._tx_conn if self._tx_conn is not None else conn
+        self._open_positions = db_store.load_open_positions(self.database, conn=read_conn)
+        self._loaded = True
 
     def save(self) -> None:
         db_store.save_open_positions(self.database, self._open_positions, conn=self._tx_conn)
+        self._loaded = True
 
-    def get_open_positions(self) -> List[Dict[str, Any]]:
-        if self._tx_conn is None:
-            self.load()
+    def cached_open_positions(self) -> List[Dict[str, Any]]:
+        """Return currently cached open positions without issuing a DB read."""
         return [p for p in self._open_positions if p["status"] == "OPEN"]
+
+    def get_open_positions(self, *, conn: Optional[sqlite3.Connection] = None) -> List[Dict[str, Any]]:
+        if self._tx_conn is None:
+            self.load(conn=conn)
+        return self.cached_open_positions()
 
     def get_history(
         self,
@@ -342,9 +353,15 @@ class ResonanceStateStore(_SqliteStore):
         self._last_raw_payload = raw_payload
         self._state_loaded = True
 
-    def load(self, *, only_if_changed: bool = False) -> None:
-        if self._tx_conn is not None:
-            raw_payload = self._read_raw_payload(self._tx_conn)
+    def load(
+        self,
+        *,
+        only_if_changed: bool = False,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> None:
+        read_conn = self._tx_conn if self._tx_conn is not None else conn
+        if read_conn is not None:
+            raw_payload = self._read_raw_payload(read_conn)
             if only_if_changed and self._state_loaded and raw_payload == self._last_raw_payload:
                 return
             self._apply_raw_payload(raw_payload)
@@ -504,6 +521,10 @@ class TradeAlertDaemon:
             "f3": {"done": False, "count": 0, "last_ts": 0.0},
         }
         self._last_pool_stamp: Optional[str] = None
+        self._ro_loop_active: bool = False
+        self._shared_ro_conn: Optional[sqlite3.Connection] = None
+        self._ro_inode: Optional[tuple[int, int]] = None
+        self._ro_data_version: Optional[int] = None
         self.binance_client = BinanceFuturesClient(
             cfg.get("binance_api_key", ""),
             cfg.get("binance_api_secret", ""),
@@ -512,6 +533,41 @@ class TradeAlertDaemon:
             logger.info("✅ 币安合约 API 凭证已就绪，实盘持仓自动同步已激活。")
         else:
             logger.info("ℹ️ 币安 API 凭据未配置，采用本地/手动持仓模式。")
+
+    def _close_shared_ro_conn(self) -> None:
+        if self._shared_ro_conn is not None:
+            try:
+                self._shared_ro_conn.close()
+            finally:
+                self._shared_ro_conn = None
+                self._ro_inode = None
+                self._ro_data_version = None
+
+    def _ensure_shared_ro_conn(self) -> tuple[Optional[sqlite3.Connection], bool]:
+        """Return `(ro_conn, db_unchanged)` for long-lived daemon polling using `PRAGMA data_version`."""
+        if not self.database.exists():
+            self._close_shared_ro_conn()
+            return None, False
+        st = self.database.stat()
+        cur_inode = (st.st_dev, st.st_ino)
+        if self._shared_ro_conn is not None and self._ro_inode != cur_inode:
+            self._close_shared_ro_conn()
+        if self._shared_ro_conn is None:
+            conn = open_sqlite_connection(self.database, readonly=True)
+            conn.isolation_level = None
+            self._shared_ro_conn = conn
+            self._ro_inode = cur_inode
+            self._ro_data_version = None
+            return conn, False
+        row = self._shared_ro_conn.execute("PRAGMA data_version").fetchone()
+        cur_ver = int(row[0]) if row is not None else None
+        unchanged = (
+            cur_ver is not None
+            and cur_ver == self._ro_data_version
+            and self.pos_store._loaded
+            and self.state_store._state_loaded
+        )
+        return self._shared_ro_conn, unchanged
 
     def handle_signal(self, signum, frame):
         logger.info(f"收到终止信号 ({signum})，正在优雅关闭守护进程...")
@@ -560,109 +616,143 @@ class TradeAlertDaemon:
             except (BinanceAPIError, HttpError, TimeoutError, OSError) as e:
                 logger.warning(f"后台自动同步币安持仓异常: {e}")
 
-        open_positions = self.pos_store.get_open_positions()
-        has_pending_stop_loss = any(
-            "pending_stop_loss_candle" in p
-            for p in open_positions
-        )
+        db_unchanged = False
+        ephemeral_ro_conn: Optional[sqlite3.Connection] = None
+        if self._ro_loop_active:
+            ro_conn, db_unchanged = self._ensure_shared_ro_conn()
+        elif self.database.exists():
+            ephemeral_ro_conn = open_sqlite_connection(self.database, readonly=True)
+            ro_conn = ephemeral_ro_conn
+        else:
+            ro_conn = None
 
-        current_bucket = int(now_ts // 900) * 900
-        seconds_into_bucket = now_ts - current_bucket
-        candle_cache: dict[str, dict] = {}
-        pool_stamp = db_store.load_candidate_version(self.database)
-        pool_updated = pool_stamp is not None and pool_stamp != self._last_pool_stamp
-        f1_checked_in_iteration = False
-
-        if pool_updated:
-            check_feature_1_resonance(
-                self.notifier,
-                self.state_store,
-                layout_id=layout_id,
-                database_path=self.database,
+        try:
+            open_positions = (
+                self.pos_store.cached_open_positions()
+                if db_unchanged
+                else self.pos_store.get_open_positions(conn=ro_conn)
             )
-            self._last_pool_stamp = pool_stamp
-            f1_checked_in_iteration = True
+            has_pending_stop_loss = any(
+                "pending_stop_loss_candle" in p
+                for p in open_positions
+            )
 
-        if seconds_into_bucket >= 10 and self.last_evaluated_15m_bucket != current_bucket:
-            if self._eval_bucket != current_bucket:
-                logger.info(f"⏰ 进入 15m K线收盘确认窗口 ({get_beijing_time_str(now_ts)})，启动 Feature 1/2/3 联合校验...")
-                if not f1_checked_in_iteration:
-                    check_feature_1_resonance(
+            current_bucket = int(now_ts // 900) * 900
+            seconds_into_bucket = now_ts - current_bucket
+            candle_cache: dict[str, dict] = {}
+            pool_stamp = (
+                self._last_pool_stamp
+                if db_unchanged
+                else db_store.load_candidate_version(self.database, conn=ro_conn)
+            )
+            pool_updated = pool_stamp is not None and pool_stamp != self._last_pool_stamp
+            f1_checked_in_iteration = False
+
+            if pool_updated:
+                check_feature_1_resonance(
+                    self.notifier,
+                    self.state_store,
+                    layout_id=layout_id,
+                    database_path=self.database,
+                )
+                self._last_pool_stamp = pool_stamp
+                f1_checked_in_iteration = True
+
+            f3_mutated = False
+            if seconds_into_bucket >= 10 and self.last_evaluated_15m_bucket != current_bucket:
+                if self._eval_bucket != current_bucket:
+                    logger.info(f"⏰ 进入 15m K线收盘确认窗口 ({get_beijing_time_str(now_ts)})，启动 Feature 1/2/3 联合校验...")
+                    if not f1_checked_in_iteration:
+                        check_feature_1_resonance(
+                            self.notifier,
+                            self.state_store,
+                            layout_id=layout_id,
+                            database_path=self.database,
+                        )
+                        if pool_stamp is not None:
+                            self._last_pool_stamp = pool_stamp
+                    self._eval_bucket = current_bucket
+                    for key in ("f2", "f3"):
+                        self._feature_retry_state[key] = {"done": False, "count": 0, "last_ts": 0.0}
+
+                self._run_bucket_feature(
+                    "f2",
+                    "Feature 2 突破扫描",
+                    now_ts,
+                    lambda st: check_feature_2_breakout(
                         self.notifier,
                         self.state_store,
-                        layout_id=layout_id,
-                        database_path=self.database,
+                        layout_id,
+                        candle_cache=candle_cache,
+                        status=st,
+                        current_bucket=current_bucket,
+                    ),
+                )
+                f3_ran = self._run_bucket_feature(
+                    "f3",
+                    "Feature 3 止损校验",
+                    now_ts,
+                    lambda st: check_feature_3_stop_loss(
+                        self.notifier,
+                        self.pos_store,
+                        layout_id,
+                        candle_cache=candle_cache,
+                        status=st,
+                        current_bucket=current_bucket,
+                    ),
+                )
+                f3_mutated = f3_ran
+                if not f3_ran and has_pending_stop_loss:
+                    check_feature_3_stop_loss(
+                        self.notifier,
+                        self.pos_store,
+                        layout_id,
+                        retry_only=True,
+                        candle_cache=candle_cache,
+                        current_bucket=current_bucket,
                     )
-                    if pool_stamp is not None:
-                        self._last_pool_stamp = pool_stamp
-                self._eval_bucket = current_bucket
-                for key in ("f2", "f3"):
-                    self._feature_retry_state[key] = {"done": False, "count": 0, "last_ts": 0.0}
+                    f3_mutated = True
 
-            self._run_bucket_feature(
-                "f2",
-                "Feature 2 突破扫描",
-                now_ts,
-                lambda st: check_feature_2_breakout(
-                    self.notifier,
-                    self.state_store,
-                    layout_id,
-                    candle_cache=candle_cache,
-                    status=st,
-                    current_bucket=current_bucket,
-                ),
+                if self._feature_retry_state["f2"]["done"] and self._feature_retry_state["f3"]["done"]:
+                    self.last_evaluated_15m_bucket = current_bucket
+            else:
+                if not db_unchanged:
+                    self.state_store.load(only_if_changed=True, conn=ro_conn)
+                if self.state_store.data.get("pending_breakouts"):
+                    check_feature_2_breakout(
+                        self.notifier,
+                        self.state_store,
+                        layout_id,
+                        retry_only=True,
+                    )
+                if has_pending_stop_loss:
+                    check_feature_3_stop_loss(
+                        self.notifier,
+                        self.pos_store,
+                        layout_id,
+                        retry_only=True,
+                        candle_cache=candle_cache,
+                        current_bucket=current_bucket,
+                    )
+                    f3_mutated = True
+
+            if ro_conn is self._shared_ro_conn and ro_conn is not None and not db_unchanged:
+                ver_row = ro_conn.execute("PRAGMA data_version").fetchone()
+                self._ro_data_version = int(ver_row[0]) if ver_row is not None else None
+
+            has_open_positions = (
+                bool(self.pos_store.get_open_positions()) if f3_mutated else bool(open_positions)
             )
-            f3_ran = self._run_bucket_feature(
-                "f3",
-                "Feature 3 止损校验",
-                now_ts,
-                lambda st: check_feature_3_stop_loss(
+            if has_open_positions:
+                check_feature_4_trailing_stops(
                     self.notifier,
                     self.pos_store,
-                    layout_id,
-                    candle_cache=candle_cache,
-                    status=st,
-                    current_bucket=current_bucket,
-                ),
-            )
-            if not f3_ran and has_pending_stop_loss:
-                check_feature_3_stop_loss(
-                    self.notifier,
-                    self.pos_store,
-                    layout_id,
-                    retry_only=True,
-                    candle_cache=candle_cache,
-                    current_bucket=current_bucket,
+                    float(self.cfg.get("trailing_activation_pct", 6.0)),
+                    float(self.cfg.get("trailing_lock_pct", 1.0)),
                 )
-
-            if self._feature_retry_state["f2"]["done"] and self._feature_retry_state["f3"]["done"]:
-                self.last_evaluated_15m_bucket = current_bucket
-        else:
-            self.state_store.load(only_if_changed=True)
-            if self.state_store.data.get("pending_breakouts"):
-                check_feature_2_breakout(
-                    self.notifier,
-                    self.state_store,
-                    layout_id,
-                    retry_only=True,
-                )
-            if has_pending_stop_loss:
-                check_feature_3_stop_loss(
-                    self.notifier,
-                    self.pos_store,
-                    layout_id,
-                    retry_only=True,
-                    candle_cache=candle_cache,
-                    current_bucket=current_bucket,
-                )
-
-        if self.pos_store.get_open_positions():
-            check_feature_4_trailing_stops(
-                self.notifier,
-                self.pos_store,
-                float(self.cfg.get("trailing_activation_pct", 6.0)),
-                float(self.cfg.get("trailing_lock_pct", 1.0)),
-            )
+        finally:
+            if ephemeral_ro_conn is not None:
+                ephemeral_ro_conn.close()
 
     def start(self) -> None:
         signal.signal(signal.SIGINT, self.handle_signal)
@@ -694,13 +784,18 @@ class TradeAlertDaemon:
         except (BinanceAPIError, HttpError, TimeoutError, OSError) as e:
             logger.error(f"初始初检网络/接口异常: {e}")
 
-        while self.running:
-            try:
-                self.run_iteration()
-                time.sleep(10)
-            except (BinanceAPIError, HttpError, TimeoutError, OSError) as e:
-                logger.error(f"守护主循环网络/接口异常: {e}", exc_info=True)
-                time.sleep(5)
+        self._ro_loop_active = True
+        try:
+            while self.running:
+                try:
+                    self.run_iteration()
+                    time.sleep(10)
+                except (BinanceAPIError, HttpError, TimeoutError, OSError) as e:
+                    logger.error(f"守护主循环网络/接口异常: {e}", exc_info=True)
+                    time.sleep(5)
+        finally:
+            self._ro_loop_active = False
+            self._close_shared_ro_conn()
 
         logger.info("🛡️ 交易风控与预警守护进程已安全退出。")
 

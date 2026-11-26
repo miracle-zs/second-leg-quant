@@ -604,6 +604,12 @@
     return true;
   }
 
+  function setIfChanged(el, prop, nextVal) {
+    if (el && el[prop] !== nextVal) {
+      el[prop] = nextVal;
+    }
+  }
+
   function syncRowDom(c, refs, { animatePrice = false, prevPrice = undefined, prevRes = c.is_resonance, prevNegFr = c.is_neg_funding } = {}) {
     if (!refs) return;
     if (isFiniteNum(c.price) && refs.priceEl) {
@@ -616,56 +622,60 @@
           { duration: 480, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }
         );
       }
-      refs.priceEl.textContent = formatCryptoPrice(c.price);
+      setIfChanged(refs.priceEl, 'textContent', formatCryptoPrice(c.price));
     }
 
     const posPct = computePositionPct(c.price, c.low_24h, c.high_24h);
     if (refs.posBarEl && posPct !== null) {
-      refs.posBarEl.style.width = posPct.toFixed(1) + '%';
-      refs.posBarEl.className = `sym-pos-bar h-full ${getPosBarColor(posPct)} transition-all duration-300`;
+      const nextWidth = posPct.toFixed(1) + '%';
+      if (refs.posBarEl.style.width !== nextWidth) refs.posBarEl.style.width = nextWidth;
+      setIfChanged(refs.posBarEl, 'className', `sym-pos-bar h-full ${getPosBarColor(posPct)} transition-all duration-300`);
     }
     if (refs.posTextEl) {
-      refs.posTextEl.textContent = posPct !== null ? `${Math.round(posPct)}%` : '--';
+      setIfChanged(refs.posTextEl, 'textContent', posPct !== null ? `${Math.round(posPct)}%` : '--');
     }
     if (refs.posBoxEl && isFiniteNum(c.low_24h) && isFiniteNum(c.high_24h) && posPct !== null) {
-      refs.posBoxEl.setAttribute('title', `24h振幅区间: ${formatCryptoPrice(c.low_24h)} ~ ${formatCryptoPrice(c.high_24h)} (现价分位: ${Math.round(posPct)}%)`);
+      const nextTitle = `24h振幅区间: ${formatCryptoPrice(c.low_24h)} ~ ${formatCryptoPrice(c.high_24h)} (现价分位: ${Math.round(posPct)}%)`;
+      if (refs.posBoxEl.getAttribute('title') !== nextTitle) {
+        refs.posBoxEl.setAttribute('title', nextTitle);
+      }
     }
 
     if (isFiniteNum(c.price_chg_24h) && refs.chgEl) {
-      refs.chgEl.textContent = formatSignedPct(c.price_chg_24h, 2);
+      setIfChanged(refs.chgEl, 'textContent', formatSignedPct(c.price_chg_24h, 2));
       const nextChgCls = c.price_chg_24h > 0
         ? 'text-[#38d99f] font-semibold'
         : (c.price_chg_24h < 0 ? 'text-[#f8717e] font-semibold' : 'text-[#f1f5f9] font-medium');
-      refs.chgEl.className = `py-2.5 px-2.5 font-mono tabular-nums sym-chg whitespace-nowrap text-right ${nextChgCls}`;
+      setIfChanged(refs.chgEl, 'className', `py-2.5 px-2.5 font-mono tabular-nums sym-chg whitespace-nowrap text-right ${nextChgCls}`);
     }
 
     if (isFiniteNum(c.volume_24h_usd) && refs.volEl) {
-      refs.volEl.textContent = formatMillions(c.volume_24h_usd);
+      setIfChanged(refs.volEl, 'textContent', formatMillions(c.volume_24h_usd));
     }
     if (isFiniteNum(c.market_cap_usd) && refs.mcValEl) {
-      refs.mcValEl.textContent = formatMillions(c.market_cap_usd);
+      setIfChanged(refs.mcValEl, 'textContent', formatMillions(c.market_cap_usd));
     }
     if (isFiniteNum(c.turnover_ratio) && refs.trBadgeEl) {
-      refs.trBadgeEl.textContent = c.turnover_ratio.toFixed(2) + 'x';
-      refs.trBadgeEl.className = getTurnoverBadgeClass(c.turnover_ratio);
+      setIfChanged(refs.trBadgeEl, 'textContent', c.turnover_ratio.toFixed(2) + 'x');
+      setIfChanged(refs.trBadgeEl, 'className', getTurnoverBadgeClass(c.turnover_ratio));
     }
 
     if (refs.frSettleEl) {
       if (c.funding_interval_hours !== 4 && isFiniteNum(c.funding_rate_pct)) {
-        refs.frSettleEl.textContent = `(${formatSignedPct(c.funding_rate_pct, 4)})`;
+        setIfChanged(refs.frSettleEl, 'textContent', `(${formatSignedPct(c.funding_rate_pct, 4)})`);
         refs.frSettleEl.classList.remove('hidden');
       } else {
-        refs.frSettleEl.textContent = '';
+        setIfChanged(refs.frSettleEl, 'textContent', '');
         refs.frSettleEl.classList.add('hidden');
       }
     }
     if (refs.fr4hEl && isFiniteNum(c.funding_rate_4h_pct)) {
-      refs.fr4hEl.textContent = formatSignedPct(c.funding_rate_4h_pct, 4);
-      refs.fr4hEl.className = getFundingClass(c.funding_rate_4h_pct);
+      setIfChanged(refs.fr4hEl, 'textContent', formatSignedPct(c.funding_rate_4h_pct, 4));
+      setIfChanged(refs.fr4hEl, 'className', getFundingClass(c.funding_rate_4h_pct));
     }
 
     if (refs.rowEl && (prevRes !== c.is_resonance || prevNegFr !== c.is_neg_funding)) {
-      refs.rowEl.className = getRowClass(c);
+      setIfChanged(refs.rowEl, 'className', getRowClass(c));
     }
     if (refs.durationEl && prevRes !== c.is_resonance) {
       refs.durationEl.innerHTML = buildDurationHtml(c);
@@ -781,14 +791,14 @@
         if (!t || typeof t.symbol !== 'string' || !t.symbol) {
           throw new Error('Malformed ticker24hr item missing symbol');
         }
-        tickMap.set(t.symbol, t);
+        if (rowRefsBySym.has(t.symbol)) tickMap.set(t.symbol, t);
       });
       const premMap = new Map();
       premiums.forEach((p) => {
         if (!p || typeof p.symbol !== 'string' || !p.symbol) {
           throw new Error('Malformed premiumIndex item missing symbol');
         }
-        premMap.set(p.symbol, p);
+        if (rowRefsBySym.has(p.symbol)) premMap.set(p.symbol, p);
       });
 
       let sortMetricChanged = false;

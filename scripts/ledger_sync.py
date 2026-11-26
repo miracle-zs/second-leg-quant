@@ -11,6 +11,7 @@ and SQLite ledger bundle loading via `db_store`.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from itertools import chain
 from pathlib import Path
 import sys
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -156,7 +157,7 @@ def sync_db_ledger(
 
     income_by_id = {
         (item["incomeType"], str(item["tranId"])): item
-        for item in existing_income + new_income
+        for item in chain(existing_income, new_income)
     }
     income_list = list(income_by_id.values())
 
@@ -198,7 +199,7 @@ def sync_db_ledger(
 
     fills_by_id = {
         (clean_symbol(item["symbol"]), str(item["id"])): item
-        for item in existing_fills + new_fills
+        for item in chain(existing_fills, new_fills)
     }
     recording["ledger_synced_until_ms"] = end_ms
     recording["fills_cursor_ms"] = fills_cursor

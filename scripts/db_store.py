@@ -164,10 +164,17 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+_SCHEMA_VERSION = 1
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """Create all managed SQLite tables and indexes if they do not exist."""
+    row = conn.execute("PRAGMA user_version").fetchone()
+    if row is not None and int(row[0]) >= _SCHEMA_VERSION:
+        return
     for stmt in _SCHEMA_STATEMENTS:
         conn.execute(stmt)
+    conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
 @contextmanager
@@ -422,23 +429,31 @@ def publish_candidates(
         )
 
 
-def load_candidates(database: Path) -> Optional[tuple[str, str]]:
+def load_candidates(
+    database: Path,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Optional[tuple[str, str]]:
     """Return `(updated_at, payload_json)` for the latest candidate snapshot if available."""
-    with _read_conn(database, None) as conn:
-        if conn is None or not _table_exists(conn, "candidate_snapshot"):
+    with _read_conn(database, conn) as r_conn:
+        if r_conn is None or not _table_exists(r_conn, "candidate_snapshot"):
             return None
-        row = conn.execute("SELECT updated_at, payload FROM candidate_snapshot WHERE id = 1").fetchone()
+        row = r_conn.execute("SELECT updated_at, payload FROM candidate_snapshot WHERE id = 1").fetchone()
     if row is None:
         return None
     return str(row[0]), str(row[1])
 
 
-def load_candidate_version(database: Path) -> Optional[str]:
+def load_candidate_version(
+    database: Path,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Optional[str]:
     """Return `updated_at` version marker for the latest candidate snapshot if available."""
-    with _read_conn(database, None) as conn:
-        if conn is None or not _table_exists(conn, "candidate_snapshot"):
+    with _read_conn(database, conn) as r_conn:
+        if r_conn is None or not _table_exists(r_conn, "candidate_snapshot"):
             return None
-        row = conn.execute("SELECT updated_at FROM candidate_snapshot WHERE id = 1").fetchone()
+        row = r_conn.execute("SELECT updated_at FROM candidate_snapshot WHERE id = 1").fetchone()
     return str(row[0]) if row is not None else None
 
 

@@ -518,6 +518,57 @@ class TestDashboardAPIP0Fixes(unittest.TestCase):
             self.assertEqual(code_ok, 200)
             self.assertEqual(body_ok, b'[{"symbol":"BTCUSDT"}]')
 
+    def test_proxy_endpoints_filter_by_candidate_snapshot_and_refresh_on_version_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "proxy_filter.sqlite3"
+            db_store.publish_candidates(
+                db_path,
+                [{"symbol": "YBUSDT"}],
+                updated_at="2026-11-26T10:00:00+08:00",
+            )
+            handler_cls = api.create_handler(db_path)
+            raw_tickers = json.dumps([
+                {"symbol": "BTCUSDT", "lastPrice": "95000"},
+                {"symbol": "YBUSDT", "lastPrice": "0.05"},
+                {"symbol": "ETHUSDT", "lastPrice": "3500"},
+            ]).encode("utf-8")
+            raw_premiums = json.dumps([
+                {"symbol": "BTCUSDT", "lastFundingRate": "0.0001"},
+                {"symbol": "YBUSDT", "lastFundingRate": "-0.0002"},
+            ]).encode("utf-8")
+
+            def fake_upstream(url: str, **_kwargs) -> bytes:
+                if "ticker/24hr" in url:
+                    return raw_tickers
+                if "premiumIndex" in url:
+                    return raw_premiums
+                raise AssertionError(f"Unexpected URL: {url}")
+
+            with patch.object(http_client, "request_bytes", side_effect=fake_upstream) as mock_req:
+                code1, _, body1 = self._invoke(handler_cls, "GET", "/api/binance/ticker24hr")
+                code_p, _, body_p = self._invoke(handler_cls, "GET", "/api/binance/premiumIndex")
+                self.assertEqual(code1, 200)
+                self.assertEqual(code_p, 200)
+                self.assertEqual(json.loads(body1), [{"symbol": "YBUSDT", "lastPrice": "0.05"}])
+                self.assertEqual(json.loads(body_p), [{"symbol": "YBUSDT", "lastFundingRate": "-0.0002"}])
+
+                # Updating candidate_snapshot must immediately re-filter cached upstream payload without refetching
+                db_store.publish_candidates(
+                    db_path,
+                    [{"symbol": "YBUSDT"}, {"symbol": "ETHUSDT"}],
+                    updated_at="2026-11-26T10:05:00+08:00",
+                )
+                code2, _, body2 = self._invoke(handler_cls, "GET", "/api/binance/ticker24hr")
+                self.assertEqual(code2, 200)
+                self.assertEqual(
+                    json.loads(body2),
+                    [
+                        {"symbol": "YBUSDT", "lastPrice": "0.05"},
+                        {"symbol": "ETHUSDT", "lastPrice": "3500"},
+                    ],
+                )
+            self.assertEqual(mock_req.call_count, 2)
+
     def test_gzip_precompression_for_snapshots_static_and_proxy(self):
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "gzip.sqlite3"

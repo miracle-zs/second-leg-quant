@@ -129,6 +129,8 @@ def create_handler(database: Path):
     proxy_cache: OrderedDict[str, tuple[float, bytes, Optional[bytes]]] = OrderedDict()
     proxy_inflight: dict[str, _ProxyFlight] = {}
     proxy_lock = threading.Lock()
+    cand_symbols_state: dict[str, Any] = {"version": None, "symbols": frozenset()}
+    filtered_proxy_cache: dict[str, tuple[str, bytes, bytes, Optional[bytes]]] = {}
     static_cache: OrderedDict[Path, tuple[bytes, Optional[bytes], str, str, Optional[str], int]] = OrderedDict()
     static_lock = threading.Lock()
     snapshot_cache: dict[str, tuple[Any, bytes, Optional[bytes], str, Optional[str]]] = {}
@@ -321,12 +323,58 @@ def create_handler(database: Path):
                 send_body=send_body,
             )
 
+        def _filter_to_candidates(
+            self,
+            cache_key: str,
+            body: bytes,
+            gz_body: Optional[bytes],
+        ) -> tuple[bytes, Optional[bytes]]:
+            cand_row = db_store.load_candidates(database)
+            if cand_row is None:
+                return body, gz_body
+            cand_ver, cand_json = cand_row
+            with proxy_lock:
+                cached_filtered = filtered_proxy_cache.get(cache_key)
+                if (
+                    cached_filtered is not None
+                    and cached_filtered[0] == cand_ver
+                    and cached_filtered[1] is body
+                ):
+                    return cached_filtered[2], cached_filtered[3]
+                if cand_symbols_state["version"] == cand_ver:
+                    symbols = cand_symbols_state["symbols"]
+                else:
+                    symbols = None
+            if symbols is None:
+                cand_items = json.loads(cand_json)
+                if not isinstance(cand_items, list):
+                    raise ValueError(f"Expected list in candidate_snapshot, got {type(cand_items).__name__}")
+                symbols = frozenset(
+                    str(item["symbol"])
+                    for item in cand_items
+                    if isinstance(item, dict) and item.get("symbol")
+                )
+            items = json.loads(body.decode("utf-8"))
+            if not isinstance(items, list):
+                return body, gz_body
+            filtered_items = [
+                item for item in items if isinstance(item, dict) and item.get("symbol") in symbols
+            ]
+            f_body = json.dumps(filtered_items, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            f_gz = _maybe_gzip(f_body)
+            with proxy_lock:
+                cand_symbols_state["version"] = cand_ver
+                cand_symbols_state["symbols"] = symbols
+                filtered_proxy_cache[cache_key] = (cand_ver, body, f_body, f_gz)
+            return f_body, f_gz
+
         def _send_binance_proxy(
             self,
             cache_key: Optional[str],
             url: str,
             *,
             ttl_sec: float = _BINANCE_PROXY_TTL_SEC,
+            filter_candidates: bool = False,
             send_body: bool = True,
         ) -> None:
             cached_hit: Optional[tuple[bytes, Optional[bytes]]] = None
@@ -353,82 +401,81 @@ def create_handler(database: Path):
                             flight = existing
                             is_leader = False
 
+            status = 200
+            body = b""
+            gz_body: Optional[bytes] = None
             if cached_hit is not None:
-                self._send_proxy_payload(200, cached_hit[0], cached_hit[1], send_body=send_body)
-                return
-
-            if not is_leader:
+                body, gz_body = cached_hit
+            elif not is_leader:
                 assert flight is not None
                 flight.event.wait()
                 if flight.err_exc is not None:
                     raise flight.err_exc
-                self._send_proxy_payload(flight.status, flight.body, flight.gz_body, send_body=send_body)
-                return
-
-            status = 200
-            body = b""
-            gz_body: Optional[bytes] = None
-            try:
+                status, body, gz_body = flight.status, flight.body, flight.gz_body
+            else:
                 try:
-                    body = http_client.request_bytes(
-                        url,
-                        timeout=_BINANCE_PROXY_TIMEOUT_SEC,
-                        max_retries=1,
-                    )
-                except http_client.HttpError as exc:
-                    if exc.status_code is not None and 400 <= exc.status_code < 500:
-                        err_body = b""
-                        if exc.body:
-                            try:
-                                json.loads(exc.body)
-                                err_body = exc.body.encode("utf-8")
-                            except ValueError:
-                                err_body = b""
-                        if not err_body:
-                            err_body = json.dumps(
-                                {"error": exc.body or str(exc)}, ensure_ascii=False
+                    try:
+                        body = http_client.request_bytes(
+                            url,
+                            timeout=_BINANCE_PROXY_TIMEOUT_SEC,
+                            max_retries=1,
+                        )
+                    except http_client.HttpError as exc:
+                        if exc.status_code is not None and 400 <= exc.status_code < 500:
+                            err_body = b""
+                            if exc.body:
+                                try:
+                                    json.loads(exc.body)
+                                    err_body = exc.body.encode("utf-8")
+                                except ValueError:
+                                    err_body = b""
+                            if not err_body:
+                                err_body = json.dumps(
+                                    {"error": exc.body or str(exc)}, ensure_ascii=False
+                                ).encode("utf-8")
+                            status = exc.status_code
+                            body = err_body
+                        else:
+                            self.log_error("Binance proxy error for %s: %s", url, exc)
+                            status = 502
+                            body = json.dumps(
+                                {"error": f"Binance upstream error: {exc}"}, ensure_ascii=False
                             ).encode("utf-8")
-                        status = exc.status_code
-                        body = err_body
-                    else:
+                    except (http.client.HTTPException, TimeoutError, OSError) as exc:
                         self.log_error("Binance proxy error for %s: %s", url, exc)
                         status = 502
                         body = json.dumps(
                             {"error": f"Binance upstream error: {exc}"}, ensure_ascii=False
                         ).encode("utf-8")
-                except (http.client.HTTPException, TimeoutError, OSError) as exc:
-                    self.log_error("Binance proxy error for %s: %s", url, exc)
-                    status = 502
-                    body = json.dumps(
-                        {"error": f"Binance upstream error: {exc}"}, ensure_ascii=False
-                    ).encode("utf-8")
-                else:
-                    gz_body = _maybe_gzip(body)
-                    if cache_key is not None:
-                        store_now = time.monotonic()
+                    else:
+                        gz_body = _maybe_gzip(body)
+                        if cache_key is not None:
+                            store_now = time.monotonic()
+                            with proxy_lock:
+                                expired_keys = [k for k, (exp, _, _) in proxy_cache.items() if store_now >= exp]
+                                for k in expired_keys:
+                                    del proxy_cache[k]
+                                proxy_cache[cache_key] = (store_now + ttl_sec, body, gz_body)
+                                proxy_cache.move_to_end(cache_key)
+                                while len(proxy_cache) > _BINANCE_PROXY_CACHE_MAX_ENTRIES:
+                                    proxy_cache.popitem(last=False)
+                    if flight is not None:
+                        flight.status = status
+                        flight.body = body
+                        flight.gz_body = gz_body
+                except BaseException as exc:
+                    if flight is not None:
+                        flight.err_exc = exc
+                    raise
+                finally:
+                    if flight is not None and cache_key is not None:
                         with proxy_lock:
-                            expired_keys = [k for k, (exp, _, _) in proxy_cache.items() if store_now >= exp]
-                            for k in expired_keys:
-                                del proxy_cache[k]
-                            proxy_cache[cache_key] = (store_now + ttl_sec, body, gz_body)
-                            proxy_cache.move_to_end(cache_key)
-                            while len(proxy_cache) > _BINANCE_PROXY_CACHE_MAX_ENTRIES:
-                                proxy_cache.popitem(last=False)
-                if flight is not None:
-                    flight.status = status
-                    flight.body = body
-                    flight.gz_body = gz_body
-            except BaseException as exc:
-                if flight is not None:
-                    flight.err_exc = exc
-                raise
-            finally:
-                if flight is not None and cache_key is not None:
-                    with proxy_lock:
-                        if proxy_inflight.get(cache_key) is flight:
-                            del proxy_inflight[cache_key]
-                    flight.event.set()
+                            if proxy_inflight.get(cache_key) is flight:
+                                del proxy_inflight[cache_key]
+                        flight.event.set()
 
+            if filter_candidates and cache_key is not None and status == 200:
+                body, gz_body = self._filter_to_candidates(cache_key, body, gz_body)
             self._send_proxy_payload(status, body, gz_body, send_body=send_body)
 
         def _handle_get(self, *, send_body: bool) -> None:
@@ -519,6 +566,7 @@ def create_handler(database: Path):
                     "ticker24hr",
                     f"{_BINANCE_FAPI_BASE}/fapi/v1/ticker/24hr",
                     ttl_sec=_BINANCE_PROXY_TTL_SEC,
+                    filter_candidates=True,
                     send_body=send_body,
                 )
                 return
@@ -528,6 +576,7 @@ def create_handler(database: Path):
                     "premiumIndex",
                     f"{_BINANCE_FAPI_BASE}/fapi/v1/premiumIndex",
                     ttl_sec=_BINANCE_PROXY_TTL_SEC,
+                    filter_candidates=True,
                     send_body=send_body,
                 )
                 return
