@@ -75,12 +75,7 @@
       'text-[#38d99f]',
       'text-[#f8717e]',
       'text-[#9fb0c5]',
-      'text-[#f1f5f9]',
-      'text-emerald-400',
-      'text-rose-400',
-      'text-slate-400',
-      'text-slate-300',
-      'text-white'
+      'text-[#f1f5f9]'
     );
     if (!isFiniteNumber(val)) {
       el.classList.add('text-[#9fb0c5]');

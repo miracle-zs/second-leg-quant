@@ -115,17 +115,17 @@ def fetch_json_with_retry(
     *,
     headers: Optional[dict[str, str]] = None,
     timeout: int = 15,
-    max_retries: int = 3,
+    max_retries: int = 2,
     backoff: float = 0.8,
 ) -> Any:
-    """带指数退避重试的通用 HTTP GET JSON 请求。"""
+    """带指数退避重试的通用 HTTP GET JSON 请求（max_retries 为首次失败后的重试次数）。"""
     try:
         return http_client.request_json(
             url,
             method="GET",
             headers=headers,
             timeout=float(timeout),
-            max_retries=max(0, max_retries - 1),
+            max_retries=max_retries,
             backoff_base=backoff,
             retry_statuses=RETRYABLE_STATUS_CODES,
         )
@@ -191,7 +191,6 @@ class BinanceFuturesClient:
         self.time_sync_ttl = float(time_sync_ttl)
         self._time_lock = threading.Lock()
         self._time_sync_lock = threading.Lock()
-        self._time_offset_ms: Optional[int] = None
         self._synced_server_ms: Optional[int] = None
         self._time_synced_at: float = 0.0
 
@@ -220,8 +219,6 @@ class BinanceFuturesClient:
             return None
         if self._synced_server_ms is not None:
             return self._synced_server_ms + int((now_mono - self._time_synced_at) * 1000)
-        if self._time_offset_ms is not None:
-            return int(time.time() * 1000) + self._time_offset_ms
         return None
 
     def get_server_time(self, force_sync: bool = False) -> int:
@@ -250,10 +247,8 @@ class BinanceFuturesClient:
 
             url = f"{self.base_url}{SERVER_TIME_ENDPOINT}"
             m0 = time.monotonic()
-            t0 = int(time.time() * 1000)
-            data = fetch_json_with_retry(url, timeout=5, max_retries=2)
+            data = fetch_json_with_retry(url, timeout=5, max_retries=1)
             m1 = time.monotonic()
-            t1 = int(time.time() * 1000)
             if not isinstance(data, dict) or "serverTime" not in data:
                 raise BinanceAPIError(
                     f"Missing serverTime in {SERVER_TIME_ENDPOINT} response: {data}",
@@ -272,7 +267,6 @@ class BinanceFuturesClient:
                 ) from e
             with self._time_lock:
                 self._synced_server_ms = server_ms
-                self._time_offset_ms = server_ms - (t0 + t1) // 2
                 self._time_synced_at = (m0 + m1) / 2.0
             return server_ms
 
@@ -451,7 +445,7 @@ class BinanceFuturesClient:
     def get_ticker_prices(self, symbols: Optional[Sequence[str]] = None) -> Dict[str, float]:
         """批量获取永续合约最新成交价（一次 HTTP 请求替代逐币轮询）。"""
         url = f"{self.base_url}/fapi/v1/ticker/price"
-        data = fetch_json_with_retry(url, timeout=self.timeout, max_retries=2)
+        data = fetch_json_with_retry(url, timeout=self.timeout, max_retries=1)
         if not isinstance(data, list):
             raise BinanceAPIError(
                 f"Expected list from /fapi/v1/ticker/price, got {type(data).__name__}",
@@ -494,7 +488,7 @@ class BinanceFuturesClient:
         start_time_ms: Optional[int] = None,
         end_time_ms: Optional[int] = None,
         session: Optional[http_client.HttpClient] = None,
-        max_retries: int = 3,
+        max_retries: int = 2,
         backoff: float = 0.8,
     ) -> List[list]:
         """请求 /fapi/v1/klines 获取合约 K 线数组（空数组返回 []）。"""
@@ -518,7 +512,7 @@ class BinanceFuturesClient:
                     url,
                     method="GET",
                     timeout=float(req_timeout),
-                    max_retries=max(0, max_retries - 1),
+                    max_retries=max_retries,
                     backoff_base=backoff,
                     retry_statuses=RETRYABLE_STATUS_CODES,
                 )
@@ -540,7 +534,7 @@ class BinanceFuturesClient:
         limit: int = 5,
         allow_empty: bool = False,
         session: Optional[http_client.HttpClient] = None,
-        max_retries: int = 3,
+        max_retries: int = 2,
         backoff: float = 0.8,
     ) -> List[dict[str, Any]]:
         """拉取并严格过滤已收盘 K 线（close_time <= server_time_ms），返回标准化字典列表。"""
@@ -688,7 +682,7 @@ def get_closed_candles(
     limit: int = 5,
     allow_empty: bool = False,
     session: Optional[http_client.HttpClient] = None,
-    max_retries: int = 3,
+    max_retries: int = 2,
     backoff: float = 0.8,
 ) -> List[dict[str, Any]]:
     """共享公共已收盘 K 线列表拉取辅助函数。"""

@@ -615,6 +615,14 @@ def default_resonance_state() -> dict[str, object]:
     }
 
 
+def parse_resonance_state(raw_payload: str) -> dict[str, object]:
+    """Parse serialized resonance_state JSON and populate default fields."""
+    loaded = _loads_dict(raw_payload, context="resonance_state")
+    for key, default_val in default_resonance_state().items():
+        loaded.setdefault(key, default_val)
+    return loaded
+
+
 def load_resonance_state(
     database: Path,
     *,
@@ -628,18 +636,7 @@ def load_resonance_state(
     if row is None:
         return default_resonance_state()
 
-    loaded = _loads_dict(row[0], context="resonance_state")
-    defaults = default_resonance_state()
-    for key, default_val in defaults.items():
-        if key != "initialized":
-            loaded.setdefault(key, default_val)
-    if "initialized" not in loaded:
-        loaded["initialized"] = bool(
-            loaded.get("last_updated")
-            or loaded.get("active_resonance_symbols")
-            or loaded.get("history")
-        )
-    return loaded
+    return parse_resonance_state(row[0])
 
 
 def save_resonance_state(

@@ -336,19 +336,6 @@ th[aria-sort="descending"] .sort-icon .arrow-up {
   background-color: rgba(50, 64, 85, 0.45);
 }
 
-.row-micro-primary {
-  color: #7da9eb;
-}
-
-#candidates-table tbody tr:hover .row-micro-primary {
-  color: #9bc0ff;
-}
-
-.row-micro-primary:hover {
-  color: #ffffff !important;
-  background-color: rgba(59, 130, 246, 0.22);
-}
-
 /* Consistent Native Select Styling (rely on native dark-mode indicator to avoid double arrows in modern Chromium) */
 .ledger-select {
   color-scheme: dark;

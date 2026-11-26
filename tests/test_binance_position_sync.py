@@ -14,7 +14,6 @@ import sys
 import tempfile
 import time
 import unittest
-import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -25,6 +24,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+import alert_risk_checks as arc
 import binance_client as bc
 import binance_position_client as bpc
 import db_store
@@ -102,7 +102,7 @@ class TestBinanceFuturesClient(unittest.TestCase):
 
     def test_send_signed_request_retries_429_and_1021_fails_fast_on_401(self):
         client = bc.BinanceFuturesClient(api_key="k", api_secret="s")
-        client._time_offset_ms = 0
+        client._synced_server_ms = int(time.time() * 1000)
         client._time_synced_at = time.monotonic()
 
         err_429 = http_client.HttpError(
@@ -517,9 +517,9 @@ class TestCLIAndDaemonIntegration(unittest.TestCase):
         self.assertEqual(reloaded.get_history(), [])
 
     @patch.dict(os.environ, clear=True)
-    @patch.object(tad, "fetch_layout_drawings", return_value={})
-    @patch.object(tad, "fetch_ticker_prices", return_value={})
-    @patch.object(tad, "get_closed_15m_candle", side_effect=bc.BinanceAPIError("skip"))
+    @patch.object(arc, "fetch_layout_drawings", return_value={})
+    @patch.object(arc, "fetch_ticker_prices", return_value={})
+    @patch.object(arc, "get_closed_15m_candle", side_effect=bc.BinanceAPIError("skip"))
     def test_run_evaluation_cycle_includes_binance_sync(self, _candle, _tickers, _drawings):
         env_file = Path(self.test_dir) / ".env"
         env_file.write_text(

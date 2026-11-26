@@ -99,7 +99,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
             db_store.publish_report(db_path, prev_report)
 
             full_income = [
-                {"incomeType": "REALIZED_PNL", "tranId": i + 1, "income": "1", "time": start_ms + i * 1000}
+                {"incomeType": "REALIZED_PNL", "tranId": i + 1, "income": "1", "asset": "USDT", "time": start_ms + i * 1000}
                 for i in range(ledger_sync.INCOME_PAGE_LIMIT)
             ]
 
@@ -127,7 +127,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
     def test_database_first_run_with_existing_equity_table_does_not_crash(self):
         client = bpc.BinanceFuturesClient("demo", "demo")
         engine = aae.AccountAnalyticsEngine(client=client)
-        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        status = {"connected": True, "mode": "BINANCE_SNAPSHOT_PENDING_INCOME", "positions_available": True, "income_available": False}
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "account.sqlite3"
             with closing(sqlite3.connect(db_path)) as conn, conn:
@@ -135,7 +135,7 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
             with patch.object(
                 engine,
                 "fetch_binance_data",
-                return_value=({"totalWalletBalance": "500", "totalMarginBalance": "500"}, [], [], status),
+                return_value=({"totalWalletBalance": "500", "totalMarginBalance": "500"}, [], status),
             ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client, "_send_signed_request", return_value=[]
             ):
@@ -205,14 +205,14 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
             {"symbol": "BTCUSDT", "id": 102, "orderId": 20, "side": "SELL", "time": start + 4000, "positionSide": "BOTH", "price": "110", "qty": "1", "quoteQty": "110"},
             {"symbol": "BTCUSDT", "id": 103, "orderId": 20, "side": "SELL", "time": start + 5000, "positionSide": "BOTH", "price": "116", "qty": "2", "quoteQty": "232"},
         ]
-        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        status = {"connected": True, "mode": "BINANCE_SNAPSHOT_PENDING_INCOME", "positions_available": True, "income_available": False}
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "account.sqlite3"
             db_store.publish_report(db_path, previous)
             with patch.object(
                 engine,
                 "fetch_binance_data",
-                return_value=({"totalWalletBalance": "1041.7", "totalMarginBalance": "1041.7"}, income, [], status),
+                return_value=({"totalWalletBalance": "1041.7", "totalMarginBalance": "1041.7"}, [], status),
             ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client,
                 "_send_signed_request",
@@ -715,14 +715,14 @@ class TestSecondPassRegressions(unittest.TestCase):
             {"incomeType": "REALIZED_PNL", "tranId": 1, "tradeId": "1", "time": start + 1000, "income": "20", "asset": "USDT", "symbol": "BTCUSDT"},
             {"incomeType": "REALIZED_PNL", "tranId": 2, "tradeId": "2", "time": start + 86400 * 1000 + 1000, "income": "-5", "asset": "USDT", "symbol": "BTCUSDT"},
         ]
-        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        status = {"connected": True, "mode": "BINANCE_SNAPSHOT_PENDING_INCOME", "positions_available": True, "income_available": False}
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "account.sqlite3"
             db_store.publish_report(db_path, previous)
             with patch.object(
                 engine,
                 "fetch_binance_data",
-                return_value=({"totalWalletBalance": "115", "totalMarginBalance": "115"}, [], [], status),
+                return_value=({"totalWalletBalance": "115", "totalMarginBalance": "115"}, [], status),
             ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client,
                 "_send_signed_request",

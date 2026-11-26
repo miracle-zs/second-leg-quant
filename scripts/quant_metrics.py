@@ -262,8 +262,7 @@ def _recompute_curve_drawdowns(
 
             drawdown = max(0.0, peak_adjusted - adjusted_equity)
             dd_usd = round(drawdown, 2)
-            dd_num = dd_usd if raw_equities is not None else drawdown
-            dd_pct = round(dd_num / peak_capital_base * 100.0, 2) if peak_capital_base > 0 else 0.0
+            dd_pct = round(drawdown / peak_capital_base * 100.0, 2) if peak_capital_base > 0 else 0.0
             bucket_max_dd_usd = max(bucket_max_dd_usd, dd_usd)
             bucket_max_dd_pct = max(bucket_max_dd_pct, dd_pct)
             max_dd_usd = max(max_dd_usd, dd_usd)

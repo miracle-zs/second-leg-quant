@@ -25,6 +25,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+import alert_risk_checks as arc
 import binance_client as bc
 import config as cfg
 import db_store
@@ -102,10 +103,10 @@ class TestTVCloudAndFallback(unittest.TestCase):
             runs_dir = Path(directory)
             cache_file = runs_dir / f"tradingview_drawings_{layout_id}.json"
             cache_file.write_text(json.dumps({"drawings_by_symbol": cached_drawings}), encoding="utf-8")
-            with patch.object(tad, "RUNS_DIR", runs_dir), patch.object(
-                tad, "_DRAWINGS_CACHE", {"data": None, "layout_id": "", "ts": 0.0}
+            with patch.object(arc, "RUNS_DIR", runs_dir), patch.object(
+                arc, "_DRAWINGS_CACHE", {"data": None, "layout_id": "", "ts": 0.0}
             ), patch.object(tve, "get_layout_drawings", side_effect=AssertionError("unexpected request")) as fetch_fn:
-                self.assertEqual(tad.fetch_layout_drawings(layout_id), cached_drawings)
+                self.assertEqual(arc.fetch_layout_drawings(layout_id), cached_drawings)
                 fetch_fn.assert_not_called()
 
     def test_binance_candle_close_confirmation_and_unclosed_guard(self):
@@ -241,18 +242,18 @@ class TestTVCloudAndFallback(unittest.TestCase):
             file_mtime = base_now - 50.0  # 50s old (< 60s ttl)
             os.utime(cache_file, (file_mtime, file_mtime))
 
-            with patch.object(tad, "RUNS_DIR", runs_dir), patch.object(
-                tad, "_DRAWINGS_CACHE", {"data": None, "layout_id": "", "ts": 0.0}
+            with patch.object(arc, "RUNS_DIR", runs_dir), patch.object(
+                arc, "_DRAWINGS_CACHE", {"data": None, "layout_id": "", "ts": 0.0}
             ), patch.object(tve, "get_layout_drawings", return_value=fresh_drawings) as fetch_fn:
                 with patch("time.time", return_value=base_now):
-                    res1 = tad.fetch_layout_drawings(layout_id, ttl_sec=60)
+                    res1 = arc.fetch_layout_drawings(layout_id, ttl_sec=60)
                     self.assertEqual(res1, stale_drawings)
-                    self.assertAlmostEqual(tad._DRAWINGS_CACHE["ts"], file_mtime, places=3)
+                    self.assertAlmostEqual(arc._DRAWINGS_CACHE["ts"], file_mtime, places=3)
                     fetch_fn.assert_not_called()
 
                 # 15s later -> total age from file_mtime is 65s >= 60s -> must refresh
                 with patch("time.time", return_value=base_now + 15.0):
-                    res2 = tad.fetch_layout_drawings(layout_id, ttl_sec=60)
+                    res2 = arc.fetch_layout_drawings(layout_id, ttl_sec=60)
                     self.assertEqual(res2, fresh_drawings)
                     fetch_fn.assert_called_once_with(layout_id)
 
@@ -663,8 +664,8 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         self.assertTrue(eval_result["is_crossover"])
         self.assertAlmostEqual(eval_result["res_price"], 0.049892, places=5)
 
-        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
-            with patch.object(tad, "get_closed_15m_candle", return_value=candle_1215):
+        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
+            with patch.object(arc, "get_closed_15m_candle", return_value=candle_1215):
                 alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
                 self.assertEqual(len(alerts), 1)
                 self.assertEqual(alerts[0]["symbol"], "YBUSDT")
@@ -692,8 +693,8 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
                 "close_time": 1795234499,
             },
         }
-        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
-            with patch.object(tad, "get_closed_15m_candle", return_value=candle_already_above):
+        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
+            with patch.object(arc, "get_closed_15m_candle", return_value=candle_already_above):
                 alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
                 self.assertEqual(len(alerts), 0)
 
@@ -724,8 +725,8 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         self.assertTrue(eval_result["is_crossover"])
         self.assertTrue(eval_result["is_breakout"])
 
-        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
-            with patch.object(tad, "get_closed_15m_candle", return_value=candle_cross):
+        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
+            with patch.object(arc, "get_closed_15m_candle", return_value=candle_cross):
                 alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
                 self.assertEqual(len(alerts), 1)
                 self.assertEqual(alerts[0]["trendline_id"], "cross_line_1")
@@ -757,10 +758,10 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
             "candle_time": "2026-11-21 12:30",
             "prev_candle": {"close": 0.04960, "open_time": 1795234500, "close_time": 1795235399},
         }
-        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
-            with patch.object(tad, "get_closed_15m_candle", return_value=candle_1):
+        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
+            with patch.object(arc, "get_closed_15m_candle", return_value=candle_1):
                 self.assertEqual(len(tad.check_feature_2_breakout(self.notifier, self.state_store)), 1)
-            with patch.object(tad, "get_closed_15m_candle", return_value=candle_2):
+            with patch.object(arc, "get_closed_15m_candle", return_value=candle_2):
                 self.assertEqual(len(tad.check_feature_2_breakout(self.notifier, self.state_store)), 0)
 
     def test_non_breakout_candle_below_trendline(self):
@@ -780,8 +781,8 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
             "close_time": 1795235399,
             "prev_candle": {"close": 0.04910, "open_time": 1795233600, "close_time": 1795234499},
         }
-        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
-            with patch.object(tad, "get_closed_15m_candle", return_value=candle_below):
+        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
+            with patch.object(arc, "get_closed_15m_candle", return_value=candle_below):
                 self.assertEqual(len(tad.check_feature_2_breakout(self.notifier, self.state_store)), 0)
 
     def test_notified_keys_not_evicted_at_200_limit(self):
@@ -802,11 +803,11 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         line_far_future = {"id": "line_future", "interval": "15", "p1": 0.07, "t1": now_ts - 3600, "p2": 0.06, "t2": now_ts + 86400 * 60}
         line_near_future = {"id": "line_near_future", "interval": "15", "p1": 0.07, "t1": now_ts - 3600, "p2": 0.06, "t2": now_ts + 3600}
 
-        self.assertFalse(tad.is_valid_15m_trendline(line_240m, current_time=now_ts))
-        self.assertFalse(tad.is_valid_15m_trendline(line_d, current_time=now_ts))
-        self.assertFalse(tad.is_valid_15m_trendline(line_ancient, current_time=now_ts))
-        self.assertFalse(tad.is_valid_15m_trendline(line_far_future, current_time=now_ts))
-        self.assertTrue(tad.is_valid_15m_trendline(line_near_future, current_time=now_ts))
+        self.assertFalse(tve.is_valid_15m_trendline(line_240m, current_time=now_ts))
+        self.assertFalse(tve.is_valid_15m_trendline(line_d, current_time=now_ts))
+        self.assertFalse(tve.is_valid_15m_trendline(line_ancient, current_time=now_ts))
+        self.assertFalse(tve.is_valid_15m_trendline(line_far_future, current_time=now_ts))
+        self.assertTrue(tve.is_valid_15m_trendline(line_near_future, current_time=now_ts))
 
         runaway_line = {"id": "runaway", "interval": "15", "p1": 0.010, "t1": now_ts - 7200, "p2": 0.008, "t2": now_ts - 3600}
         candle_runaway = {
@@ -821,8 +822,8 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         self.assertTrue(eval_runaway["is_runaway"])
         self.assertFalse(eval_runaway["is_breakout"])
 
-        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [line_240m, line_d, line_ancient, runaway_line]}):
-            with patch.object(tad, "get_closed_15m_candle", return_value=candle_runaway):
+        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [line_240m, line_d, line_ancient, runaway_line]}):
+            with patch.object(arc, "get_closed_15m_candle", return_value=candle_runaway):
                 alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
                 self.assertEqual(len(alerts), 0)
 
@@ -848,8 +849,8 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
             "candle_time": "2026-11-21 12:15",
             "prev_candle": {"close": 0.04975, "open_time": 1795233600, "close_time": 1795234499},
         }
-        with patch.object(tad, "fetch_layout_drawings", return_value={"AAAUSDT": [bad_line], "YBUSDT": [good_line]}), patch.object(
-            tad, "get_closed_15m_candle", side_effect=lambda sym: candle_aaa if sym == "AAAUSDT" else candle_yb
+        with patch.object(arc, "fetch_layout_drawings", return_value={"AAAUSDT": [bad_line], "YBUSDT": [good_line]}), patch.object(
+            arc, "get_closed_15m_candle", side_effect=lambda sym: candle_aaa if sym == "AAAUSDT" else candle_yb
         ):
             alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
         self.assertEqual(len(alerts), 1)
@@ -868,8 +869,8 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         }
         status = {}
         candle_cache = {}
-        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}), patch.object(
-            tad, "get_closed_15m_candle", return_value=stale_candle
+        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}), patch.object(
+            arc, "get_closed_15m_candle", return_value=stale_candle
         ):
             alerts = tad.check_feature_2_breakout(
                 self.notifier, self.state_store, candle_cache=candle_cache, status=status, current_bucket=current_bucket
@@ -891,8 +892,8 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
             "candle_time": "2026-11-21 12:15",
             "prev_candle": {"close": 0.04975, "open_time": now - 900, "close_time": now - 1},
         }
-        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [rtl_asc, rtl_desc]}), patch.object(
-            tad, "get_closed_15m_candle", return_value=candle
+        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [rtl_asc, rtl_desc]}), patch.object(
+            arc, "get_closed_15m_candle", return_value=candle
         ):
             alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
         self.assertEqual([a["trendline_id"] for a in alerts], ["RTL_DESC"])
@@ -925,7 +926,7 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
         }
         store.save()
         with patch.object(self.notifier, "send_alert", side_effect=[False, True]) as send, patch.object(
-            tad, "fetch_layout_drawings", return_value={}
+            arc, "fetch_layout_drawings", return_value={}
         ):
             tad.check_feature_2_breakout(self.notifier, store)
             store = tad.ResonanceStateStore(self.db_path)
@@ -949,7 +950,7 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
             "close": 7.60,
             "open": 8.10,
         }
-        with patch.object(tad, "get_closed_15m_candle", return_value=mock_candle_break):
+        with patch.object(arc, "get_closed_15m_candle", return_value=mock_candle_break):
             alerts = tad.check_feature_3_stop_loss(self.notifier, self.pos_store)
             self.assertEqual(len(alerts), 1)
             self.assertEqual(alerts[0]["status"], "STOP_LOSS_TRIGGERED")
@@ -963,12 +964,12 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
         self.pos_store.add_position("TESTUSDT", 9.0, amount=1.0, trendline=trendline, source="BINANCE_SYNC")
         candle = {"open_time": 50, "close_time": 949, "close": 7.6}
         with patch.object(self.notifier, "send_alert", side_effect=[False, True]) as send:
-            with patch.object(tad, "get_closed_15m_candle", return_value=candle):
+            with patch.object(arc, "get_closed_15m_candle", return_value=candle):
                 self.assertEqual(tad.check_feature_3_stop_loss(self.notifier, self.pos_store), [])
 
             store = tad.PositionStore(self.db_path)
             self.assertFalse(store.get_open_positions()[0]["stop_loss_notified"])
-            with patch.object(tad, "get_closed_15m_candle", side_effect=bc.BinanceAPIError("unused")):
+            with patch.object(arc, "get_closed_15m_candle", side_effect=bc.BinanceAPIError("unused")):
                 self.assertEqual(len(tad.check_feature_3_stop_loss(self.notifier, store)), 1)
                 self.assertTrue(store.get_open_positions()[0]["stop_loss_notified"])
                 self.assertEqual(store.get_history(), [])
@@ -979,7 +980,7 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
         trendline = {"p1": 10.0, "t1": 0, "p2": 5.0, "t2": 100}
         self.pos_store.add_position("TESTUSDT", 9.0, amount=1, trendline=trendline)
         candle = {"open_time": 50, "close_time": 100, "close": 6.0}
-        with patch.object(tad, "get_closed_15m_candle", return_value=candle):
+        with patch.object(arc, "get_closed_15m_candle", return_value=candle):
             alerts = tad.check_feature_3_stop_loss(self.notifier, self.pos_store)
         self.assertEqual(len(alerts), 1)
 
@@ -987,7 +988,7 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
         trendline = {"p1": 10.0, "t1": 0, "p2": 6.4, "t2": 100, "id": "support_line_1"}
         self.pos_store.add_position("TESTUSDT", entry_price=9.0, amount=100.0, trendline=trendline)
         mock_candle_hold = {"symbol": "TESTUSDT", "open_time": 50, "close_time": 949, "close": 8.40}
-        with patch.object(tad, "get_closed_15m_candle", return_value=mock_candle_hold):
+        with patch.object(arc, "get_closed_15m_candle", return_value=mock_candle_hold):
             alerts = tad.check_feature_3_stop_loss(self.notifier, self.pos_store)
             self.assertEqual(len(alerts), 0)
             self.assertEqual(len(self.pos_store.get_open_positions()), 1)
@@ -998,8 +999,8 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
         self.pos_store.add_position("TESTUSDT", 9.0, amount=1.0, trendline=None)
         matched_line = {"id": "AUTO_TL", "interval": "15", "p1": 10.0, "t1": now - 3600, "p2": 8.0, "t2": now - 600}
         candle = {"open_time": now - 600, "close_time": now - 1, "close": 9.5}
-        with patch.object(tad, "fetch_layout_drawings", return_value={"TESTUSDT": [matched_line]}), patch.object(
-            tad, "get_closed_15m_candle", return_value=candle
+        with patch.object(arc, "fetch_layout_drawings", return_value={"TESTUSDT": [matched_line]}), patch.object(
+            arc, "get_closed_15m_candle", return_value=candle
         ):
             alerts = tad.check_feature_3_stop_loss(self.notifier, self.pos_store)
         self.assertEqual(alerts, [])
@@ -1013,7 +1014,7 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
         stale_candle = {"symbol": "TESTUSDT", "open_time": 1795233600, "close_time": 1795234499, "close": 1.0}
         status = {}
         candle_cache = {}
-        with patch.object(tad, "get_closed_15m_candle", return_value=stale_candle):
+        with patch.object(arc, "get_closed_15m_candle", return_value=stale_candle):
             alerts = tad.check_feature_3_stop_loss(
                 self.notifier, self.pos_store, candle_cache=candle_cache, status=status, current_bucket=current_bucket
             )
@@ -1038,7 +1039,7 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
     def test_trailing_stop_full_lifecycle_and_highest_price_persistence(self):
         self.pos_store.add_position("COINUSDT", entry_price=1.0000, amount=1000.0)
 
-        with patch.object(tad, "fetch_ticker_prices", return_value={"COINUSDT": 1.0500}):
+        with patch.object(arc, "fetch_ticker_prices", return_value={"COINUSDT": 1.0500}):
             events1 = tad.check_feature_4_trailing_stops(
                 self.notifier, self.pos_store, activation_pct=6.0, lock_pct=1.0
             )
@@ -1047,7 +1048,7 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
             self.assertEqual(reloaded.get_open_positions()[0]["highest_price"], 1.0500)
             self.assertEqual(reloaded.get_open_positions()[0]["current_price"], 1.0500)
 
-        with patch.object(tad, "fetch_ticker_prices", return_value={"COINUSDT": 1.0650}):
+        with patch.object(arc, "fetch_ticker_prices", return_value={"COINUSDT": 1.0650}):
             events2 = tad.check_feature_4_trailing_stops(
                 self.notifier, self.pos_store, activation_pct=6.0, lock_pct=1.0
             )
@@ -1055,7 +1056,7 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
             self.assertEqual(events2[0]["type"], "TRAILING_ACTIVATED")
             self.assertAlmostEqual(self.pos_store.get_open_positions()[0]["trailing_stop_price"], 1.0100, places=4)
 
-        with patch.object(tad, "fetch_ticker_prices", return_value={"COINUSDT": 1.0090}):
+        with patch.object(arc, "fetch_ticker_prices", return_value={"COINUSDT": 1.0090}):
             events3 = tad.check_feature_4_trailing_stops(
                 self.notifier, self.pos_store, activation_pct=6.0, lock_pct=1.0
             )
@@ -1068,7 +1069,7 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
         self.pos_store.add_position("COINUSDT", 1.0, amount=1.0, source="BINANCE_SYNC")
         with patch.object(self.notifier, "send_alert", side_effect=[False, True, False, True]) as send:
             with patch.object(
-                tad,
+                arc,
                 "fetch_ticker_prices",
                 side_effect=[{"COINUSDT": 1.07}, {"COINUSDT": 1.009}, {"COINUSDT": 1.03}],
             ):
@@ -1084,7 +1085,7 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
 
     def test_zero_entry_price_guarded_without_crash(self):
         db_store.upsert_open_position(self.db_path, {"symbol": "BADUSDT", "entry_price": 0.0, "status": "OPEN"})
-        with patch.object(tad, "fetch_ticker_prices", return_value={"BADUSDT": 1.5}):
+        with patch.object(arc, "fetch_ticker_prices", return_value={"BADUSDT": 1.5}):
             events = tad.check_feature_4_trailing_stops(self.notifier, self.pos_store)
         self.assertEqual(events, [])
 
@@ -1294,7 +1295,9 @@ class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
         with patch.object(tad, "configure_logging", return_value=[]), patch.object(
             tad, "load_config", return_value=cfg_map
         ), patch.object(tad, "fetch_ticker_prices", return_value={"YBUSDT": 0.055}), patch.object(
-            tad, "fetch_layout_drawings", return_value={}
+            arc, "fetch_ticker_prices", return_value={"YBUSDT": 0.055}
+        ), patch.object(
+            arc, "fetch_layout_drawings", return_value={}
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):

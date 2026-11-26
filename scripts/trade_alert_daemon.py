@@ -30,7 +30,6 @@ import signal
 import sqlite3
 import sys
 import time
-import urllib.error
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional
@@ -43,31 +42,18 @@ if str(SCRIPTS_DIR) not in sys.path:
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from alert_notifier import (  # noqa: E402, F401
-    ServerChanNotifier,
-    build_tv_chart_link,
-    format_alert_price,
-)
-from alert_risk_checks import (  # noqa: E402, F401
-    _DRAWINGS_CACHE,
-    _fetch_15m_candles_batch,
-    _flush_retried_breakouts,
-    _is_candle_for_closed_bucket,
-    _load_candidate_pool,
-    _normalize_futures_symbol,
-    _parse_optional_finite_float,
-    _send_breakout_notification,
+from alert_notifier import ServerChanNotifier, format_alert_price  # noqa: E402
+import alert_risk_checks as arc  # noqa: E402
+from alert_risk_checks import (  # noqa: E402
     check_feature_1_resonance,
     check_feature_2_breakout,
     check_feature_3_stop_loss,
     check_feature_4_trailing_stops,
-    fetch_layout_drawings,
 )
-from binance_client import (  # noqa: E402, F401
+from binance_client import (  # noqa: E402
     BinanceAPIError,
     BinanceFuturesClient,
     fetch_ticker_prices,
-    get_closed_15m_candle,
 )
 import binance_position_client as bpc  # noqa: E402
 from config import (  # noqa: E402
@@ -83,10 +69,6 @@ from config import (  # noqa: E402
 )
 import db_store  # noqa: E402
 from http_client import HttpError  # noqa: E402
-from tv_trendline_engine import (  # noqa: E402, F401
-    calculate_log_resistance,
-    is_valid_15m_trendline,
-)
 
 LOG_FILE = RUNS_DIR / "trade_alert_daemon.log"
 logger = logging.getLogger("trade_alert_daemon")
@@ -237,7 +219,7 @@ class PositionStore(_SqliteStore):
             raise ValueError(f"entry_price must be positive for {symbol}: {entry_price}")
 
         with self.transaction():
-            sym = _normalize_futures_symbol(symbol)
+            sym = arc._normalize_futures_symbol(symbol)
             for p in self.get_open_positions():
                 if p["symbol"] == sym:
                     old_entry = float(p["entry_price"])
@@ -291,7 +273,7 @@ class PositionStore(_SqliteStore):
         exit_price: Optional[float] = None,
     ) -> Optional[dict]:
         with self.transaction():
-            sym = _normalize_futures_symbol(symbol)
+            sym = arc._normalize_futures_symbol(symbol)
             target_pos = None
             for p in self._open_positions:
                 if p["symbol"] == sym and p["status"] == "OPEN":
@@ -348,20 +330,7 @@ class ResonanceStateStore(_SqliteStore):
             self._last_raw_payload = None
             self._state_loaded = True
             return
-        loaded = json.loads(raw_payload)
-        if not isinstance(loaded, dict):
-            raise ValueError(f"Expected JSON object in resonance_state, got {type(loaded).__name__}")
-        defaults = db_store.default_resonance_state()
-        for key, default_val in defaults.items():
-            if key != "initialized":
-                loaded.setdefault(key, default_val)
-        if "initialized" not in loaded:
-            loaded["initialized"] = bool(
-                loaded.get("last_updated")
-                or loaded.get("active_resonance_symbols")
-                or loaded.get("history")
-            )
-        self.data = loaded
+        self.data = db_store.parse_resonance_state(raw_payload)
         self._last_raw_payload = raw_payload
         self._state_loaded = True
 
@@ -458,7 +427,7 @@ def run_evaluation_cycle(
     )
     if b_client.is_configured():
         binance_sync_info = bpc.sync_binance_positions(
-            b_client, pos_store, layout_id, load_drawings=fetch_layout_drawings
+            b_client, pos_store, layout_id, load_drawings=arc.fetch_layout_drawings
         )
 
     current_bucket = int(time.time() // 900) * 900
@@ -579,11 +548,11 @@ class TradeAlertDaemon:
                     self.binance_client,
                     self.pos_store,
                     layout_id,
-                    load_drawings=fetch_layout_drawings,
+                    load_drawings=arc.fetch_layout_drawings,
                 )
                 if sync_res["synced"]:
                     positions_synced = True
-            except (BinanceAPIError, HttpError, urllib.error.URLError, TimeoutError, OSError) as e:
+            except (BinanceAPIError, HttpError, TimeoutError, OSError) as e:
                 logger.warning(f"后台自动同步币安持仓异常: {e}")
 
         if not positions_synced:
@@ -718,14 +687,14 @@ class TradeAlertDaemon:
                 and not cycle_res.get("feature_3_had_error")
             ):
                 self.last_evaluated_15m_bucket = startup_bucket
-        except (BinanceAPIError, HttpError, urllib.error.URLError, TimeoutError, OSError) as e:
+        except (BinanceAPIError, HttpError, TimeoutError, OSError) as e:
             logger.error(f"初始初检网络/接口异常: {e}")
 
         while self.running:
             try:
                 self.run_iteration()
                 time.sleep(10)
-            except (BinanceAPIError, HttpError, urllib.error.URLError, TimeoutError, OSError) as e:
+            except (BinanceAPIError, HttpError, TimeoutError, OSError) as e:
                 logger.error(f"守护主循环网络/接口异常: {e}", exc_info=True)
                 time.sleep(5)
 
@@ -795,7 +764,7 @@ def main() -> None:
                 b_client,
                 store,
                 cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID),
-                load_drawings=fetch_layout_drawings,
+                load_drawings=arc.fetch_layout_drawings,
             )
             print("\n========================= 币安实盘持仓同步结果 =========================")
             print(f"• 同步状态: {'成功' if res['synced'] else '失败'} ({res['reason']})")

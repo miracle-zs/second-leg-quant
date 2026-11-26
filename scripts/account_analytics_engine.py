@@ -88,7 +88,7 @@ class AccountAnalyticsEngine:
         else:
             self.client = None
 
-    def fetch_binance_data(self) -> Tuple[Optional[dict], List[dict], List[dict], dict]:
+    def fetch_binance_data(self) -> Tuple[Optional[dict], List[dict], dict]:
         """
         拉取币安实盘合约账户与活跃持仓快照（资金流水由 ledger_sync 增量同步）。
         仅捕获明确的接口/网络异常 (BinanceAPIError / TimeoutError / OSError)，不吞掉内部逻辑 Bug。
@@ -106,14 +106,14 @@ class AccountAnalyticsEngine:
 
         if self.offline_mode:
             logger.info("ℹ️ 运行在离线/本地回退模式 (Offline Mode)。")
-            return None, [], [], api_status
+            return None, [], api_status
 
         if not self.client or not self.client.is_configured():
             api_status["status_code"] = "NOT_CONFIGURED"
             api_status["message"] = "Binance API keys not configured"
             api_status["mode"] = "NOT_CONFIGURED"
             logger.warning("⚠️ 币安 API 凭证未配置 (NOT_CONFIGURED)。")
-            return None, [], [], api_status
+            return None, [], api_status
 
         api_status["configured"] = True
 
@@ -130,7 +130,7 @@ class AccountAnalyticsEngine:
             api_status["status_code"] = code
             api_status["message"] = str(e)
             logger.warning("⚠️ 币安 /fapi/v2/account 请求异常 [%s]: %s，降级至本地离线模式。", code, e)
-            return None, [], [], api_status
+            return None, [], api_status
 
         active_positions_binance: List[dict] = []
         try:
@@ -158,7 +158,7 @@ class AccountAnalyticsEngine:
             api_status["mode"] = "BINANCE_PARTIAL"
             api_status["message"] = "Binance position data unavailable"
 
-        return account_info, [], active_positions_binance, api_status
+        return account_info, active_positions_binance, api_status
 
     def load_local_positions_store(
         self, database: Optional[Path] = None
@@ -179,10 +179,11 @@ class AccountAnalyticsEngine:
         """执行账户数据拉取、交易重构、风控指标核算并持久化到 SQLite。"""
         db_path = Path(database) if database is not None else (resolve_database_path() or DEFAULT_DB_PATH)
 
-        account_info, income_list, active_positions_binance, api_status = self.fetch_binance_data()
+        account_info, active_positions_binance, api_status = self.fetch_binance_data()
 
         previous_report: Optional[Dict[str, Any]] = None
         recording: Optional[Dict[str, Any]] = None
+        income_list: List[dict] = []
         fills_list: List[dict] = []
         new_income: List[dict] = []
         new_fills: List[dict] = []
@@ -194,10 +195,9 @@ class AccountAnalyticsEngine:
                     "币安 API 凭证未配置 (NOT_CONFIGURED)；如需本地离线分析请传入 --offline",
                     code="NOT_CONFIGURED",
                 )
-            if api_status["mode"] not in ("BINANCE_REALTIME", "BINANCE_SNAPSHOT_PENDING_INCOME"):
+            if api_status["mode"] != "BINANCE_SNAPSHOT_PENDING_INCOME":
                 detail = (
                     api_status.get("positions_error")
-                    or api_status.get("income_error")
                     or api_status.get("message")
                     or "Unknown error"
                 )

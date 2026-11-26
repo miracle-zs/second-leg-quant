@@ -58,10 +58,6 @@
         reducedMotionQuery.addEventListener('change', (e) => {
           prefersReducedMotion = Boolean(e.matches);
         });
-      } else if (typeof reducedMotionQuery.addListener === 'function') {
-        reducedMotionQuery.addListener((e) => {
-          prefersReducedMotion = Boolean(e.matches);
-        });
       }
     }
   }
@@ -807,8 +803,6 @@
         const prevRes = c.is_resonance;
         const prevHighTr = c.is_high_turnover;
         const prevNegFr = c.is_neg_funding;
-        const prevTrText = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) : '';
-        void prevTrText;
         let oldPrice;
 
         if (t) {

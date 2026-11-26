@@ -14,7 +14,6 @@ import math
 import sys
 import threading
 import time
-import urllib.error
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
@@ -48,10 +47,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger("trade_alert_daemon")
 
 _DRAWINGS_CACHE: dict[str, Any] = {"data": None, "ts": 0.0, "layout_id": ""}
-_DEFAULT_DRAWINGS_CACHE = _DRAWINGS_CACHE
-_DEFAULT_RUNS_DIR = RUNS_DIR
-_DEFAULT_GET_CLOSED_15M_CANDLE = get_closed_15m_candle
-_DEFAULT_FETCH_TICKER_PRICES = fetch_ticker_prices
 
 _EXECUTOR_LOCK = threading.Lock()
 _CANDLE_EXECUTOR: Optional[ThreadPoolExecutor] = None
@@ -75,16 +70,6 @@ def _shutdown_candle_executor() -> None:
 
 
 atexit.register(_shutdown_candle_executor)
-
-
-def _resolve_dep(name: str, local_val: Any, default_val: Any) -> Any:
-    """Honor test patches applied on either this module or re-exporting trade_alert_daemon."""
-    if local_val is not default_val:
-        return local_val
-    tad_mod = sys.modules.get("trade_alert_daemon")
-    if tad_mod is not None and hasattr(tad_mod, name):
-        return getattr(tad_mod, name)
-    return local_val
 
 
 def _normalize_futures_symbol(symbol: str) -> str:
@@ -125,19 +110,17 @@ def fetch_layout_drawings(
     从 tv_trendline_engine 获取 TradingView 布局中的画线数据 (支持内存与近期快照缓存)。
     在线拉取失败时显式抛出异常，避免覆盖有效状态或误判 15m 窗口完成。
     """
-    cache = _resolve_dep("_DRAWINGS_CACHE", _DRAWINGS_CACHE, _DEFAULT_DRAWINGS_CACHE)
-    runs_dir = _resolve_dep("RUNS_DIR", RUNS_DIR, _DEFAULT_RUNS_DIR)
     now = time.time()
     raw_drawings: Optional[dict[str, Any]] = None
 
     if (
-        cache["data"] is not None
-        and cache["layout_id"] == layout_id
-        and (now - float(cache["ts"])) < ttl_sec
+        _DRAWINGS_CACHE["data"] is not None
+        and _DRAWINGS_CACHE["layout_id"] == layout_id
+        and (now - float(_DRAWINGS_CACHE["ts"])) < ttl_sec
     ):
-        raw_drawings = cache["data"]
+        raw_drawings = _DRAWINGS_CACHE["data"]
     else:
-        local_cache_file = Path(runs_dir) / f"tradingview_drawings_{layout_id}.json"
+        local_cache_file = Path(RUNS_DIR) / f"tradingview_drawings_{layout_id}.json"
         if local_cache_file.exists():
             mtime = local_cache_file.stat().st_mtime
             if (now - mtime) < ttl_sec:
@@ -145,20 +128,17 @@ def fetch_layout_drawings(
                     cdata = json.load(f)
                 drawings = cdata.get("drawings_by_symbol") if isinstance(cdata, dict) else None
                 if isinstance(drawings, dict):
-                    cache.update({"data": drawings, "ts": mtime, "layout_id": layout_id})
+                    _DRAWINGS_CACHE.update({"data": drawings, "ts": mtime, "layout_id": layout_id})
                     raw_drawings = drawings
 
         if raw_drawings is None:
             drawings = tve.get_layout_drawings(layout_id)
             if not isinstance(drawings, dict):
                 raise RuntimeError(f"Unexpected drawings payload for {layout_id}: {type(drawings).__name__}")
-            cache.update({"data": drawings, "ts": now, "layout_id": layout_id})
+            _DRAWINGS_CACHE.update({"data": drawings, "ts": now, "layout_id": layout_id})
             raw_drawings = drawings
 
     return raw_drawings
-
-
-_DEFAULT_FETCH_LAYOUT_DRAWINGS = fetch_layout_drawings
 
 
 def check_feature_1_resonance(
@@ -451,13 +431,9 @@ def _fetch_15m_candles_batch(
     if not to_fetch:
         return resolved
 
-    fetch_candle_fn = _resolve_dep(
-        "get_closed_15m_candle", get_closed_15m_candle, _DEFAULT_GET_CLOSED_15M_CANDLE
-    )
-
     def _fetch_one(sym_clean: str) -> tuple[str, Optional[dict[str, Any]], Optional[BinanceAPIError]]:
         try:
-            return sym_clean, fetch_candle_fn(sym_clean), None
+            return sym_clean, get_closed_15m_candle(sym_clean), None
         except BinanceAPIError as exc:
             return sym_clean, None, exc
 
@@ -549,11 +525,8 @@ def check_feature_2_breakout(
         _flush_retried_breakouts(state_store, retried_succeeded)
         return []
 
-    fetch_drawings_fn = _resolve_dep(
-        "fetch_layout_drawings", fetch_layout_drawings, _DEFAULT_FETCH_LAYOUT_DRAWINGS
-    )
     try:
-        drawings_map = fetch_drawings_fn(layout_id)
+        drawings_map = fetch_layout_drawings(layout_id)
     except (BinanceAPIError, tve.TradingViewError, TimeoutError, OSError) as e:
         logger.warning(f"获取 TV 布局画线异常，跳过本轮突破扫描: {e}")
         _flush_retried_breakouts(state_store, retried_succeeded)
@@ -757,11 +730,8 @@ def check_feature_3_stop_loss(
     candles_by_symbol: dict[str, dict[str, Any]] = {}
     if not retry_only:
         if any(p.get("pending_stop_loss_candle") is None and not p.get("trendline") for p in eligible):
-            fetch_drawings_fn = _resolve_dep(
-                "fetch_layout_drawings", fetch_layout_drawings, _DEFAULT_FETCH_LAYOUT_DRAWINGS
-            )
             try:
-                drawings_map = fetch_drawings_fn(layout_id)
+                drawings_map = fetch_layout_drawings(layout_id)
             except (BinanceAPIError, tve.TradingViewError, TimeoutError, OSError) as e:
                 logger.warning(f"获取 TV 画线失败，仅校验已缓存趋势线的持仓: {e}")
                 if status is not None:
@@ -940,11 +910,8 @@ def check_feature_4_trailing_stops(
         if not resolved_prices.get(p["symbol"]) and not resolved_prices.get(clean_symbol(p["symbol"]))
     ]
     if missing_syms:
-        fetch_tickers_fn = _resolve_dep(
-            "fetch_ticker_prices", fetch_ticker_prices, _DEFAULT_FETCH_TICKER_PRICES
-        )
         try:
-            fetched = fetch_tickers_fn(missing_syms)
+            fetched = fetch_ticker_prices(missing_syms)
             resolved_prices.update(fetched)
         except BinanceAPIError as e:
             logger.warning(f"批量获取移动止盈实时价格失败: {e}")

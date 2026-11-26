@@ -105,15 +105,6 @@ def sync_db_ledger(
     """
     recording: Optional[Dict[str, Any]] = db_store.load_recording(database)
     previous_report: Optional[Dict[str, Any]] = None
-    if recording is None:
-        previous_report = db_store.load_report(database)
-        if previous_report is not None and previous_report.get("recording") is not None:
-            raw_prev_rec = previous_report["recording"]
-            if not isinstance(raw_prev_rec, Mapping):
-                raise ValueError(
-                    f"Corrupt previous_report['recording'] type: {type(raw_prev_rec).__name__}"
-                )
-            recording = dict(raw_prev_rec)
 
     try:
         end_ms = int(client.get_server_time())

@@ -433,9 +433,9 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             "totalUnrealizedProfit": "180.30",
         }
         mock_income_data = [
-            {"symbol": "YBUSDT", "incomeType": "REALIZED_PNL", "income": "12.50", "time": 1795200000000},
-            {"symbol": "YBUSDT", "incomeType": "COMMISSION", "income": "-0.05", "time": 1795200000000},
-            {"symbol": "YBUSDT", "incomeType": "FUNDING_FEE", "income": "-0.02", "time": 1795200000000},
+            {"symbol": "YBUSDT", "incomeType": "REALIZED_PNL", "income": "12.50", "asset": "USDT", "time": 1795200000000},
+            {"symbol": "YBUSDT", "incomeType": "COMMISSION", "income": "-0.05", "asset": "USDT", "time": 1795200000000},
+            {"symbol": "YBUSDT", "incomeType": "FUNDING_FEE", "income": "-0.02", "asset": "USDT", "time": 1795200000000},
         ]
 
         def fake_send(endpoint, params=None):
@@ -454,7 +454,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             self.assertEqual(len(income), 3)
 
             engine = aae.AccountAnalyticsEngine(client=client)
-            _, _, _, status = engine.fetch_binance_data()
+            _, _, status = engine.fetch_binance_data()
             self.assertTrue(status["connected"])
             self.assertEqual(status["status_code"], 200)
 
@@ -493,7 +493,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
                 raise bc.BinanceAPIError("err", code="NETWORK_ERROR", endpoint=endpoint)
 
             with patch.object(client, "_send_signed_request", side_effect=fake_pos_err):
-                _, _, _, partial_status = engine.fetch_binance_data()
+                _, _, partial_status = engine.fetch_binance_data()
                 self.assertFalse(partial_status["positions_available"])
                 self.assertEqual(partial_status["mode"], "BINANCE_PARTIAL")
                 with self.assertRaises(RuntimeError):
@@ -537,13 +537,13 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
     def test_database_with_candidates_initializes_account_recording(self):
         client = bc.BinanceFuturesClient("test", "test")
         engine = aae.AccountAnalyticsEngine(client=client)
-        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        status = {"connected": True, "mode": "BINANCE_SNAPSHOT_PENDING_INCOME", "positions_available": True, "income_available": False}
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "account.sqlite3"
             with closing(sqlite3.connect(database)) as connection, connection:
                 connection.execute("CREATE TABLE candidate_snapshot (id INTEGER PRIMARY KEY, updated_at TEXT, payload TEXT)")
             with patch.object(engine, "fetch_binance_data", return_value=(
-                {"totalWalletBalance": "1000", "totalMarginBalance": "1000"}, [], [], status
+                {"totalWalletBalance": "1000", "totalMarginBalance": "1000"}, [], status
             )), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client, "_send_signed_request", return_value=[]
             ):
@@ -566,12 +566,12 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             {"incomeType": "COMMISSION", "tranId": 3, "tradeId": "5", "time": start + 2, "income": "-0.2", "asset": "USDT", "symbol": "BTCUSDT"},
         ]
         fill = {"symbol": "BTCUSDT", "id": 5, "orderId": 1, "side": "SELL", "time": start + 2, "positionSide": "LONG", "price": "110", "qty": "1", "quoteQty": "110"}
-        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        status = {"connected": True, "mode": "BINANCE_SNAPSHOT_PENDING_INCOME", "positions_available": True, "income_available": False}
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "account.sqlite3"
             db_store.publish_report(database, previous)
-            with patch.object(engine, "fetch_binance_data", return_value=(
-                {"totalWalletBalance": "1110", "totalMarginBalance": "1110"}, income, [], status
+            with patch.object(engine, "fetch_binance_data", side_effect=lambda: (
+                {"totalWalletBalance": "1110", "totalMarginBalance": "1110"}, [], dict(status)
             )), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client, "_send_signed_request", side_effect=lambda endpoint, params: (
                     income if endpoint == "/fapi/v1/income" else [fill]
@@ -611,14 +611,14 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             {"symbol": "BTCUSDT", "id": 2, "orderId": 2, "side": "SELL", "time": start + 4000, "positionSide": "LONG", "price": "110", "qty": "1", "quoteQty": "110"},
             {"symbol": "BTCUSDT", "id": 3, "orderId": 2, "side": "SELL", "time": start + 5000, "positionSide": "LONG", "price": "110", "qty": "2", "quoteQty": "220"},
         ]
-        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        status = {"connected": True, "mode": "BINANCE_SNAPSHOT_PENDING_INCOME", "positions_available": True, "income_available": False}
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "account.sqlite3"
             db_store.publish_report(database, previous)
             with patch.object(
                 engine,
                 "fetch_binance_data",
-                return_value=({"totalWalletBalance": "1030", "totalMarginBalance": "1030"}, income, [], status),
+                return_value=({"totalWalletBalance": "1030", "totalMarginBalance": "1030"}, [], status),
             ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client,
                 "_send_signed_request",
@@ -667,7 +667,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             {"symbol": "ETHUSDT", "id": 11, "orderId": 11, "side": "SELL", "time": day2 + 10000, "positionSide": "SHORT", "price": "3000", "qty": "1", "quoteQty": "3000"},
             {"symbol": "ETHUSDT", "id": 12, "orderId": 12, "side": "BUY", "time": day2 + 16000, "positionSide": "SHORT", "price": "2900", "qty": "1", "quoteQty": "2900"},
         ]
-        status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+        status = {"connected": True, "mode": "BINANCE_SNAPSHOT_PENDING_INCOME", "positions_available": True, "income_available": False}
 
         def fake_signed(endpoint, params=None):
             if endpoint == "/fapi/v1/income":
@@ -681,7 +681,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             with patch.object(
                 engine,
                 "fetch_binance_data",
-                return_value=({"totalWalletBalance": "1110.4", "totalMarginBalance": "1110.4"}, [], [], status),
+                return_value=({"totalWalletBalance": "1110.4", "totalMarginBalance": "1110.4"}, [], status),
             ), patch.object(engine, "load_local_positions_store", return_value=([], [])), patch.object(
                 client, "_send_signed_request", side_effect=fake_signed
             ):
@@ -739,7 +739,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
             side_effect=bc.BinanceAPIError("Service unavailable from a restricted location", code=451),
         ):
             engine = aae.AccountAnalyticsEngine(client=client)
-            acc_info, _, _, status = engine.fetch_binance_data()
+            acc_info, _, status = engine.fetch_binance_data()
             self.assertFalse(status["connected"])
             self.assertEqual(status["status_code"], 451)
             self.assertEqual(status["mode"], "OFFLINE_FALLBACK")
@@ -749,7 +749,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
         client = bc.BinanceFuturesClient(api_key="mock_key", api_secret="mock_sec")
         with patch.object(client, "_send_signed_request", side_effect=TimeoutError("Connection timed out")):
             engine = aae.AccountAnalyticsEngine(client=client)
-            _, _, _, status = engine.fetch_binance_data()
+            _, _, status = engine.fetch_binance_data()
             self.assertFalse(status["connected"])
             self.assertEqual(status["status_code"], -1)
             self.assertEqual(status["mode"], "OFFLINE_FALLBACK")
@@ -758,7 +758,7 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
     def test_offline_mode_flag_bypasses_network(self):
         mock_client = MagicMock()
         engine = aae.AccountAnalyticsEngine(client=mock_client, offline_mode=True)
-        _, _, _, status = engine.fetch_binance_data()
+        _, _, status = engine.fetch_binance_data()
         self.assertFalse(status["connected"])
         self.assertEqual(status["mode"], "OFFLINE_FALLBACK")
         mock_client.get_account_info.assert_not_called()

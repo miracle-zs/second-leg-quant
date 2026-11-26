@@ -25,6 +25,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+import alert_risk_checks as arc  # noqa: E402
 import binance_client as bc  # noqa: E402
 import db_store  # noqa: E402
 import trade_alert_daemon as tad  # noqa: E402
@@ -125,8 +126,8 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             send_calls.append(title)
             return "YBUSDT" not in title
 
-        with patch.object(tad, "fetch_layout_drawings", side_effect=fake_drawings), patch.object(
-            tad, "get_closed_15m_candle", side_effect=fake_candle
+        with patch.object(arc, "fetch_layout_drawings", side_effect=fake_drawings), patch.object(
+            arc, "get_closed_15m_candle", side_effect=fake_candle
         ), patch.object(self.notifier, "send_alert", side_effect=fake_send):
             alerts = tad.check_feature_2_breakout(self.notifier, store)
 
@@ -156,8 +157,8 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             "prev_candle": {"close": 0.04975, "open_time": now - 900, "close_time": now - 1},
         }
 
-        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [line1, line2]}), patch.object(
-            tad, "get_closed_15m_candle", return_value=candle
+        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [line1, line2]}), patch.object(
+            arc, "get_closed_15m_candle", return_value=candle
         ), patch.object(self.notifier, "send_alert", side_effect=[False, False, True]) as send_mock:
             # Cycle 1: L1 fails -> only YBUSDT_L1 queued, L2 not queued or notified
             self.assertEqual(tad.check_feature_2_breakout(self.notifier, store), [])
@@ -196,8 +197,8 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             }
         ]
         with patch.object(daemon.binance_client, "get_active_positions", return_value=active_longs), patch.object(
-            tad, "fetch_layout_drawings", return_value={}
-        ), patch.object(tad, "fetch_ticker_prices", return_value={"ILLIQUSDT": 1.08}) as mock_tickers, patch.object(
+            arc, "fetch_layout_drawings", return_value={}
+        ), patch.object(arc, "fetch_ticker_prices", return_value={"ILLIQUSDT": 1.08}) as mock_tickers, patch.object(
             daemon.notifier, "send_alert", return_value=True
         ) as mock_send:
             daemon.run_iteration(now=1800000005)
@@ -218,7 +219,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         bad_candle = {"symbol": "MICRO1USDT", "close_time": 50, "close": 0.00005}
         st_bad = {}
         with patch.object(
-            tad,
+            arc,
             "get_closed_15m_candle",
             side_effect=lambda sym: bad_candle if sym == "MICRO1USDT" else {"symbol": "SAFE2USDT", "open_time": 50, "close_time": 949, "close": 1.2},
         ):
@@ -238,7 +239,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
 
         st_fail = {}
         with patch.object(
-            tad,
+            arc,
             "get_closed_15m_candle",
             side_effect=lambda sym: hit_candle if sym == "MICRO1USDT" else safe_candle,
         ), patch.object(
@@ -250,8 +251,8 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
 
         # Daemon intra-bucket retry must pass retry_only=True so SAFE2USDT does NOT hit Binance/TV every 10s
         daemon = tad.TradeAlertDaemon({"database_path": str(self.db_path)}, dry_run=True)
-        with patch.object(tad, "get_closed_15m_candle", side_effect=AssertionError("must not fetch klines on retry_only")), patch.object(
-            tad, "fetch_layout_drawings", side_effect=AssertionError("must not fetch drawings on retry_only")
+        with patch.object(arc, "get_closed_15m_candle", side_effect=AssertionError("must not fetch klines on retry_only")), patch.object(
+            arc, "fetch_layout_drawings", side_effect=AssertionError("must not fetch drawings on retry_only")
         ), patch.object(daemon.notifier, "send_alert", return_value=True) as mock_send, patch.object(
             tad, "check_feature_4_trailing_stops", return_value=[]
         ):
@@ -287,7 +288,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             sent.append(desp)
             return True
 
-        with patch.object(tad, "fetch_ticker_prices", side_effect=fake_tickers), patch.object(
+        with patch.object(arc, "fetch_ticker_prices", side_effect=fake_tickers), patch.object(
             self.notifier, "send_alert", side_effect=fake_send
         ):
             events = tad.check_feature_4_trailing_stops(self.notifier, pos_store, activation_pct=6.0, lock_pct=1.0)
@@ -369,7 +370,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             {"symbol": "PEPEUSDT", "entry_price": 0.00004, "amount": 100.0, "status": "OPEN"},
         )
         pos_store = tad.PositionStore(self.db_path)
-        with patch.object(tad, "fetch_ticker_prices", side_effect=bc.BinanceAPIError("down")), patch.object(
+        with patch.object(arc, "fetch_ticker_prices", side_effect=bc.BinanceAPIError("down")), patch.object(
             pos_store, "transaction", wraps=pos_store.transaction
         ) as tx_spy:
             events = tad.check_feature_4_trailing_stops(self.notifier, pos_store)
@@ -382,10 +383,10 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             runs_dir = Path(directory)
             cache_file = runs_dir / f"tradingview_drawings_{layout_id}.json"
             cache_file.write_text(json.dumps({"drawings_by_symbol": {}}), encoding="utf-8")
-            with patch.object(tad, "RUNS_DIR", runs_dir), patch.object(
-                tad, "_DRAWINGS_CACHE", {"data": None, "layout_id": "", "ts": 0.0}
+            with patch.object(arc, "RUNS_DIR", runs_dir), patch.object(
+                arc, "_DRAWINGS_CACHE", {"data": None, "layout_id": "", "ts": 0.0}
             ), patch.object(tve, "get_layout_drawings", side_effect=AssertionError("should honor empty cache")):
-                self.assertEqual(tad.fetch_layout_drawings(layout_id, ttl_sec=60), {})
+                self.assertEqual(arc.fetch_layout_drawings(layout_id, ttl_sec=60), {})
 
         pos_store = tad.PositionStore(self.db_path)
         pos_store.add_position("YBUSDT", 0.05, amount=10.0)
@@ -421,7 +422,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         )
 
         cand_js = (ROOT_DIR / "web/candidates.js").read_text(encoding="utf-8")
-        self.assertLess(cand_js.index("const prevTrText"), cand_js.index("c.turnover_ratio = trVal"))
+        self.assertLess(cand_js.index("const prevSortVal"), cand_js.index("c.turnover_ratio = trVal"))
         self.assertIn("toBeijingDate", cand_js)
         self.assertIn("checkSnapshotVersion().then", cand_js)
 
@@ -471,12 +472,12 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
 
     def test_breakout_notification_requires_timestamp_and_honors_zero(self):
         with self.assertRaises(KeyError):
-            tad._send_breakout_notification(
+            arc._send_breakout_notification(
                 self.notifier, "YBUSDT", 1.0, 1.1, 10.0, {}, "ig0LuDL8"
             )
         sent = []
         with patch.object(self.notifier, "send_alert", side_effect=lambda t, d: sent.append(d) or True):
-            ok = tad._send_breakout_notification(
+            ok = arc._send_breakout_notification(
                 self.notifier, "YBUSDT", 1.0, 1.1, 10.0, {"open_time": 0}, "ig0LuDL8"
             )
         self.assertTrue(ok)
@@ -497,7 +498,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
         )
         pos_store = tad.PositionStore(self.db_path)
         st = {}
-        with patch.object(tad, "get_closed_15m_candle", side_effect=AssertionError("must not bypass corrupt pending")):
+        with patch.object(arc, "get_closed_15m_candle", side_effect=AssertionError("must not bypass corrupt pending")):
             res = tad.check_feature_3_stop_loss(self.notifier, pos_store, status=st)
         self.assertEqual(res, [])
         self.assertTrue(st.get("had_error"))
@@ -515,7 +516,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
         )
         pos_store2 = tad.PositionStore(self.db_path)
         with patch.object(
-            tad,
+            arc,
             "get_closed_15m_candle",
             return_value={"symbol": "NOAMTUSDT", "open_time": 50, "close_time": 949, "close": 1.0},
         ):
@@ -536,7 +537,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
             },
         )
         pos_store = tad.PositionStore(self.db_path)
-        with patch.object(tad, "fetch_ticker_prices", return_value={"BADLOCKUSDT": 1.05}):
+        with patch.object(arc, "fetch_ticker_prices", return_value={"BADLOCKUSDT": 1.05}):
             with self.assertRaises(ValueError):
                 tad.check_feature_4_trailing_stops(self.notifier, pos_store)
 
@@ -545,7 +546,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
             [{"symbol": "TICKUSDT", "entry_price": 1.0, "amount": 10.0, "status": "OPEN"}],
         )
         pos_store2 = tad.PositionStore(self.db_path)
-        with patch.object(tad, "fetch_ticker_prices", return_value={"TICKUSDT": 0.0}):
+        with patch.object(arc, "fetch_ticker_prices", return_value={"TICKUSDT": 0.0}):
             with self.assertRaises(ValueError):
                 tad.check_feature_4_trailing_stops(self.notifier, pos_store2)
 

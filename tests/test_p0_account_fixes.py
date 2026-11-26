@@ -249,11 +249,11 @@ class TestDbStoreAndLedgerSyncP0Fixes(unittest.TestCase):
             self.assertIsNone(db_store.load_report(db_path))
             self.assertIsNotNone(db_store.load_recording(db_path))
 
-            status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+            status = {"connected": True, "mode": "BINANCE_SNAPSHOT_PENDING_INCOME", "positions_available": True, "income_available": False}
             with patch.object(
                 engine,
                 "fetch_binance_data",
-                return_value=({"totalWalletBalance": "1200", "totalMarginBalance": "1200"}, [], [], status),
+                return_value=({"totalWalletBalance": "1200", "totalMarginBalance": "1200"}, [], status),
             ), patch.object(client, "get_server_time", return_value=t2), patch.object(
                 client, "_send_signed_request", return_value=[]
             ), patch.object(ledger_sync.db_store, "load_ledger_bundle", wraps=db_store.load_ledger_bundle) as spy_bundle:
@@ -338,7 +338,7 @@ class TestBinancePositionSyncAndEngineP0Fixes(unittest.TestCase):
             db_path = Path(tmp) / "eng.sqlite3"
             unconfigured = bc.BinanceFuturesClient("", "")
             eng_unconf = aae.AccountAnalyticsEngine(client=unconfigured, offline_mode=False)
-            _, _, _, status = eng_unconf.fetch_binance_data()
+            _, _, status = eng_unconf.fetch_binance_data()
             self.assertEqual(status["mode"], "NOT_CONFIGURED")
             with self.assertRaises(bc.BinanceAPIError) as ctx_unconf:
                 eng_unconf.run(database=db_path)
@@ -677,7 +677,9 @@ class TestDashboardAPIP0Fixes(unittest.TestCase):
 
 class TestAccountFailFastRegressionFixes(unittest.TestCase):
     def test_trade_reconstructor_rejects_corrupt_required_fields_and_magic_leverage(self):
-        # Empty/null explicit asset raises ValueError
+        # Missing/empty/null asset fails fast
+        with self.assertRaises(KeyError):
+            tr.income_asset({})
         with self.assertRaises(ValueError):
             tr.income_asset({"asset": ""})
         with self.assertRaises(ValueError):
@@ -791,11 +793,11 @@ class TestAccountFailFastRegressionFixes(unittest.TestCase):
                 )
             client = bc.BinanceFuturesClient("k", "s")
             eng = aae.AccountAnalyticsEngine(client=client)
-            status = {"connected": True, "mode": "BINANCE_REALTIME", "positions_available": True, "income_available": True}
+            status = {"connected": True, "mode": "BINANCE_SNAPSHOT_PENDING_INCOME", "positions_available": True, "income_available": False}
             with patch.object(
                 eng,
                 "fetch_binance_data",
-                return_value=({"totalWalletBalance": "1000", "totalMarginBalance": "1000"}, [], [], status),
+                return_value=({"totalWalletBalance": "1000", "totalMarginBalance": "1000"}, [], status),
             ), patch.object(client, "get_server_time", return_value=start_ms), patch.object(
                 client, "_send_signed_request", return_value=[]
             ):

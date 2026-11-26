@@ -41,9 +41,6 @@ _LOCAL_MATCH_WINDOW_SEC = 300.0
 
 def income_asset(item: Mapping[str, Any]) -> str:
     """Return normalized uppercase asset name for a Binance income record."""
-    if "asset" not in item:
-        # Legacy minimal fixtures omit "asset"; reject explicit None/empty values below.
-        return "USDT"
     asset = item["asset"]
     if asset is None or not str(asset).strip():
         raise ValueError(f"Empty or null asset in income record: {item!r}")
