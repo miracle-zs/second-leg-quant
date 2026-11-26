@@ -1,12 +1,14 @@
 """Store/serve static HUD shells and JSON APIs backed by SQLite (WAL) via db_store."""
 import argparse
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import gzip
 import hashlib
 import http.client
 import json
+import math
 import mimetypes
 import os
+import re
 import sqlite3
 import stat
 import sys
@@ -39,6 +41,30 @@ _BINANCE_KLINES_TTL_SEC = 12.0
 _BINANCE_PROXY_CACHE_MAX_ENTRIES = 128
 _STATIC_CACHE_MAX_ENTRIES = 64
 _BINANCE_PROXY_TIMEOUT_SEC = 10.0
+_BINANCE_RATE_LIMIT_MAX_REQUESTS = 30
+_BINANCE_RATE_LIMIT_WINDOW_SEC = 60.0
+_RATE_LIMIT_MAX_CLIENTS = 4096
+_TRUSTED_PROXY_IPS = frozenset({"127.0.0.1", "::1", "::ffff:127.0.0.1"})
+_SYMBOL_PATTERN = re.compile(r"^[A-Z0-9\u4e00-\u9fa5]{1,28}(?:USDT|USDC|BUSD)\Z")
+_CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "font-src 'self' data:; "
+    "connect-src 'self'; "
+    "frame-src https://s.tradingview.com; "
+    "frame-ancestors 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "form-action 'self'"
+)
+_SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Frame-Options", "SAMEORIGIN"),
+    ("Referrer-Policy", "strict-origin-when-cross-origin"),
+    ("Content-Security-Policy", _CONTENT_SECURITY_POLICY),
+)
 _GZIP_MIN_BYTES = 1024
 _GZIP_COMPRESS_LEVEL = 6
 
@@ -71,15 +97,21 @@ def _etag_pair(body: bytes, gz_body: Optional[bytes]) -> tuple[str, Optional[str
     return etag, gz_etag
 
 
-def _accepts_gzip(headers: Any) -> bool:
+def _get_header(headers: Any, name: str) -> Optional[str]:
     if not headers:
-        return False
-    raw = headers.get("Accept-Encoding")
-    if raw is None:
-        for key, val in headers.items():
-            if key.lower() == "accept-encoding":
-                raw = val
-                break
+        return None
+    raw = headers.get(name)
+    if raw is not None:
+        return str(raw)
+    target = name.lower()
+    for key, val in headers.items():
+        if str(key).lower() == target:
+            return str(val)
+    return None
+
+
+def _accepts_gzip(headers: Any) -> bool:
+    raw = _get_header(headers, "Accept-Encoding")
     if not raw:
         return False
     for part in str(raw).split(","):
@@ -100,9 +132,28 @@ def _accepts_gzip(headers: Any) -> bool:
 
 
 def _is_valid_symbol(symbol: str) -> bool:
-    if not symbol or len(symbol) > 32:
+    if not isinstance(symbol, str) or not (5 <= len(symbol) <= 32):
         return False
-    return not any(ch.isspace() or ord(ch) < 32 or ch in "/?&#%\\" for ch in symbol)
+    return _SYMBOL_PATTERN.fullmatch(symbol) is not None
+
+
+def _extract_client_ip(handler: Any) -> str:
+    client_addr = getattr(handler, "client_address", None)
+    peer_ip = (
+        str(client_addr[0]).strip()
+        if isinstance(client_addr, tuple) and client_addr and client_addr[0]
+        else "127.0.0.1"
+    )
+    if peer_ip in _TRUSTED_PROXY_IPS:
+        real_ip = (_get_header(getattr(handler, "headers", None), "X-Real-IP") or "").strip()
+        if real_ip:
+            return real_ip[:64]
+        forwarded_for = _get_header(getattr(handler, "headers", None), "X-Forwarded-For") or ""
+        if forwarded_for:
+            parts = [part.strip() for part in forwarded_for.split(",") if part.strip()]
+            if parts:
+                return parts[-1][:64]
+    return peer_ip[:64]
 
 
 def _content_type_for(asset: Path) -> str:
@@ -123,7 +174,12 @@ def _matches_etag(if_none_match: Optional[str], etag: str) -> bool:
     return False
 
 
-def create_handler(database: Path):
+def create_handler(
+    database: Path,
+    *,
+    rate_limit_max: int = _BINANCE_RATE_LIMIT_MAX_REQUESTS,
+    rate_limit_window_sec: float = _BINANCE_RATE_LIMIT_WINDOW_SEC,
+):
     """Build an HTTP request handler serving static HUD shells, /static/* assets, and JSON APIs."""
     web_root = WEB_DIR.resolve()
     proxy_cache: OrderedDict[str, tuple[float, bytes, Optional[bytes]]] = OrderedDict()
@@ -135,10 +191,46 @@ def create_handler(database: Path):
     static_lock = threading.Lock()
     snapshot_cache: dict[str, tuple[Any, bytes, Optional[bytes], str, Optional[str]]] = {}
     snapshot_lock = threading.Lock()
+    rate_limit_lock = threading.Lock()
+    rate_limit_buckets: OrderedDict[str, deque[float]] = OrderedDict()
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         timeout = 30
+
+        def _send_security_headers(self) -> None:
+            if getattr(self, "_security_headers_sent", False):
+                return
+            self._security_headers_sent = True
+            for key, value in _SECURITY_HEADERS:
+                self.send_header(key, value)
+
+        def end_headers(self) -> None:
+            self._send_security_headers()
+            self._security_headers_sent = False
+            super().end_headers()
+
+        def _consume_binance_rate_limit(self) -> Optional[int]:
+            if rate_limit_max <= 0 or rate_limit_window_sec <= 0:
+                return None
+            client_ip = _extract_client_ip(self)
+            now = time.monotonic()
+            cutoff = now - rate_limit_window_sec
+            with rate_limit_lock:
+                bucket = rate_limit_buckets.get(client_ip)
+                if bucket is None:
+                    bucket = deque()
+                    rate_limit_buckets[client_ip] = bucket
+                else:
+                    rate_limit_buckets.move_to_end(client_ip)
+                while bucket and bucket[0] <= cutoff:
+                    bucket.popleft()
+                if len(bucket) >= rate_limit_max:
+                    return max(1, math.ceil(bucket[0] + rate_limit_window_sec - now))
+                bucket.append(now)
+                while len(rate_limit_buckets) > _RATE_LIMIT_MAX_CLIENTS:
+                    rate_limit_buckets.popitem(last=False)
+            return None
 
         def _send_bytes(
             self,
@@ -154,6 +246,7 @@ def create_handler(database: Path):
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", cache_control)
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             if extra_headers:
                 for key, value in extra_headers.items():
                     self.send_header(key, value)
@@ -161,13 +254,21 @@ def create_handler(database: Path):
             if send_body:
                 self.wfile.write(body)
 
-        def _send_json_error(self, status: int, message: str, *, send_body: bool = True) -> None:
+        def _send_json_error(
+            self,
+            status: int,
+            message: str,
+            *,
+            extra_headers: Optional[dict[str, str]] = None,
+            send_body: bool = True,
+        ) -> None:
             err_body = json.dumps({"error": message}, ensure_ascii=False).encode("utf-8")
             self._send_bytes(
                 status,
                 err_body,
                 "application/json; charset=utf-8",
                 cache_control="no-store",
+                extra_headers=extra_headers,
                 send_body=send_body,
             )
 
@@ -190,6 +291,7 @@ def create_handler(database: Path):
                 self.send_header("Cache-Control", "no-cache")
                 if gz_body is not None:
                     self.send_header("Vary", "Accept-Encoding")
+                self._send_security_headers()
                 self.end_headers()
                 return
             extra_headers = {"ETag": active_etag}
@@ -431,7 +533,8 @@ def create_handler(database: Path):
                                     err_body = b""
                             if not err_body:
                                 err_body = json.dumps(
-                                    {"error": exc.body or str(exc)}, ensure_ascii=False
+                                    {"error": exc.body or f"Upstream HTTP {exc.status_code}"},
+                                    ensure_ascii=False,
                                 ).encode("utf-8")
                             status = exc.status_code
                             body = err_body
@@ -439,13 +542,13 @@ def create_handler(database: Path):
                             self.log_error("Binance proxy error for %s: %s", url, exc)
                             status = 502
                             body = json.dumps(
-                                {"error": f"Binance upstream error: {exc}"}, ensure_ascii=False
+                                {"error": "Binance upstream error"}, ensure_ascii=False
                             ).encode("utf-8")
                     except (http.client.HTTPException, TimeoutError, OSError) as exc:
                         self.log_error("Binance proxy error for %s: %s", url, exc)
                         status = 502
                         body = json.dumps(
-                            {"error": f"Binance upstream error: {exc}"}, ensure_ascii=False
+                            {"error": "Binance upstream error"}, ensure_ascii=False
                         ).encode("utf-8")
                     else:
                         gz_body = _maybe_gzip(body)
@@ -479,6 +582,7 @@ def create_handler(database: Path):
             self._send_proxy_payload(status, body, gz_body, send_body=send_body)
 
         def _handle_get(self, *, send_body: bool) -> None:
+            self._security_headers_sent = False
             parsed = urlsplit(self.path)
             path = parsed.path
 
@@ -561,6 +665,17 @@ def create_handler(database: Path):
                 )
                 return
 
+            if path.startswith("/api/binance/"):
+                retry_after = self._consume_binance_rate_limit()
+                if retry_after is not None:
+                    self._send_json_error(
+                        429,
+                        "Rate limit exceeded. Too many requests.",
+                        extra_headers={"Retry-After": str(retry_after)},
+                        send_body=send_body,
+                    )
+                    return
+
             if path == "/api/binance/ticker24hr":
                 self._send_binance_proxy(
                     "ticker24hr",
@@ -582,13 +697,19 @@ def create_handler(database: Path):
                 return
 
             if path == "/api/binance/klines":
-                qs = parse_qs(parsed.query)
-                symbol = (qs.get("symbol") or [""])[0].strip().upper()
-                interval = (qs.get("interval") or [""])[0].strip()
-                raw_limit = (qs.get("limit") or ["168"])[0].strip()
-                try:
+                qs = parse_qs(parsed.query, keep_blank_values=True)
+                raw_symbols = qs.get("symbol") or [""]
+                raw_intervals = qs.get("interval") or [""]
+                raw_limits = qs.get("limit") or ["168"]
+                if len(raw_symbols) > 1 or len(raw_intervals) > 1 or len(raw_limits) > 1:
+                    self._send_json_error(400, "Invalid klines parameters", send_body=send_body)
+                    return
+                symbol = raw_symbols[0].strip().upper()
+                interval = raw_intervals[0].strip()
+                raw_limit = raw_limits[0].strip()
+                if raw_limit.isascii() and raw_limit.isdigit():
                     limit = int(raw_limit)
-                except ValueError:
+                else:
                     limit = -1
                 if (
                     not _is_valid_symbol(symbol)
