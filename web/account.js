@@ -10,7 +10,78 @@
     fetchJsonWithTimeout,
   } = Common;
 
-  const EXT_ARROW_SVG = '<svg class="w-2.5 h-2.5 text-[#7f91a8] shrink-0" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const toBeijingDate = typeof Common.toBeijingDate === 'function'
+    ? Common.toBeijingDate
+    : function fallbackToBeijingDate(tsMs) {
+        return new Date(tsMs + 8 * 3600 * 1000);
+      };
+
+  const EXT_ARROW_SVG = typeof Common.getExtArrowSvg === 'function'
+    ? Common.getExtArrowSvg('text-[#7f91a8]')
+    : (Common.EXT_ARROW_SVG || '<svg class="w-2.5 h-2.5 text-[#7f91a8] shrink-0" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+
+  const debounce = typeof Common.debounce === 'function'
+    ? Common.debounce
+    : function fallbackDebounce(fn, delayMs) {
+        let timerId = null;
+        function debounced(...args) {
+          if (timerId !== null) clearTimeout(timerId);
+          timerId = setTimeout(() => {
+            timerId = null;
+            fn.apply(this, args);
+          }, delayMs);
+        }
+        debounced.cancel = function cancel() {
+          if (timerId !== null) {
+            clearTimeout(timerId);
+            timerId = null;
+          }
+        };
+        return debounced;
+      };
+
+  const bindSortButtons = typeof Common.bindSortButtons === 'function'
+    ? Common.bindSortButtons
+    : function fallbackBindSortButtons(rootEl, onSort) {
+        if (!rootEl || typeof onSort !== 'function') {
+          return { syncAria: function() {} };
+        }
+        const supportsInvokerCommands = typeof HTMLButtonElement !== 'undefined' && 'commandForElement' in HTMLButtonElement.prototype;
+        if (supportsInvokerCommands) {
+          if (!rootEl.dataset || !rootEl.dataset.sortBound) {
+            if (rootEl.dataset) rootEl.dataset.sortBound = 'true';
+            rootEl.addEventListener('command', function(e) {
+              if (e.command === '--sort' && e.source && typeof e.source.closest === 'function') {
+                onSort(e.source.closest('th.sortable'));
+              }
+            });
+          }
+        } else {
+          const headers = typeof rootEl.querySelectorAll === 'function' ? rootEl.querySelectorAll('th.sortable') : [];
+          headers.forEach(th => {
+            if (th.dataset && th.dataset.sortBound) return;
+            if (th.dataset) th.dataset.sortBound = 'true';
+            const btn = th.querySelector ? th.querySelector('button[command="--sort"]') : null;
+            const target = btn || th;
+            target.addEventListener('click', function() {
+              onSort(th);
+            });
+          });
+        }
+        return {
+          syncAria: function(activeColumn, sortAsc) {
+            const headers = typeof rootEl.querySelectorAll === 'function' ? rootEl.querySelectorAll('th.sortable') : [];
+            headers.forEach(th => {
+              if (th.dataset && th.dataset.sort === activeColumn) {
+                th.setAttribute('aria-sort', sortAsc ? 'ascending' : 'descending');
+              } else if (typeof th.removeAttribute === 'function') {
+                th.removeAttribute('aria-sort');
+              }
+            });
+          }
+        };
+      };
+
   const symbolCollator = typeof Intl !== 'undefined' && typeof Intl.Collator === 'function'
     ? new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
     : null;
@@ -29,9 +100,13 @@
   let activeLoadId = 0;
   let lastSuccessfulLoadAt = 0;
   let chartDefaultsConfigured = false;
-  let historySearchTimer = null;
+  let historySortBinding = null;
   let pollTimerId = null;
   let historyCurrentPage = 1;
+  const debouncedHistorySearch = debounce(() => {
+    historyCurrentPage = 1;
+    renderHistoryTable();
+  }, 120);
   let lastApiStatusHtml = '';
   let lastApiStatusClass = '';
   let lastLoadStatusSignature = '';
@@ -64,13 +139,59 @@
     return commonFormatCryptoPrice(val, {
       positiveOnly: true,
       useGrouping: true,
-      dec4Threshold: 1,
     });
   }
 
   function formatDollarPrice(val) {
     const formatted = formatCryptoPrice(val);
     return formatted === '--' ? '--' : ('$' + formatted);
+  }
+
+  function formatBeijingTimestamp(rawVal) {
+    if (rawVal === null || rawVal === undefined) return '--';
+    const trimmed = String(rawVal).trim();
+    if (!trimmed || trimmed === '--') return '--';
+    const parseTarget = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)
+      ? trimmed.replace(' ', 'T') + '+08:00'
+      : trimmed;
+    const parsed = new Date(parseTarget);
+    if (Number.isNaN(parsed.getTime())) return trimmed;
+    const bj = toBeijingDate(parsed.getTime());
+    const pad = (n) => String(n).padStart(2, '0');
+    return (
+      bj.getUTCFullYear() + '-' + pad(bj.getUTCMonth() + 1) + '-' + pad(bj.getUTCDate()) + ' ' +
+      pad(bj.getUTCHours()) + ':' + pad(bj.getUTCMinutes()) + ':' + pad(bj.getUTCSeconds())
+    );
+  }
+
+  function getBaseAssetUnit(symbol) {
+    const sym = typeof symbol === 'string' ? symbol.trim() : '';
+    const stripped = sym.replace(/(?:USDT|USDC|BUSD)$/i, '');
+    return stripped || '张';
+  }
+
+  function formatAmountWithUnit(amount, symbol, requirePositive) {
+    if (!isFiniteNumber(amount)) return '--';
+    const num = Number(amount);
+    if (requirePositive && num <= 0) return '--';
+    return num.toLocaleString('en-US') + ' ' + getBaseAssetUnit(symbol);
+  }
+
+  function formatTrendlineDisplay(item) {
+    if (!item || typeof item !== 'object') return '--';
+    const rawLabel = item.trendline_label;
+    if (typeof rawLabel === 'string') {
+      const trimmedLabel = rawLabel.trim();
+      if (trimmedLabel && trimmedLabel !== '--') return trimmedLabel;
+    } else if (rawLabel !== null && rawLabel !== undefined && typeof rawLabel !== 'boolean') {
+      return String(rawLabel);
+    }
+    const rawId = item.trendline_id;
+    if (rawId !== null && rawId !== undefined && typeof rawId !== 'boolean') {
+      const idStr = String(rawId).trim();
+      if (idStr !== '') return idStr;
+    }
+    return '--';
   }
 
   function formatRatio(val, decimals) {
@@ -125,12 +246,18 @@
         nextClassName = 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5';
         nextHtml = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安快照同步中</span>';
       } else if (mode === 'OFFLINE_FALLBACK') {
-        nextClassName = 'px-2 py-0.5 font-medium bg-[#151c27] text-[#f5c451] inline-flex items-center gap-1.5';
+        nextClassName = 'px-2 py-0.5 font-medium bg-[#151c27] text-[#f5c451] inline-flex items-center gap-1.5 whitespace-nowrap';
         nextHtml = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>离线风控同步</span>';
+        badge.title = '';
+      } else if (mode === 'NOT_CONFIGURED') {
+        nextClassName = 'px-2 py-0.5 font-medium bg-[#151c27] text-[#9fb0c5] inline-flex items-center gap-1.5 whitespace-nowrap';
+        nextHtml = '<span class="w-1.5 h-1.5 rounded-full bg-[#4b5c75]" aria-hidden="true"></span><span>未配置币安密钥</span>';
+        badge.title = '尚未配置币安 API 凭证，当前展示本地或未连接状态';
       } else {
-        nextClassName = 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5';
+        nextClassName = 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5 whitespace-nowrap';
         const label = mode ? ('接口状态异常 (' + mode + ')') : '接口状态缺失';
         nextHtml = '<span class="w-1.5 h-1.5 rounded-full bg-[#f25565]" aria-hidden="true"></span><span>' + escapeHtml(label) + '</span>';
+        badge.title = '';
       }
     }
 
@@ -159,7 +286,7 @@
     if (marginBadge) {
       if (isFiniteNumber(summary.total_equity) && Number(summary.total_equity) > 0 && isFiniteNumber(summary.position_margin)) {
         const utilPct = (Number(summary.position_margin) / Number(summary.total_equity)) * 100;
-        marginBadge.textContent = utilPct > 0 ? ('占用 ' + utilPct.toFixed(1) + '%') : '空仓在岸';
+        marginBadge.textContent = utilPct > 0 ? ('占用 ' + utilPct.toFixed(1) + '%') : '当前空仓';
       } else {
         marginBadge.textContent = '--';
       }
@@ -342,10 +469,10 @@
 
       const levStr = isFiniteNumber(p.leverage) ? (Number(p.leverage) + 'x') : '--';
       const notionalStr = formatMoney(p.notional);
-      const amtStr = isFiniteNumber(p.amount) ? Number(p.amount).toLocaleString('en-US') : '--';
+      const amtStr = formatAmountWithUnit(p.amount, sym, false);
 
       const tvUrl = getTvUrl(sym);
-      const safeTlId = p.trendline_id ? escapeHtml(p.trendline_id) : '--';
+      const tlDisplay = riskMonitored ? formatTrendlineDisplay(p) : '--';
       const unknownMonitored = p.risk_monitored === undefined && side !== 'SHORT';
       const trailingHtml = riskMonitored
         ? (p.trailing_stop_triggered ? '<span class="text-[#38d99f] font-semibold">已激活锁利</span>' : '<span class="text-[#9fb0c5]">待触发</span>')
@@ -364,7 +491,7 @@
         '<tr class="hover:bg-[#17202e] transition-colors font-mono tabular-nums text-xs">' +
           '<td class="px-3.5 py-2.5 font-sans font-bold text-[#f1f5f9] whitespace-nowrap">' +
             '<div class="flex items-center gap-1.5">' +
-              '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" class="text-[#f1f5f9] hover:text-[#8ab8ff] hover:underline inline-flex items-center gap-1">' +
+              '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" title="在新标签页打开 ' + safeSym + ' TradingView 图表" class="text-[#f1f5f9] hover:text-[#8ab8ff] hover:underline inline-flex items-center gap-1">' +
                 '<span>' + safeSym + '</span>' + EXT_ARROW_SVG +
               '</a>' +
               sideBadge +
@@ -377,7 +504,7 @@
           '<td class="px-3.5 py-2.5 text-right text-[#f8717e] whitespace-nowrap">' + escapeHtml(formatDollarPrice(p.liquidation_price)) + '</td>' +
           '<td class="px-3.5 py-2.5 font-sans text-xs whitespace-nowrap">' + trailingHtml + '</td>' +
           '<td class="px-3.5 py-2.5 font-sans text-xs whitespace-nowrap">' + slHtml + '</td>' +
-          '<td class="px-3.5 py-2.5 text-[#9fb0c5] whitespace-nowrap">' + (riskMonitored ? safeTlId : '--') + '</td>' +
+          '<td class="px-3.5 py-2.5 ' + (tlDisplay !== '--' ? 'text-[#9fb0c5]' : 'text-[#7f91a8]') + ' whitespace-nowrap">' + escapeHtml(tlDisplay) + '</td>' +
         '</tr>'
       );
     }).join('');
@@ -444,10 +571,19 @@
   }
 
   function updateSortIndicators() {
+    const histTable = document.getElementById('trade-history-table');
+    if (typeof Common.syncAriaSort === 'function' && histTable && typeof histTable.querySelectorAll === 'function') {
+      Common.syncAriaSort(histTable, HISTORY_SORT.column, HISTORY_SORT.asc);
+      return;
+    }
+    if (historySortBinding && typeof historySortBinding.syncAria === 'function') {
+      historySortBinding.syncAria(HISTORY_SORT.column, HISTORY_SORT.asc);
+      return;
+    }
     document.querySelectorAll('#trade-history-table th.sortable').forEach(th => {
       if (th.dataset.sort === HISTORY_SORT.column) {
         th.setAttribute('aria-sort', HISTORY_SORT.asc ? 'ascending' : 'descending');
-      } else {
+      } else if (typeof th.removeAttribute === 'function') {
         th.removeAttribute('aria-sort');
       }
     });
@@ -558,21 +694,22 @@
 
       const entryStr = isFiniteNumber(h.entry_price) && Number(h.entry_price) > 0 ? ('$' + formatCryptoPrice(h.entry_price)) : '--';
       const exitStr = isFiniteNumber(h.exit_price) && Number(h.exit_price) > 0 ? ('$' + formatCryptoPrice(h.exit_price)) : '--';
-      const amtStr = isFiniteNumber(h.amount) && Number(h.amount) > 0 ? Number(h.amount).toLocaleString('en-US') : '--';
+      const amtStr = formatAmountWithUnit(h.amount, sym, true);
       const notionalStr = isFiniteNumber(h.entry_notional) && Number(h.entry_notional) > 0 ? formatMoney(h.entry_notional) : '--';
       const notionalCellHtml = (notionalStr === '--' && amtStr === '--')
         ? '<span class="text-[#7f91a8]">--</span>'
         : '<div>' + escapeHtml(notionalStr) + '</div><div class="text-[10px] text-[#7f91a8]">' + escapeHtml(amtStr) + '</div>';
+      const tlDisplay = formatTrendlineDisplay(h);
 
       return (
-        '<tr class="trade-row hover:bg-[#17202e] transition-colors font-mono tabular-nums text-[11px]">' +
+        '<tr class="hover:bg-[#17202e] transition-colors font-mono tabular-nums text-[11px]">' +
           '<td class="px-2.5 sm:px-3.5 py-2.5 text-[#9fb0c5] whitespace-nowrap">' +
             '<div class="text-[#f1f5f9] font-medium">' + cTime + '</div>' +
             entryTimeHtml +
           '</td>' +
           '<td class="px-2.5 sm:px-3.5 py-2.5 font-sans font-bold text-[#f1f5f9] whitespace-nowrap">' +
             '<div class="flex items-center gap-1.5">' +
-              '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" class="text-[#f1f5f9] hover:text-[#8ab8ff] hover:underline inline-flex items-center gap-1">' +
+              '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" title="在新标签页打开 ' + safeSym + ' TradingView 图表" class="text-[#f1f5f9] hover:text-[#8ab8ff] hover:underline inline-flex items-center gap-1">' +
                 '<span>' + safeSym + '</span>' + EXT_ARROW_SVG +
               '</a>' +
               '<span class="text-[10px] font-mono font-semibold ' + sideCls + '">' + escapeHtml(side) + '</span>' +
@@ -585,7 +722,7 @@
           '<td class="px-2.5 sm:px-3.5 py-2.5 text-right whitespace-nowrap ' + pctCls + '">' + escapeHtml(pctText) + '</td>' +
           '<td class="px-2.5 sm:px-3.5 py-2.5 text-right ' + (dur === '--' ? 'text-[#7f91a8]' : 'text-[#9fb0c5]') + ' whitespace-nowrap">' + dur + '</td>' +
           '<td class="px-2.5 sm:px-3.5 py-2.5 whitespace-nowrap">' + renderCloseReasonBadge(h.close_reason) + '</td>' +
-          '<td class="px-2.5 sm:px-3.5 py-2.5 ' + (h.trendline_label ? 'text-[#9fb0c5]' : 'text-[#7f91a8]') + ' whitespace-nowrap">' + escapeHtml(h.trendline_label || '--') + '</td>' +
+          '<td class="px-2.5 sm:px-3.5 py-2.5 ' + (tlDisplay !== '--' ? 'text-[#9fb0c5]' : 'text-[#7f91a8]') + ' whitespace-nowrap">' + escapeHtml(tlDisplay) + '</td>' +
         '</tr>'
       );
     }).join('');
@@ -614,7 +751,7 @@
         const isNeg = raw < 0;
         ctx.fillStyle = pluginOpts.signed
           ? (isNeg ? '#f8717e' : '#38d99f')
-          : '#c9d5e3';
+          : '#f1f5f9';
         ctx.textBaseline = isNeg ? 'top' : 'bottom';
         const yPos = isNeg ? (bar.y + 4) : (bar.y - 4);
         ctx.fillText(label, bar.x, yPos);
@@ -686,7 +823,7 @@
       ctx.fillStyle = '#f1f5f9';
       ctx.font = '700 22px "JetBrains Mono", "SF Mono", monospace';
       ctx.fillText(winRateStr, cx, cy - 8);
-      ctx.fillStyle = '#8b9bb0';
+      ctx.fillStyle = '#9fb0c5';
       ctx.font = '500 11px "JetBrains Mono", "SF Mono", monospace';
       ctx.fillText(subStr, cx, cy + 14);
       ctx.restore();
@@ -695,7 +832,7 @@
 
   function ensureChartDefaults() {
     if (chartDefaultsConfigured || typeof Chart === 'undefined' || !Chart.defaults) return;
-    Chart.defaults.color = '#8b9bb0';
+    Chart.defaults.color = '#9fb0c5';
     if (Chart.defaults.font) {
       Chart.defaults.font.family = '"JetBrains Mono", "Inter", -apple-system, BlinkMacSystemFont, sans-serif';
     }
@@ -876,7 +1013,7 @@
     const tooltipConfig = {
       backgroundColor: 'rgba(16, 21, 29, 0.96)',
       titleColor: '#f1f5f9',
-      bodyColor: '#c9d5e3',
+      bodyColor: '#9fb0c5',
       borderColor: '#324055',
       borderWidth: 1,
       cornerRadius: 4,
@@ -933,7 +1070,7 @@
         datasets.push({
           label: hasTransfers && netTransfers !== 0 ? '净投入基准线' : '本金基准线',
           data: chartEquityCurve.map(() => baseline),
-          borderColor: '#5c6f89',
+          borderColor: '#7f91a8',
           borderDash: [4, 4],
           borderWidth: 1.2,
           pointRadius: 0,
@@ -1035,7 +1172,7 @@
             x: { grid: { display: false }, ticks: { maxTicksLimit: 10, font: { size: 10 } } },
             y: {
               grid: {
-                color: (ctx) => (ctx && ctx.tick && ctx.tick.value === 0 ? '#3d4e66' : 'rgba(34, 43, 56, 0.55)'),
+                color: (ctx) => (ctx && ctx.tick && ctx.tick.value === 0 ? '#324055' : 'rgba(34, 43, 56, 0.55)'),
                 lineWidth: (ctx) => (ctx && ctx.tick && ctx.tick.value === 0 ? 1.5 : 1)
               },
               ticks: {
@@ -1057,7 +1194,7 @@
           labels: ['盈利', '亏损', '保本'],
           datasets: [{
             data: [winCount, lossCount, beCount],
-            backgroundColor: ['#22c58b', '#f25565', '#4b5c75'],
+            backgroundColor: ['#22c58b', '#f25565', '#647894'],
             borderColor: '#10151d',
             borderWidth: 2,
             hoverOffset: 4
@@ -1082,7 +1219,7 @@
       const binColors = bins.map(b => {
         if (isFiniteNumber(b.max) && Number(b.max) <= -0.0001) return 'rgba(242, 85, 101, 0.85)';
         if (isFiniteNumber(b.min) && Number(b.min) >= 0.0001) return 'rgba(34, 197, 139, 0.85)';
-        return '#4b5c75';
+        return '#647894';
       });
       upsertChart('dist', distCanvas, {
         type: 'bar',
@@ -1166,7 +1303,11 @@
       const positions = accountData.active_positions;
       prepareHistorySearchKeys(accountData.trade_history);
 
-      setText('sync-time-text', accountData.generated_at || '--');
+      const formattedSyncTime = formatBeijingTimestamp(accountData.generated_at);
+      const syncTimeEl = setText('sync-time-text', formattedSyncTime);
+      if (syncTimeEl) {
+        syncTimeEl.title = formattedSyncTime === '--' ? '' : ('快照生成时间: ' + formattedSyncTime + ' (北京时间)');
+      }
       updateApiStatusBadge(accountData, false);
       updateKpis(summary);
       renderActivePositions(positions);
@@ -1223,14 +1364,7 @@
     const searchInput = document.getElementById('history-search-input');
     if (searchInput && !searchInput.dataset.bound) {
       searchInput.dataset.bound = 'true';
-      searchInput.addEventListener('input', function() {
-        if (historySearchTimer) clearTimeout(historySearchTimer);
-        historySearchTimer = setTimeout(() => {
-          historySearchTimer = null;
-          historyCurrentPage = 1;
-          renderHistoryTable();
-        }, 120);
-      });
+      searchInput.addEventListener('input', debouncedHistorySearch);
     }
 
     const outcomeSelect = document.getElementById('history-outcome-filter');
@@ -1246,14 +1380,17 @@
     if (resetBtn && !resetBtn.dataset.bound) {
       resetBtn.dataset.bound = 'true';
       resetBtn.addEventListener('click', function() {
-        if (historySearchTimer) {
-          clearTimeout(historySearchTimer);
-          historySearchTimer = null;
-        }
+        debouncedHistorySearch.cancel();
         if (searchInput) searchInput.value = '';
         if (outcomeSelect) outcomeSelect.value = '';
+        HISTORY_SORT.column = 'closed_ts';
+        HISTORY_SORT.asc = false;
         historyCurrentPage = 1;
         renderHistoryTable();
+        const sortStatus = document.getElementById('history-sort-status');
+        if (sortStatus && currentAccountData) {
+          sortStatus.textContent = '已重置筛选与排序，恢复按平仓时间降序排列';
+        }
       });
     }
 
@@ -1278,18 +1415,12 @@
     }
 
     const histTable = document.getElementById('trade-history-table');
-    const supportsInvokerCommands = typeof HTMLButtonElement !== 'undefined' && 'commandForElement' in HTMLButtonElement.prototype;
-    if (histTable && supportsInvokerCommands && !histTable.dataset.bound) {
-      histTable.dataset.bound = 'true';
-      histTable.addEventListener('command', function(e) {
-        if (e.command === '--sort' && e.source && typeof e.source.closest === 'function') {
-          triggerHistorySort(e.source.closest('th.sortable'));
-        }
-      });
+    if (histTable && typeof histTable.querySelectorAll === 'function') {
+      historySortBinding = bindSortButtons(histTable, triggerHistorySort);
     } else {
       document.querySelectorAll('#trade-history-table th.sortable').forEach(th => {
-        if (th.dataset.bound) return;
-        th.dataset.bound = 'true';
+        if (th.dataset && th.dataset.sortBound) return;
+        if (th.dataset) th.dataset.sortBound = 'true';
         const btn = th.querySelector ? th.querySelector('button[command="--sort"]') : null;
         const target = btn || th;
         target.addEventListener('click', function() {
@@ -1486,6 +1617,7 @@
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('pagehide', () => {
       clearPollTimer();
+      debouncedHistorySearch.cancel();
       if (accountController) {
         accountController.abort();
         accountController = null;

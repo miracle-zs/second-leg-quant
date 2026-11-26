@@ -416,9 +416,15 @@ def print_cli_summary(report: Mapping[str, Any]) -> None:
             pnl_c = "\033[32m" if p["unrealized_pnl"] >= 0 else "\033[31m"
             lev_str = f"{p['leverage']}x" if p["leverage"] is not None else "--"
             roe_str = f"{p['roe_pct']:+.2f}% ROE" if p["roe_pct"] is not None else "ROE 未知"
+            p_tl_id = p.get("trendline_id")
+            p_tl_label = p.get("trendline_label")
+            p_has_tl = (p_tl_id is not None and not isinstance(p_tl_id, bool) and str(p_tl_id).strip() != "") or (
+                isinstance(p_tl_label, str) and p_tl_label.strip() not in ("", "--")
+            )
+            p_tl = f" [{p_tl_label if (isinstance(p_tl_label, str) and p_tl_label.strip() not in ('', '--')) else p_tl_id}]" if p_has_tl else ""
             print(
                 f"   • {p['symbol']} ({lev_str}): {p['amount']} @ ${p['entry_price']:.4f} -> 现价 ${p['mark_price']:.4f} | "
-                f"浮盈: {pnl_c}{p['unrealized_pnl']:+.2f} USDT ({roe_str}){reset} | 周期: {p['holding_str']}"
+                f"浮盈: {pnl_c}{p['unrealized_pnl']:+.2f} USDT ({roe_str}){reset} | 周期: {p['holding_str']}{p_tl}"
             )
     else:
         print("   (当前无活跃持仓)")
@@ -428,7 +434,12 @@ def print_cli_summary(report: Mapping[str, Any]) -> None:
     for t in trade_history[-5:]:
         net_val = t.get("net_pnl")
         pnl_c = "\033[32m" if (net_val is not None and net_val >= 0) else "\033[31m"
-        tl = f"[{t['trendline_label']}] " if t.get("trendline_id") else ""
+        t_tl_id = t.get("trendline_id")
+        t_tl_label = t.get("trendline_label")
+        t_has_tl = (t_tl_id is not None and not isinstance(t_tl_id, bool) and str(t_tl_id).strip() != "") or (
+            isinstance(t_tl_label, str) and t_tl_label.strip() not in ("", "--")
+        )
+        tl = f"[{t_tl_label if (isinstance(t_tl_label, str) and t_tl_label.strip() not in ('', '--')) else t_tl_id}] " if t_has_tl else ""
         roe = f"{t['roe_pct']:+.2f}% ROE" if t["roe_pct"] is not None else "ROE 未知"
         entry_str = f"${t['entry_price']:.4f}" if t.get("entry_price") is not None else "--"
         exit_str = f"${t['exit_price']:.4f}" if t.get("exit_price") is not None else "--"

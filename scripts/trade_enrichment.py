@@ -108,6 +108,12 @@ def classify_outcome(net_pnl: float) -> str:
     return "BREAKEVEN"
 
 
+def _has_trendline_id(trendline_id: object) -> bool:
+    if trendline_id is None or isinstance(trendline_id, bool):
+        return False
+    return str(trendline_id).strip() != ""
+
+
 def _extract_trendline_meta(trendline: object) -> Tuple[Optional[Any], str, Optional[dict]]:
     if trendline is None:
         return None, "--", None
@@ -128,9 +134,9 @@ def _extract_trendline_meta(trendline: object) -> Tuple[Optional[Any], str, Opti
         "color": color,
         "interval": trendline.get("interval", "15"),
     }
-    if trendline_id and p1 is not None and p2 is not None:
+    if _has_trendline_id(trendline_id) and p1 is not None and p2 is not None:
         label = f"TL#{trendline_id} ({p1:.4f} -> {p2:.4f})"
-    elif trendline_id:
+    elif _has_trendline_id(trendline_id):
         label = f"TL#{trendline_id}"
     else:
         label = "--"
@@ -456,7 +462,26 @@ def enrich_active_position(
         entry_ts_ms = None
 
     trendline = raw.get("trendline")
-    trendline_id = trendline.get("id") if isinstance(trendline, Mapping) else raw.get("trendline_id")
+    if isinstance(trendline, Mapping):
+        trendline_id, trendline_label, trendline_info = _extract_trendline_meta(trendline)
+    else:
+        trendline_id, trendline_label, trendline_info = None, "--", None
+
+    raw_tl_id = raw.get("trendline_id")
+    if not _has_trendline_id(trendline_id) and _has_trendline_id(raw_tl_id):
+        trendline_id = raw_tl_id
+        if trendline_info is not None and trendline_info.get("p1") is not None and trendline_info.get("p2") is not None:
+            trendline_label = f"TL#{trendline_id} ({trendline_info['p1']:.4f} -> {trendline_info['p2']:.4f})"
+        else:
+            raw_tl_label = raw.get("trendline_label")
+            if isinstance(raw_tl_label, str) and raw_tl_label.strip() and raw_tl_label.strip() != "--":
+                trendline_label = raw_tl_label.strip()
+            else:
+                trendline_label = f"TL#{trendline_id}"
+    elif not _has_trendline_id(trendline_id):
+        raw_tl_label = raw.get("trendline_label")
+        if isinstance(raw_tl_label, str) and raw_tl_label.strip() and raw_tl_label.strip() != "--":
+            trendline_label = raw_tl_label.strip()
 
     return {
         "position_id": f"POS-{index + 1:02d}-{sym}",
@@ -482,6 +507,7 @@ def enrich_active_position(
         "trailing_stop_price": raw.get("trailing_stop_price"),
         "stop_loss_notified": bool(raw.get("stop_loss_notified", False)),
         "trendline_id": trendline_id,
+        "trendline_label": trendline_label,
         "trendline": trendline,
         "source": raw.get(
             "source",
@@ -535,6 +561,7 @@ def merge_active_positions(
             for meta_key in (
                 "trendline",
                 "trendline_id",
+                "trendline_label",
                 "trailing_stop_price",
                 "trailing_stop_triggered",
                 "stop_loss_notified",

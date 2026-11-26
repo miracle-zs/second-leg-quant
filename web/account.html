@@ -4,7 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <title>突破追多与移动保本系统 — 账户风控</title>
+  <title>突破追多与移动保本系统 — 账户数据分析</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Crect width='16' height='16' rx='3' fill='%230e131b'/%3E%3Cpath d='M1.5 3.5L14.5 11.5' stroke='%23f0b429' stroke-width='1.4' stroke-dasharray='2 2'/%3E%3Cpath d='M2 12.5L6 8.5L9.2 10.2L14 3.5' stroke='%23f1f5f9' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='10.8' cy='8' r='2' fill='%23f0b429'/%3E%3C/svg%3E">
+  <link rel="preload" as="fetch" crossorigin="anonymous" href="api/config">
   <link rel="stylesheet" href="static/tailwind.css">
   <link rel="stylesheet" href="static/styles.css">
   <script src="static/vendor/chart.js" defer></script>
@@ -27,12 +29,12 @@
 
         <div class="hidden xl:block h-4 w-px bg-[#222b38]" aria-hidden="true"></div>
 
-        <div class="inline-flex flex-wrap items-center border border-[#283446] rounded-[4px] divide-x divide-[#283446] overflow-hidden bg-[#0b0e13] text-[11px]">
-          <span id="api-status-badge" class="px-2 py-0.5 font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5" role="status" aria-live="polite">
+        <div class="inline-flex flex-wrap items-center border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px]">
+          <span id="api-status-badge" class="px-2 py-0.5 font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5 whitespace-nowrap" role="status" aria-live="polite">
             <span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>
             <span>等待账户数据</span>
           </span>
-          <span class="px-2 py-0.5 text-[#9fb0c5] bg-[#10151d] inline-flex items-center gap-1">
+          <span class="px-2 py-0.5 text-[#9fb0c5] bg-[#10151d] inline-flex items-center gap-1 whitespace-nowrap sm:border-l sm:border-[#222b38]">
             <span class="font-sans">快照:</span>
             <span id="sync-time-text" class="font-mono tabular-nums">--</span>
           </span>
@@ -71,7 +73,7 @@
     <main class="space-y-3">
       <div id="account-load-status" role="status" aria-live="polite" class="ledger-frame px-4 py-3 text-xs text-[#9fb0c5] font-sans">正在读取账户实盘快照…</div>
 
-      <section id="account-report" class="space-y-3" hidden>
+      <section id="account-report" aria-label="账户资产与量化绩效报告" class="space-y-3" hidden>
         <!-- Unified Two-Tier Hairline KPI Ledger Matrix -->
         <section id="kpi-matrix-section" aria-label="核心资产与风控绩效矩阵" class="ledger-frame overflow-hidden text-xs">
           <!-- Tier 1: Primary Capital & PnL Ledgers -->
@@ -125,7 +127,7 @@
               </div>
               <div id="kpi-win-rate" class="text-lg font-bold font-mono text-[#f1f5f9] tabular-nums leading-tight">--</div>
               <div class="text-[11px] font-sans flex items-center justify-between text-[#7f91a8]">
-                <span>胜/负/平</span>
+                <span class="font-mono">W / L / BE</span>
                 <span id="kpi-wl-record" class="font-mono tabular-nums text-[#9fb0c5]">--</span>
               </div>
             </div>
@@ -183,7 +185,7 @@
                 <span id="equity-range-label" class="text-[11px] text-[#7f91a8] font-mono tabular-nums">--</span>
                 <span class="inline-flex items-center gap-2 text-[10px] text-[#7f91a8] sm:border-l sm:border-[#222b38] sm:pl-2.5">
                   <span class="inline-flex items-center gap-1"><span class="w-2.5 h-0.5 bg-[#3b82f6] inline-block"></span>净值</span>
-                  <span class="inline-flex items-center gap-1"><span class="w-2.5 h-0 border-t border-dashed border-[#6b7f9a] inline-block"></span>本金线</span>
+                  <span class="inline-flex items-center gap-1"><span class="w-2.5 h-0 border-t border-dashed inline-block" style="border-color: #7f91a8"></span>本金线</span>
                 </span>
               </div>
               <div class="flex items-center gap-1.5 text-[11px] font-sans tabular-nums">
@@ -250,14 +252,13 @@
                 <span>当前空仓，无活跃敞口</span>
               </span>
             </div>
-            <span class="hidden sm:inline text-[#7f91a8] text-[11px]">仅多头仓位纳入 15m 破线止损与移动保本风控</span>
           </div>
 
           <div id="short-position-warning" class="hidden mx-4 mb-2.5 px-3 py-2 rounded-[4px] bg-[#f0b429]/10 border border-[#f0b429]/30 text-xs text-[#f5c451]">
-            检测到未受自动风控覆盖的仓位：风控守护进程仅对已匹配多头执行 15m 破线止损与移动保本提醒，请手动管理止损。
+            检测到未受自动风控覆盖的仓位：仅多头仓位纳入 15m 破线止损与移动保本风控，请手动管理止损。
           </div>
 
-          <div id="active-positions-table-wrap" tabindex="0" role="region" aria-labelledby="active-positions-heading" class="overflow-x-auto max-h-[65vh] custom-scrollbar border-t border-[#222b38]">
+          <div id="active-positions-table-wrap" tabindex="0" role="region" aria-label="在途持仓明细数据表格滚动区" class="overflow-x-auto max-h-[65vh] custom-scrollbar border-t border-[#222b38]">
             <table class="w-full text-left border-collapse min-w-[920px]">
               <thead class="sticky-header text-[11px] text-[#9fb0c5] border-b border-[#222b38]">
                 <tr>
@@ -307,7 +308,7 @@
             </div>
           </div>
 
-          <div id="history-table-wrap" tabindex="0" role="region" aria-labelledby="history-ledger-heading" class="overflow-x-auto max-h-[65vh] custom-scrollbar">
+          <div id="history-table-wrap" tabindex="0" role="region" aria-label="历史开平仓流水数据表格滚动区" class="overflow-x-auto max-h-[65vh] custom-scrollbar">
             <table id="trade-history-table" class="w-full text-left border-collapse min-w-[860px]">
               <thead class="sticky-header text-[11px] text-[#9fb0c5] border-b border-[#222b38]">
                 <tr>
