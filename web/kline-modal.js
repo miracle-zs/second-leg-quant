@@ -143,7 +143,7 @@
     const v = Math.abs(Number(vol));
     if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
     if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
-    if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k';
+    if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
     return v.toFixed(0);
   }
 
@@ -171,7 +171,7 @@
     header.append(timeEl, chgEl);
 
     const ohlc = global.document.createElement('div');
-    ohlc.className = 'grid grid-cols-4 gap-x-3 gap-y-0.5 text-[#9fb0c5]';
+    ohlc.className = 'grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-0.5 text-[#9fb0c5]';
     const makeCell = (label) => {
       const wrap = global.document.createElement('div');
       wrap.append(label + ' ');
@@ -233,9 +233,9 @@
     ctx.fillStyle = '#0b0e13';
     ctx.fillRect(0, 0, w, h);
 
-    ctx.strokeStyle = '#1b2432';
+    ctx.strokeStyle = '#1c2532';
     ctx.lineWidth = 1;
-    ctx.fillStyle = '#8b9bb0';
+    ctx.fillStyle = '#7f91a8';
     ctx.font = '10px "JetBrains Mono", "SF Mono", monospace';
     ctx.textAlign = 'left';
 
@@ -263,7 +263,7 @@
 
     const tickTarget = Math.max(2, Math.min(6, Math.floor(chartW / 120)));
     const tickStep = Math.max(1, Math.floor((n - 1) / tickTarget));
-    ctx.fillStyle = '#8b9bb0';
+    ctx.fillStyle = '#7f91a8';
     ctx.font = '10px "JetBrains Mono", "SF Mono", monospace';
     ctx.textAlign = 'center';
     for (let i = 0; i < n; i += tickStep) {
@@ -331,9 +331,9 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = isBull ? '#159668' : '#d13b4b';
+      ctx.fillStyle = isBull ? '#22c58b' : '#f25565';
       ctx.fillRect(chartW + 2, lastY - 9, rightPadding - 4, 18);
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = '#0b0e13';
       ctx.font = 'bold 10px "JetBrains Mono", "SF Mono", monospace';
       ctx.fillText(formatCryptoPrice(lastCandle.close), chartW + 6, lastY + 4);
     }
@@ -396,7 +396,7 @@
       const hx = modalHoverIndex * slot + slot / 2;
       const hy = getY(c.close);
 
-      ctx.strokeStyle = '#647894';
+      ctx.strokeStyle = '#7f91a8';
       ctx.setLineDash([2, 2]);
       ctx.beginPath();
       ctx.moveTo(hx, 0);
@@ -408,7 +408,7 @@
 
       // Dynamic Y-axis hover price badge
       const hoverPriceText = formatCryptoPrice(c.close);
-      ctx.fillStyle = '#243247';
+      ctx.fillStyle = '#1d2736';
       ctx.fillRect(chartW + 2, hy - 9, rightPadding - 4, 18);
       ctx.strokeStyle = '#4b5c75';
       ctx.lineWidth = 1;
@@ -423,7 +423,7 @@
       ctx.font = 'bold 10px "JetBrains Mono", "SF Mono", monospace';
       const timeBoxW = Math.max(54, Math.ceil(ctx.measureText(axisTimeText).width) + 12);
       const timeBoxX = Math.max(2, Math.min(chartW - timeBoxW - 2, hx - timeBoxW / 2));
-      ctx.fillStyle = '#243247';
+      ctx.fillStyle = '#1d2736';
       ctx.fillRect(timeBoxX, plotH + 2, timeBoxW, 18);
       ctx.strokeStyle = '#4b5c75';
       ctx.strokeRect(timeBoxX + 0.5, plotH + 2.5, timeBoxW - 1, 17);
@@ -433,7 +433,7 @@
       ctx.textAlign = 'left';
 
       const bj = toBeijingDate(c.time);
-      const timeStr = `${bj.getUTCMonth() + 1}/${bj.getUTCDate()} ${String(bj.getUTCHours()).padStart(2, '0')}:${String(bj.getUTCMinutes()).padStart(2, '0')}`;
+      const timeStr = `${String(bj.getUTCMonth() + 1).padStart(2, '0')}/${String(bj.getUTCDate()).padStart(2, '0')} ${String(bj.getUTCHours()).padStart(2, '0')}:${String(bj.getUTCMinutes()).padStart(2, '0')}`;
       const chg = c.open > 0 ? (((c.close - c.open) / c.open) * 100).toFixed(2) : null;
       const isBull = c.close >= c.open;
       const chgLabel = chg !== null ? `${Number(chg) > 0 ? '+' : ''}${chg}%` : '--';
@@ -457,7 +457,11 @@
         refs.cEl.textContent = formatCryptoPrice(c.close);
         refs.ema5El.textContent = `EMA5 ${formatCryptoPrice(c.ema5)}`;
         refs.ema10El.textContent = `EMA10 ${formatCryptoPrice(c.ema10)}`;
-        refs.volEl.textContent = `成交量 ${formatCompactVolume(c.volume)}`;
+        const volText = formatCompactVolume(c.volume);
+        const volUnit = modalCurrentSymbol && modalCurrentSymbol.endsWith('USDT') && modalCurrentSymbol.length > 4
+          ? modalCurrentSymbol.slice(0, -4)
+          : '币';
+        refs.volEl.textContent = volText === '--' ? '成交量 --' : `成交量 ${volText} ${volUnit}`;
       }
       modalTooltip.classList.remove('hidden');
     } else if (modalTooltip) {
@@ -692,8 +696,10 @@
 
   function resetModalStateOnClose() {
     if (chartModal) chartModal.removeAttribute('data-closing');
-    if (modalRenderRafId !== null && typeof cancelAnimationFrame === 'function') {
-      cancelAnimationFrame(modalRenderRafId);
+    if (modalRenderRafId !== null) {
+      if (typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(modalRenderRafId);
+      }
       modalRenderRafId = null;
     }
     if (modalFetchController) {
@@ -956,11 +962,20 @@
       });
     }
   }
-  global.addEventListener('resize', () => {
+  const handleNativeContainerResize = () => {
     if (chartModal && chartModal.open && modalActiveEngine === 'native') {
       scheduleModalRender();
     }
-  });
+  };
+  let modalResizeObserver = null;
+  if (modalNativeView && typeof global.ResizeObserver === 'function') {
+    modalResizeObserver = new global.ResizeObserver(() => {
+      handleNativeContainerResize();
+    });
+    modalResizeObserver.observe(modalNativeView);
+  } else if (typeof global.addEventListener === 'function') {
+    global.addEventListener('resize', handleNativeContainerResize);
+  }
 
   function setNavMeta(index, total) {
     modalNavTotal = Number.isInteger(total) ? total : 0;

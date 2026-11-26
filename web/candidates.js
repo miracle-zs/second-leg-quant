@@ -29,8 +29,31 @@
   const VERSION_CHECK_INTERVAL_MS = 30000;
   const VISIBILITY_COOLDOWN_MS = 5000;
 
-  const EXT_ARROW_SVG = '<svg class="w-2.5 h-2.5 shrink-0" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const EXT_ARROW_SVG = Common.EXT_ARROW_SVG || '<svg class="w-2.5 h-2.5 shrink-0" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const CHECK_SVG = '<svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 6.2L5 8.7L9.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const debounce = typeof Common.debounce === 'function'
+    ? Common.debounce
+    : function fallbackDebounce(fn, delayMs) {
+        if (typeof fn !== 'function') {
+          throw new TypeError('debounce requires a function');
+        }
+        let timerId = null;
+        const debounced = function (...args) {
+          const ctx = this;
+          if (timerId !== null) clearTimeout(timerId);
+          timerId = setTimeout(() => {
+            timerId = null;
+            fn.apply(ctx, args);
+          }, delayMs);
+        };
+        debounced.cancel = () => {
+          if (timerId !== null) {
+            clearTimeout(timerId);
+            timerId = null;
+          }
+        };
+        return debounced;
+      };
 
   let candidatesState = [];
   const rowRefsBySym = new Map();
@@ -55,7 +78,6 @@
   let pollTimer = null;
   let versionTimer = null;
   let countdownTimer = null;
-  let filterDebounceTimer = null;
   let pollingActive = false;
   let activeFetchId = 0;
   let activeSnapshotFetchId = 0;
@@ -143,7 +165,9 @@
   const sortHeaders = document.querySelectorAll('th.sortable');
   const sortStatusEl = document.getElementById('candidates-sort-status');
   const batchCopyBtn = document.getElementById('btn-batch-copy-tv');
+  const batchCopyLabelEl = document.getElementById('btn-batch-copy-tv-label');
   const batchExportBtn = document.getElementById('btn-batch-export-tv');
+  const batchExportLabelEl = document.getElementById('btn-batch-export-tv-label');
   const toast = document.getElementById('toast');
   const toastText = document.getElementById('toast-text');
   const tvDrawer = document.getElementById('tv-drawer');
@@ -161,6 +185,7 @@
     negPct: document.getElementById('kpi-neg-fr-pct'),
     negBar: document.getElementById('kpi-neg-fr-bar'),
     highTrCount: document.getElementById('kpi-high-tr-count'),
+    highTrSub: document.getElementById('kpi-high-tr-sub'),
     highTrSample: document.getElementById('kpi-high-tr-sample'),
     highTrPct: document.getElementById('kpi-high-tr-pct'),
     highTrBar: document.getElementById('kpi-high-tr-bar'),
@@ -170,6 +195,7 @@
     emaBullBar: document.getElementById('kpi-ema-bull-bar'),
     allCount: document.getElementById('kpi-all-count'),
     allSub: document.getElementById('kpi-all-sub'),
+    allSample: document.getElementById('kpi-all-sample'),
     allBar: document.getElementById('kpi-all-bar'),
   };
 
@@ -242,7 +268,7 @@
   function getTurnoverBadgeClass(tr) {
     if (!isFiniteNum(tr)) return 'text-[#7f91a8]';
     if (tr >= 5.0) return 'text-[#f1f5f9] font-bold';
-    if (tr >= 2.0) return 'text-[#9bc0ff] font-semibold';
+    if (tr >= 2.0) return 'text-[#8ab8ff] font-semibold';
     if (tr >= highTurnoverThreshold) return 'text-[#8ab8ff] font-medium';
     if (tr >= 0.8) return 'text-[#9fb0c5]';
     return 'text-[#7f91a8]';
@@ -315,7 +341,7 @@
       statePrefix = '多头顺势';
     }
 
-    return `<div class="inline-flex items-center gap-1.5 whitespace-nowrap" title="${statePrefix} · EMA5 ${ema5Str} / EMA10 ${ema10Str}">
+    return `<div class="inline-flex items-center justify-end gap-1.5 whitespace-nowrap" title="${statePrefix} · EMA5 ${ema5Str} / EMA10 ${ema10Str}">
       <span class="w-1.5 h-1.5 rounded-full ${dotClass} shrink-0" aria-hidden="true"></span>
       <span class="text-[11px] font-mono tabular-nums ${textClass}">${spreadText}</span>${stateBadge}
     </div>`;
@@ -333,17 +359,17 @@
     let badge;
     if (resHours > 0) {
       if (resHours <= 3) {
-        badge = `<span class="text-[11px] font-sans tabular-nums font-semibold text-[#38d99f] inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>新进 ${resHours}h</span>`;
+        badge = `<span class="text-[11px] font-sans tabular-nums font-semibold text-[#38d99f] inline-flex items-center justify-end gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>新进 ${resHours}h</span>`;
       } else if (resHours <= 12) {
-        badge = `<span class="text-[11px] font-sans tabular-nums font-semibold text-[#f5c451] inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span>活跃 ${resHours}h</span>`;
+        badge = `<span class="text-[11px] font-sans tabular-nums font-semibold text-[#f5c451] inline-flex items-center justify-end gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span>活跃 ${resHours}h</span>`;
       } else {
         const days = Math.floor(resHours / 24);
         const remH = resHours % 24;
         const dStr = days > 0 ? `${days}d ${remH}h` : `${resHours}h`;
-        badge = `<span class="text-[11px] font-sans tabular-nums font-medium text-[#9fb0c5] inline-flex items-center gap-1.5">驻留 ${escapeHtml(dStr)}</span>`;
+        badge = `<span class="text-[11px] font-sans tabular-nums font-medium text-[#9fb0c5] inline-flex items-center justify-end gap-1.5">驻留 ${escapeHtml(dStr)}</span>`;
       }
     } else {
-      badge = '<span class="text-[11px] font-sans font-semibold text-[#38d99f] inline-flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>刚入圈</span>';
+      badge = '<span class="text-[11px] font-sans font-semibold text-[#38d99f] inline-flex items-center justify-end gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>刚入圈</span>';
     }
     return `<div>${badge}${entryStr}</div>`;
   }
@@ -376,7 +402,54 @@
     }
   }
 
+  let sortBinding = null;
+
+  function bindSortButtonsFallback(rootEl, onSort) {
+    const headers = rootEl && typeof rootEl.querySelectorAll === 'function'
+      ? rootEl.querySelectorAll('th.sortable')
+      : sortHeaders;
+    const supportsInvokerCommands = typeof HTMLButtonElement !== 'undefined' && 'commandForElement' in HTMLButtonElement.prototype;
+    if (rootEl && supportsInvokerCommands && typeof rootEl.addEventListener === 'function' && (!rootEl.dataset || !rootEl.dataset.sortBound)) {
+      if (rootEl.dataset) rootEl.dataset.sortBound = 'true';
+      rootEl.addEventListener('command', (e) => {
+        if (e.command === '--sort' && e.source && typeof e.source.closest === 'function') {
+          onSort(e.source.closest('th.sortable'));
+        }
+      });
+    } else {
+      (headers && headers.length ? headers : sortHeaders).forEach((th) => {
+        if (th.dataset && th.dataset.sortBound) return;
+        if (th.dataset) th.dataset.sortBound = 'true';
+        const btn = typeof th.querySelector === 'function' ? th.querySelector('button[command="--sort"]') : null;
+        const target = btn || th;
+        target.addEventListener('click', () => onSort(th));
+      });
+    }
+    return {
+      syncAria(activeColumn, isAsc) {
+        const list = rootEl && typeof rootEl.querySelectorAll === 'function'
+          ? rootEl.querySelectorAll('th.sortable')
+          : sortHeaders;
+        (list && list.length ? list : sortHeaders).forEach((h) => {
+          if (activeColumn && h.getAttribute('data-sort') === activeColumn) {
+            h.setAttribute('aria-sort', isAsc ? 'ascending' : 'descending');
+          } else {
+            h.removeAttribute('aria-sort');
+          }
+        });
+      },
+    };
+  }
+
   function syncSortAria() {
+    if (sortBinding && typeof sortBinding.syncAria === 'function') {
+      sortBinding.syncAria(sortColumn, sortAsc);
+      return;
+    }
+    if (typeof Common.syncAriaSort === 'function') {
+      Common.syncAriaSort(sortHeaders, sortColumn, sortAsc);
+      return;
+    }
     sortHeaders.forEach((h) => {
       if (sortColumn && h.getAttribute('data-sort') === sortColumn) {
         h.setAttribute('aria-sort', sortAsc ? 'ascending' : 'descending');
@@ -410,23 +483,23 @@
     const emaBull = list.filter((c) => c.is_ema_bull);
     const overflow = list.filter((c) => Boolean(c.is_overflow_7d));
 
-    const sampleRes = resonance.slice(0, 4).map((c) => c.symbol.replace(/USDT$/, '')).join(' · ') || '--';
+    const sampleRes = resonance.slice(0, 3).map((c) => c.symbol.replace(/USDT$/, '')).join(' · ') || '--';
     const sampleNeg = negFr
       .filter((c) => isFiniteNum(c.funding_rate_4h_pct))
       .sort((a, b) => Number(a.funding_rate_4h_pct) - Number(b.funding_rate_4h_pct))
-      .slice(0, 3)
+      .slice(0, 2)
       .map((c) => `${c.symbol.replace(/USDT$/, '')}(${formatSignedPct(c.funding_rate_4h_pct, 2)})`)
       .join('、') || '--';
     const sampleTr = highTr
       .filter((c) => isFiniteNum(c.turnover_ratio))
       .sort((a, b) => Number(b.turnover_ratio) - Number(a.turnover_ratio))
-      .slice(0, 3)
+      .slice(0, 2)
       .map((c) => `${c.symbol.replace(/USDT$/, '')}(${Number(c.turnover_ratio).toFixed(1)}x)`)
       .join('、') || '--';
     const sampleEma = emaBull
       .filter((c) => isFiniteNum(c.ema_spread_pct))
       .sort((a, b) => Number(b.ema_spread_pct) - Number(a.ema_spread_pct))
-      .slice(0, 3)
+      .slice(0, 2)
       .map((c) => `${c.symbol.replace(/USDT$/, '')}(${formatSignedPct(c.ema_spread_pct, 1)})`)
       .join('、') || '--';
 
@@ -451,6 +524,7 @@
     }
 
     if (kpiEls.highTrCount) kpiEls.highTrCount.textContent = String(highTr.length);
+    if (kpiEls.highTrSub) kpiEls.highTrSub.textContent = `换手 ≥ ${highTurnoverThreshold}x`;
     if (kpiEls.highTrPct) kpiEls.highTrPct.textContent = pctLabel(highTr.length);
     if (kpiEls.highTrBar && kpiEls.highTrBar.style) kpiEls.highTrBar.style.width = pctWidth(highTr.length);
     if (kpiEls.highTrSample) {
@@ -468,6 +542,10 @@
 
     if (kpiEls.allCount) kpiEls.allCount.textContent = String(total);
     if (kpiEls.allSub) kpiEls.allSub.textContent = `含 ${overflow.length} 溢出跟踪`;
+    if (kpiEls.allSample) {
+      kpiEls.allSample.textContent = `门槛: 市值 < $30M · 7d 溢出 ≤ $80M`;
+      kpiEls.allSample.title = 'CMC Pro 流通市值低于 $30M，溢出后保持 7 天跟踪（≤ $80M）';
+    }
     if (kpiEls.allBar && kpiEls.allBar.style) kpiEls.allBar.style.width = total > 0 ? '100%' : '0%';
   }
 
@@ -542,7 +620,7 @@
         const daysLeft = isFiniteNum(c.overflow_days_left) ? c.overflow_days_left.toFixed(1) : '--';
         mcHtml = `<div class="inline-flex flex-col items-end">
           <div class="text-[#f5c451] font-mono tabular-nums font-semibold sym-mc-val">${mcStr}</div>
-          <span class="text-[10px] font-sans tabular-nums text-[#f5c451]/80 mt-0.5" title="曾落入 $30M 以下底池，市值溢出后保持 7 天跟踪">7d溢出 · ${escapeHtml(daysLeft)}d</span>
+          <span class="text-[10px] font-sans tabular-nums text-[#f5c451]/80 mt-0.5" title="曾落入 $30M 以下底池，市值溢出后保持 7 天跟踪">7d 溢出 · ${escapeHtml(daysLeft)}d</span>
         </div>`;
       } else {
         mcHtml = `<div class="text-[#f1f5f9] font-mono tabular-nums sym-mc-val">${mcStr}</div>`;
@@ -571,15 +649,15 @@
         </th>
         <td class="py-2 px-2.5 whitespace-nowrap font-sans">
           <div class="flex items-center gap-1">
-            <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="在 TradingView 打开 15m 专属画线布局"><span>TV</span>${EXT_ARROW_SVG}</a>
-            <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="打开币安合约盘口"><span>币安</span>${EXT_ARROW_SVG}</a>
+            <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="在新标签页打开 ${safeSym} TradingView 15m 专属画线布局"><span>TV</span>${EXT_ARROW_SVG}</a>
+            <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="在新标签页打开 ${safeSym} 币安永续合约盘口"><span>币安</span>${EXT_ARROW_SVG}</a>
             <button type="button" class="btn-copy-sym row-micro-btn" data-copy="${safeTvSym}" data-label="复制" title="复制 TV 代码 (${safeTvSym})">复制</button>
           </div>
         </td>
         <td class="py-2.5 px-2.5 whitespace-nowrap text-right">
           <div class="text-[#f1f5f9] font-mono tabular-nums font-semibold sym-price">${pStr}</div>
           <div class="sym-pos-box w-[76px] ml-auto mt-1 flex items-center justify-end gap-1.5 text-[10px]" title="${posTitle}">
-            <div class="w-12 h-1 bg-[#1b2432] rounded-[1px] relative overflow-hidden">
+            <div class="w-12 h-1 bg-[#1c2532] rounded-[1px] relative overflow-hidden">
               <div class="sym-pos-bar h-full ${posBarCol} transition-all duration-300" style="width: ${posWidth}%"></div>
             </div>
             <span class="sym-pos-text font-mono tabular-nums text-[10px] text-[#9fb0c5] w-7 text-right">${posLabel}</span>
@@ -596,8 +674,8 @@
           </div>
           <div class="text-[10px] text-[#7f91a8] font-mono tabular-nums sym-fr-settle mt-0.5${showSettleNote ? '' : ' hidden'}">${showSettleNote ? `(${frSettleStr})` : ''}</div>
         </td>
-        <td class="py-2.5 px-3 font-sans whitespace-nowrap">${buildEmaHtml(c)}</td>
-        <td class="py-2.5 px-3 font-sans whitespace-nowrap sym-duration border-l border-[#1c2532]">${buildDurationHtml(c)}</td>
+        <td class="py-2.5 px-3 font-sans whitespace-nowrap text-right">${buildEmaHtml(c)}</td>
+        <td class="py-2.5 px-3 font-sans whitespace-nowrap text-right sym-duration border-l border-[#1c2532]">${buildDurationHtml(c)}</td>
       </tr>`;
     }).join('');
 
@@ -872,6 +950,30 @@
         countBadge.textContent = nextCountText;
       }
     }
+    if (batchCopyLabelEl) {
+      const nextCopyLabel = `复制 TV 自选 (${visibleCount})`;
+      if (batchCopyLabelEl.textContent !== nextCopyLabel) {
+        batchCopyLabelEl.textContent = nextCopyLabel;
+      }
+    }
+    if (batchCopyBtn) {
+      const nextCopyTitle = `复制当前筛选生效的 ${visibleCount} 个标的代码，在 TradingView 自选列表粘贴即可批量添加`;
+      if (batchCopyBtn.title !== nextCopyTitle) {
+        batchCopyBtn.title = nextCopyTitle;
+      }
+    }
+    if (batchExportLabelEl) {
+      const nextExportLabel = `导出 .txt (${visibleCount})`;
+      if (batchExportLabelEl.textContent !== nextExportLabel) {
+        batchExportLabelEl.textContent = nextExportLabel;
+      }
+    }
+    if (batchExportBtn) {
+      const nextExportTitle = `导出当前筛选生效的 ${visibleCount} 个标的 .txt 文件以导入 TradingView 自选列表`;
+      if (batchExportBtn.title !== nextExportTitle) {
+        batchExportBtn.title = nextExportTitle;
+      }
+    }
     const emptyRow = document.getElementById('empty-search-row');
     if (emptyRow) {
       emptyRow.classList.toggle('hidden', visibleCount > 0);
@@ -983,10 +1085,10 @@
     if (key === lastSyncBadgeKey) return;
     lastSyncBadgeKey = key;
     if (level === 'warn') {
-      syncStatusBadge.className = 'px-2 py-0.5 font-sans font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5';
+      syncStatusBadge.className = 'w-full px-2 py-0.5 font-sans font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5';
       syncStatusBadge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>${escapeHtml(label)}</span>`;
     } else {
-      syncStatusBadge.className = 'px-2 py-0.5 font-sans font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5';
+      syncStatusBadge.className = 'w-full px-2 py-0.5 font-sans font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5';
       syncStatusBadge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span><span>${escapeHtml(label)}</span>`;
     }
   }
@@ -1246,12 +1348,10 @@
       lastSyncActivityAt = Date.now();
       if (poolUpdatedEl) {
         const fullBeijing = formatUpdatedAtBeijing(currentVersion);
-        const shortUpdated = fullBeijing
-          .replace(/^\d{4}-/, '')
-          .replace(/\s*\(北京时间\)$/, '');
+        const shortUpdated = fullBeijing.replace(/^\d{4}-/, '');
         poolUpdatedEl.textContent = `底池: ${shortUpdated}`;
         poolUpdatedEl.title = `底池扫描时间: ${fullBeijing}`;
-        poolUpdatedEl.className = 'px-2 py-0.5 font-sans tabular-nums text-[#9fb0c5] bg-[#10151d] inline-flex items-center';
+        poolUpdatedEl.className = 'px-2 py-0.5 font-sans tabular-nums text-[#9fb0c5] bg-[#10151d] inline-flex items-center flex-1 sm:flex-none';
       }
 
       const optionalNumericFields = [
@@ -1321,7 +1421,7 @@
       } else {
         if (poolUpdatedEl) {
           poolUpdatedEl.textContent = '候选池加载失败';
-          poolUpdatedEl.className = 'px-2 py-0.5 font-sans text-[#f8717e] bg-[#f25565]/10 inline-flex items-center';
+          poolUpdatedEl.className = 'px-2 py-0.5 font-sans text-[#f8717e] bg-[#f25565]/10 inline-flex items-center flex-1 sm:flex-none';
         }
         if (tableBody) {
           tableBody.innerHTML = `<tr><td colspan="11" class="py-14 text-center font-sans text-xs"><div class="text-[#f8717e]">候选币池读取失败 (${escapeHtml(err.message)})，请检查后台 API 服务是否在线。</div><button type="button" id="btn-retry-candidates" class="retry-candidates-btn px-3 py-1.5 bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] rounded-[4px] border border-[#324055] text-xs font-medium inline-flex items-center transition-colors">立即重试</button></td></tr>`;
@@ -1424,11 +1524,12 @@
     }
   }
 
+  const debouncedApplyFilter = debounce(() => {
+    applyFilter();
+  }, 120);
+
   function resetFiltersToDefault() {
-    if (filterDebounceTimer) {
-      clearTimeout(filterDebounceTimer);
-      filterDebounceTimer = null;
-    }
+    debouncedApplyFilter.cancel();
     if (searchInput) searchInput.value = '';
     searchQuery = '';
     sortColumn = null;
@@ -1462,11 +1563,7 @@
     searchInput.addEventListener('input', (e) => {
       searchQuery = e.target.value;
       saveUiState();
-      if (filterDebounceTimer) clearTimeout(filterDebounceTimer);
-      filterDebounceTimer = setTimeout(() => {
-        filterDebounceTimer = null;
-        applyFilter();
-      }, 120);
+      debouncedApplyFilter();
     });
   }
 
@@ -1502,19 +1599,16 @@
   }
 
   const supportsInvokerCommands = typeof HTMLButtonElement !== 'undefined' && 'commandForElement' in HTMLButtonElement.prototype;
-  if (candidatesTable && supportsInvokerCommands) {
-    candidatesTable.addEventListener('command', (e) => {
-      if (e.command === '--sort' && e.source && typeof e.source.closest === 'function') {
-        triggerHeaderSort(e.source.closest('th.sortable'));
-      }
-    });
-  } else {
-    sortHeaders.forEach((th) => {
-      const btn = th.querySelector('button[command="--sort"]');
-      const target = btn || th;
-      target.addEventListener('click', () => triggerHeaderSort(th));
-    });
-  }
+  const sortRoot = (
+    candidatesTable &&
+    typeof candidatesTable.querySelectorAll === 'function' &&
+    (supportsInvokerCommands || candidatesTable.querySelectorAll('th.sortable').length > 0)
+  )
+    ? candidatesTable
+    : document;
+  sortBinding = typeof Common.bindSortButtons === 'function'
+    ? Common.bindSortButtons(sortRoot, triggerHeaderSort)
+    : bindSortButtonsFallback(sortRoot, triggerHeaderSort);
 
   function openCandidateChartModal(sym, tvSym, triggerEl) {
     if (!KlineModal) return;
@@ -1659,10 +1753,7 @@
       if (tvDrawer && !tvDrawer.classList.contains('hidden')) {
         setDrawerOpen(false, { restoreFocus: true });
       } else if (searchInput && (searchInput.value || document.activeElement === searchInput)) {
-        if (filterDebounceTimer) {
-          clearTimeout(filterDebounceTimer);
-          filterDebounceTimer = null;
-        }
+        debouncedApplyFilter.cancel();
         searchInput.value = '';
         searchQuery = '';
         searchInput.blur();
