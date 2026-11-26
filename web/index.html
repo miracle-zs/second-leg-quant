@@ -28,15 +28,16 @@
         <div class="hidden xl:block h-4 w-px bg-[#222b38]" aria-hidden="true"></div>
 
         <div class="inline-flex flex-wrap items-center border border-[#283446] rounded-[4px] divide-x divide-[#283446] overflow-hidden bg-[#0b0e13] text-[11px]">
-          <span id="sync-status-badge" class="px-2 py-0.5 font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5" role="status" aria-live="polite">
+          <span id="sync-status-badge" class="px-2 py-0.5 font-sans font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5" role="status" aria-live="polite">
             <span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>
             <span>币安 60s 轮询</span>
           </span>
-          <span class="px-2 py-0.5 font-mono tabular-nums text-[#f5c451] bg-[#10151d] inline-flex items-center gap-1.5" title="距离下个整点资费结算窗口倒计时">
-            <span class="text-[#9fb0c5] font-sans">结算</span>
-            <span id="settle-countdown" class="font-semibold">--:--</span>
+          <span class="px-2 py-0.5 font-sans tabular-nums text-[#f5c451] bg-[#10151d] inline-flex items-center gap-1.5" title="距离下个整点资费结算窗口倒计时">
+            <span class="text-[#9fb0c5]">整点结算</span>
+            <span id="settle-countdown" class="font-mono font-semibold">--:--</span>
           </span>
-          <span id="pool-updated-time" class="hidden sm:inline-flex px-2 py-0.5 font-mono tabular-nums text-[#9fb0c5] bg-[#10151d]">更新: --</span>
+          <span id="pool-updated-time" class="px-2 py-0.5 font-sans tabular-nums text-[#9fb0c5] bg-[#10151d] inline-flex items-center" title="底池扫描快照更新时间">底池: --</span>
+          <span id="ticker-synced-time" class="hidden sm:inline-flex px-2 py-0.5 font-sans tabular-nums text-[#9fb0c5] bg-[#10151d] items-center" title="币安行情最后同步时间">行情: --</span>
         </div>
       </div>
 
@@ -73,7 +74,7 @@
         <div class="flex items-center justify-between px-3.5 py-2 bg-[#151c27] border-b border-[#222b38] gap-2">
           <div class="flex items-center gap-3 flex-wrap">
             <h2 class="text-xs font-semibold text-[#f1f5f9]">实战四步执行基准</h2>
-            <span class="text-[#9fb0c5] font-mono text-[11px]">TV 快捷键：对数坐标 <kbd class="px-1.5 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] text-[#f1f5f9]">Alt+L</kbd> · 趋势线 <kbd class="px-1.5 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] text-[#f1f5f9]">Alt+T</kbd> · 周期切换 <kbd class="px-1.5 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] text-[#f1f5f9]">15</kbd> / <kbd class="px-1.5 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] text-[#f1f5f9]">60</kbd></span>
+            <span class="text-[#9fb0c5] font-sans text-[11px]">TV 快捷键：对数坐标 <kbd class="px-1.5 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] font-mono text-[#f1f5f9]">Alt+L</kbd> · 趋势线 <kbd class="px-1.5 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] font-mono text-[#f1f5f9]">Alt+T</kbd> · 周期切换 <kbd class="px-1.5 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] font-mono text-[#f1f5f9]">15</kbd> / <kbd class="px-1.5 py-0.5 bg-[#0b0e13] rounded-[3px] border border-[#283446] font-mono text-[#f1f5f9]">60</kbd></span>
           </div>
           <button id="btn-close-drawer" type="button" class="w-8 h-8 sm:w-6 sm:h-6 rounded-[4px] text-[#9fb0c5] hover:text-[#f1f5f9] hover:bg-[#222b38] inline-flex items-center justify-center transition-colors" aria-label="关闭速查">
             <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -85,28 +86,28 @@
           <div class="ledger-cell p-3 space-y-1">
             <div class="flex items-center justify-between">
               <span class="font-semibold text-[#f1f5f9]">1. 双核共振初选</span>
-              <span class="font-mono text-[11px] text-[#f5c451]">&lt;$30M · ≥1.5x</span>
+              <span class="font-mono tabular-nums text-[11px] text-[#f5c451]">&lt;$30M · ≥1.5x</span>
             </div>
             <p class="text-[#9fb0c5] text-[11px]">CMC 流通市值低于 3,000 万美元，1h EMA(5&gt;10) 顺势叠加强换手；优选非负健康费率，负费率贴水提示空头拥挤风险。</p>
           </div>
           <div class="ledger-cell p-3 space-y-1">
             <div class="flex items-center justify-between">
               <span class="font-semibold text-[#f1f5f9]">2. TV 对数画线</span>
-              <span class="font-mono text-[11px] text-[#9fb0c5]">15m 对数</span>
+              <span class="font-sans text-[11px] text-[#9fb0c5]"><span class="font-mono">15m</span> 对数</span>
             </div>
             <p class="text-[#9fb0c5] text-[11px]">进入专属云端布局开启对数坐标，在 15m 周期连接回踩高点绘制下降趋势线。</p>
           </div>
           <div class="ledger-cell p-3 space-y-1">
             <div class="flex items-center justify-between">
               <span class="font-semibold text-[#f1f5f9]">3. 15m 收盘突破</span>
-              <span class="font-mono text-[11px] text-[#38d99f]">实体站稳开多</span>
+              <span class="font-sans font-medium text-[11px] text-[#38d99f]">实体站稳开多</span>
             </div>
             <p class="text-[#9fb0c5] text-[11px]">等待 15m K 线收盘价站上对数趋势线确认入场，守护进程同步推送 Server 酱提醒。</p>
           </div>
           <div class="ledger-cell p-3 space-y-1">
             <div class="flex items-center justify-between">
               <span class="font-semibold text-[#f1f5f9]">4. 破线止损与锁利</span>
-              <span class="font-mono text-[11px] text-[#f8717e]">&lt;1.5% 止损 · +6% 保本</span>
+              <span class="font-sans tabular-nums text-[11px] text-[#f8717e]"><span class="font-mono">&lt;1.5%</span> 止损 · <span class="font-mono">+6%</span> 保本</span>
             </div>
             <p class="text-[#9fb0c5] text-[11px]">15m 收盘跌回线内无条件止损；浮盈达 +6% 自动设立开仓价 +1% 移动锁利提醒。</p>
           </div>
@@ -115,9 +116,9 @@
 
       <!-- Signature Swiss Zone Schedule Strip (Connected 1px Hairline Matrix) -->
       <section aria-label="交易机会区分区时刻表" class="ledger-grid grid grid-cols-2 lg:grid-cols-5 text-xs">
-        <div data-zone="resonance" role="button" tabindex="0" class="kpi-card card-resonance active px-3 sm:px-3.5 py-2.5 flex flex-col justify-between gap-2">
+        <div data-zone="resonance" role="button" tabindex="0" aria-pressed="true" class="kpi-card card-resonance active px-3 sm:px-3.5 pt-2.5 pb-2 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
-            <span class="font-semibold text-[#f5c451] text-xs truncate">顺势高换手共振区</span>
+            <span class="kpi-zone-title text-xs truncate">顺势高换手共振区</span>
             <div class="flex items-center gap-1.5 shrink-0">
               <span id="kpi-resonance-pct" class="text-[10px] font-mono tabular-nums text-[#7f91a8]">--</span>
               <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446]">1</kbd>
@@ -125,14 +126,17 @@
           </div>
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl sm:text-2xl font-bold font-mono text-[#f1f5f9] tabular-nums leading-none"><span id="kpi-resonance-count">--</span></div>
-            <div id="kpi-resonance-sub" class="text-[11px] text-[#f5c451] font-mono truncate">--</div>
+            <div id="kpi-resonance-sub" class="text-[11px] text-[#f5c451] font-sans tabular-nums truncate">--</div>
           </div>
-          <div id="kpi-resonance-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate border-t border-[#1c2532] pt-1.5">代表: --</div>
+          <div id="kpi-resonance-sample" class="text-[11px] text-[#9fb0c5] font-sans tabular-nums truncate border-t border-[#1c2532] pt-1.5">代表: --</div>
+          <div class="zone-progress-track" aria-hidden="true">
+            <div id="kpi-resonance-bar" class="zone-progress-fill" style="width: 0%"></div>
+          </div>
         </div>
 
-        <div data-zone="neg_fr" role="button" tabindex="0" class="kpi-card card-neg-fr px-3 sm:px-3.5 py-2.5 flex flex-col justify-between gap-2">
+        <div data-zone="neg_fr" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-neg-fr px-3 sm:px-3.5 pt-2.5 pb-2 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
-            <span class="font-medium text-[#f1f5f9] text-xs truncate">负费率贴水区</span>
+            <span class="kpi-zone-title text-xs truncate">负费率贴水区</span>
             <div class="flex items-center gap-1.5 shrink-0">
               <span id="kpi-neg-fr-pct" class="text-[10px] font-mono tabular-nums text-[#7f91a8]">--</span>
               <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446]">2</kbd>
@@ -141,12 +145,15 @@
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl sm:text-2xl font-bold font-mono text-[#f1f5f9] tabular-nums leading-none"><span id="kpi-neg-fr-count">--</span></div>
           </div>
-          <div id="kpi-neg-fr-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate border-t border-[#1c2532] pt-1.5">贴水深: --</div>
+          <div id="kpi-neg-fr-sample" class="text-[11px] text-[#9fb0c5] font-sans tabular-nums truncate border-t border-[#1c2532] pt-1.5">贴水深: --</div>
+          <div class="zone-progress-track" aria-hidden="true">
+            <div id="kpi-neg-fr-bar" class="zone-progress-fill" style="width: 0%; background-color: #f25565"></div>
+          </div>
         </div>
 
-        <div data-zone="high_tr" role="button" tabindex="0" class="kpi-card card-high-tr px-3 sm:px-3.5 py-2.5 flex flex-col justify-between gap-2">
+        <div data-zone="high_tr" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-high-tr px-3 sm:px-3.5 pt-2.5 pb-2 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
-            <span class="font-medium text-[#f1f5f9] text-xs truncate">巨量高换手区</span>
+            <span class="kpi-zone-title text-xs truncate">巨量高换手区</span>
             <div class="flex items-center gap-1.5 shrink-0">
               <span id="kpi-high-tr-pct" class="text-[10px] font-mono tabular-nums text-[#7f91a8]">--</span>
               <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446]">3</kbd>
@@ -155,12 +162,15 @@
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl sm:text-2xl font-bold font-mono text-[#f1f5f9] tabular-nums leading-none"><span id="kpi-high-tr-count">--</span></div>
           </div>
-          <div id="kpi-high-tr-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate border-t border-[#1c2532] pt-1.5">最高: --</div>
+          <div id="kpi-high-tr-sample" class="text-[11px] text-[#9fb0c5] font-sans tabular-nums truncate border-t border-[#1c2532] pt-1.5">最高: --</div>
+          <div class="zone-progress-track" aria-hidden="true">
+            <div id="kpi-high-tr-bar" class="zone-progress-fill" style="width: 0%; background-color: #60a5fa"></div>
+          </div>
         </div>
 
-        <div data-zone="ema_bull" role="button" tabindex="0" class="kpi-card card-ema-bull px-3 sm:px-3.5 py-2.5 flex flex-col justify-between gap-2">
+        <div data-zone="ema_bull" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-ema-bull px-3 sm:px-3.5 pt-2.5 pb-2 flex flex-col justify-between gap-2">
           <div class="flex items-center justify-between gap-1.5">
-            <span class="font-medium text-[#f1f5f9] text-xs truncate">1h EMA 顺势区</span>
+            <span class="kpi-zone-title text-xs truncate">1h EMA 顺势区</span>
             <div class="flex items-center gap-1.5 shrink-0">
               <span id="kpi-ema-bull-pct" class="text-[10px] font-mono tabular-nums text-[#7f91a8]">--</span>
               <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446]">4</kbd>
@@ -169,12 +179,15 @@
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl sm:text-2xl font-bold font-mono text-[#f1f5f9] tabular-nums leading-none"><span id="kpi-ema-bull-count">--</span></div>
           </div>
-          <div id="kpi-ema-bull-sample" class="text-[11px] text-[#9fb0c5] font-mono truncate border-t border-[#1c2532] pt-1.5">多头: --</div>
+          <div id="kpi-ema-bull-sample" class="text-[11px] text-[#9fb0c5] font-sans tabular-nums truncate border-t border-[#1c2532] pt-1.5">多头: --</div>
+          <div class="zone-progress-track" aria-hidden="true">
+            <div id="kpi-ema-bull-bar" class="zone-progress-fill" style="width: 0%; background-color: #22c58b"></div>
+          </div>
         </div>
 
-        <div data-zone="all" role="button" tabindex="0" class="kpi-card card-all px-3 sm:px-3.5 py-2.5 flex flex-col justify-start gap-2 col-span-2 lg:col-span-1">
+        <div data-zone="all" role="button" tabindex="0" aria-pressed="false" class="kpi-card card-all px-3 sm:px-3.5 pt-2.5 pb-2 flex flex-col justify-between gap-2 col-span-2 lg:col-span-1">
           <div class="flex items-center justify-between gap-1.5">
-            <span class="font-medium text-[#f1f5f9] text-xs truncate">全量候选底池</span>
+            <span class="kpi-zone-title text-xs truncate">全量候选底池</span>
             <div class="flex items-center gap-1.5 shrink-0">
               <span class="text-[10px] font-mono tabular-nums text-[#7f91a8]">100%</span>
               <kbd class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono bg-[#0b0e13] text-[#9fb0c5] border border-[#283446]">5</kbd>
@@ -182,7 +195,10 @@
           </div>
           <div class="flex items-baseline justify-between gap-2">
             <div class="text-xl sm:text-2xl font-bold font-mono text-[#f1f5f9] tabular-nums leading-none"><span id="kpi-all-count">--</span></div>
-            <div id="kpi-all-sub" class="text-[11px] text-[#8ab8ff] font-mono truncate">--</div>
+            <div id="kpi-all-sub" class="text-[11px] text-[#8ab8ff] font-sans tabular-nums truncate">--</div>
+          </div>
+          <div class="zone-progress-track" aria-hidden="true">
+            <div id="kpi-all-bar" class="zone-progress-fill" style="width: 0%; background-color: #3b82f6"></div>
           </div>
         </div>
       </section>
@@ -195,12 +211,12 @@
         <!-- Unified Toolbar -->
         <div class="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2.5 px-3.5 py-2 bg-[#121822] border-b border-[#222b38]">
           <div class="flex items-center gap-2.5 flex-wrap">
-            <span id="pool-count-badge" class="text-xs font-mono tabular-nums text-[#7f91a8]">-- / -- 标的</span>
+            <span id="pool-count-badge" class="text-xs font-sans tabular-nums text-[#7f91a8]">-- / -- 标的</span>
 
             <div class="h-3.5 w-px bg-[#222b38] hidden sm:block" aria-hidden="true"></div>
 
             <div class="flex items-center gap-1.5">
-              <button id="btn-batch-copy-tv" type="button" class="px-2.5 py-1 text-xs font-medium rounded-[4px] bg-[#3b82f6]/[0.12] hover:bg-[#3b82f6]/[0.22] text-[#8ab8ff] hover:text-white border border-[#3b82f6]/35 inline-flex items-center gap-1.5 transition-colors" title="复制当前列表代码，在 TradingView 自选列表粘贴即可批量添加">
+              <button id="btn-batch-copy-tv" type="button" class="btn-primary-cobalt px-2.5 py-1 text-xs rounded-[4px] inline-flex items-center gap-1.5 transition-colors" title="复制当前列表代码，在 TradingView 自选列表粘贴即可批量添加">
                 <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                   <rect x="5.5" y="5.5" width="8" height="8" rx="1.2" stroke="currentColor" stroke-width="1.4"/>
                   <path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5H9A1.5 1.5 0 0 1 10.5 3V3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
@@ -222,19 +238,19 @@
                 <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.4"/>
                 <path d="M10.5 10.5L13.5 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
               </svg>
-              <input id="symbol-search-input" type="search" aria-label="按合约代号搜索" placeholder="搜索合约代号 (按 / 聚焦)..." class="w-full pl-8 pr-2.5 py-1 text-xs bg-[#0b0e13] border border-[#283446] rounded-[4px] text-[#f1f5f9] placeholder-[#7f91a8] focus:outline-none focus:border-[#3b82f6]">
+              <input id="symbol-search-input" type="search" aria-label="按合约代号搜索" placeholder="搜索合约代号 (按 / 聚焦)..." class="w-full pl-8 pr-2.5 py-1 text-xs bg-[#0b0e13] border border-[#283446] hover:border-[#3b4d66] rounded-[4px] text-[#f1f5f9] placeholder-[#7f91a8] focus:border-[#3b82f6]">
             </div>
-            <button id="btn-reset-filter" type="button" class="px-2.5 py-1 text-xs font-medium text-[#9fb0c5] hover:text-[#f1f5f9] bg-[#151c27] hover:bg-[#1d2736] rounded-[4px] border border-[#283446] transition-colors shrink-0" title="重置为全量候选底池">重置</button>
+            <button id="btn-reset-filter" type="button" class="px-2.5 py-1 text-xs font-medium text-[#9fb0c5] hover:text-[#f1f5f9] bg-[#151c27] hover:bg-[#1d2736] rounded-[4px] border border-[#283446] hover:border-[#3b4d66] transition-colors shrink-0" title="重置为默认共振区筛选与排序">重置</button>
           </div>
         </div>
 
         <!-- Main Candidates Schedule Table -->
-        <div tabindex="0" role="region" aria-labelledby="pool-table-heading" class="table-scroll-region overflow-x-auto max-h-[65vh] lg:max-h-[calc(100vh-225px)] custom-scrollbar">
-          <table id="candidates-table" class="w-full text-left text-xs font-mono relative min-w-[920px]">
+        <div id="candidates-table-scroll" tabindex="0" role="region" aria-label="候选币池数据表格滚动区" class="overflow-x-auto custom-scrollbar">
+          <table id="candidates-table" class="w-full text-left text-xs font-sans relative min-w-[920px]">
             <thead class="sticky-header text-[11px] text-[#9fb0c5] font-sans font-medium">
               <tr>
-                <th scope="col" class="py-2 px-2 w-9 text-center">#</th>
-                <th scope="col" class="py-2 px-3 min-w-[156px] sticky-col">合约标的</th>
+                <th scope="col" aria-label="序号" class="py-2 px-2 w-9 text-center" style="position: sticky; inset-inline-start: 0; z-index: 21; width: 2.25rem; min-width: 2.25rem; max-width: 2.25rem; background-color: #0d1219;">#</th>
+                <th scope="col" class="py-2 px-3 sticky-col" style="inset-inline-start: 2.25rem; min-width: 112px; max-width: clamp(112px, 34vw, 190px);">合约标的</th>
                 <th scope="col" class="py-2 px-2.5 whitespace-nowrap">快捷操作</th>
                 <th scope="col" class="sortable num-col min-w-[116px] text-right" data-sort="price" data-type="number">
                   <button type="button" class="sort-btn" commandfor="candidates-table" command="--sort">
@@ -295,17 +311,17 @@
         </div>
 
         <footer class="flex flex-col sm:flex-row items-center justify-between text-[11px] text-[#7f91a8] px-3.5 py-2 bg-[#0e131b] border-t border-[#222b38] gap-1.5">
-          <span>点击行或按 Enter 预览 K 线 · <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">Esc</kbd> 清空筛选</span>
-          <span class="font-mono">CMC Pro 流通市值 &lt; $30M · 币安 USDⓈ-M 永续合约</span>
+          <span>点击行或按 Enter 预览 K 线 · <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">Esc</kbd> 清空筛选 · <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">/</kbd> 搜索 · <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">1</kbd>-<kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">5</kbd> 切区</span>
+          <span class="font-sans">CMC Pro 流通市值 <span class="font-mono tabular-nums">&lt; $30M</span> · 币安 USDⓈ-M 永续合约</span>
         </footer>
       </section>
     </main>
   </div>
 
   <!-- Native Top-Layer Interactive 15m/1h Candlestick & TV Chart Dialog -->
-  <dialog id="chart-modal" closedby="any" aria-labelledby="modal-chart-title" class="chart-modal-dialog bg-[#10151d] border border-[#324055] rounded-[6px] w-[calc(100vw-1rem)] max-w-5xl h-[85vh] max-h-[740px] flex-col overflow-hidden">
-    <div class="px-3 py-2 bg-[#0d1219] border-b border-[#222b38] flex flex-wrap items-center justify-between gap-1.5 shrink-0">
-      <div class="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+  <dialog id="chart-modal" tabindex="-1" closedby="any" aria-labelledby="modal-chart-title" class="chart-modal-dialog bg-[#10151d] border border-[#324055] rounded-[6px] w-[calc(100vw-1rem)] max-w-5xl h-[85vh] max-h-[740px] flex-col overflow-hidden">
+    <div id="modal-header-toolbar" class="px-2.5 sm:px-3 py-1.5 sm:py-2 bg-[#0d1219] border-b border-[#222b38] flex flex-wrap items-center justify-between gap-1 sm:gap-1.5 shrink-0">
+      <div class="flex items-center gap-1 sm:gap-2 flex-wrap">
         <span id="modal-nav-group" hidden class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13]">
           <button type="button" id="modal-prev-btn" class="w-8 h-8 sm:w-6 sm:h-6 hover:bg-[#192231] text-[#9fb0c5] hover:text-[#f1f5f9] inline-flex items-center justify-center transition-colors" title="上一个标的 (←)" aria-label="上一个标的">
             <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M7.5 2.5L4 6L7.5 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -319,33 +335,33 @@
         <span id="modal-chart-price" class="font-mono tabular-nums text-[#38d99f] font-bold text-xs sm:text-[13px]">--</span>
 
         <span role="group" aria-label="K线时间周期" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-mono">
-          <button type="button" class="modal-interval-btn px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-interval="15m">15m</button>
-          <button type="button" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1h">1h</button>
-          <button type="button" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="4h">4h</button>
-          <button type="button" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1d">1D</button>
+          <button type="button" aria-pressed="true" class="modal-interval-btn px-1 sm:px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-interval="15m">15m</button>
+          <button type="button" aria-pressed="false" class="modal-interval-btn px-1 sm:px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1h">1h</button>
+          <button type="button" aria-pressed="false" class="modal-interval-btn px-1 sm:px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="4h">4h</button>
+          <button type="button" aria-pressed="false" class="modal-interval-btn px-1 sm:px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1d">1D</button>
         </span>
 
-        <span id="modal-bars-group" role="group" aria-label="显示K线根数" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-mono" title="显示 K 线根数">
-          <button type="button" class="modal-bars-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="60">60根</button>
-          <button type="button" class="modal-bars-btn px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-bars="120">120根</button>
-          <button type="button" class="modal-bars-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="168">168根</button>
+        <span id="modal-bars-group" role="group" aria-label="显示K线根数" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-sans tabular-nums" title="显示 K 线根数">
+          <button type="button" aria-pressed="false" class="modal-bars-btn px-1 sm:px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="60">60根</button>
+          <button type="button" aria-pressed="true" class="modal-bars-btn px-1 sm:px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-bars="120">120根</button>
+          <button type="button" aria-pressed="false" class="modal-bars-btn px-1 sm:px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="168">168根</button>
         </span>
       </div>
 
-      <div class="flex items-center gap-1.5 ml-auto">
+      <div class="flex items-center gap-1 sm:gap-1.5 ml-auto">
         <span role="group" aria-label="图表引擎切换" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-sans">
-          <button type="button" id="btn-chart-engine-native" class="px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold">极速K线</button>
-          <button type="button" id="btn-chart-engine-tv" class="px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]">TV内嵌</button>
+          <button type="button" id="btn-chart-engine-native" aria-pressed="true" class="px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold">极速K线</button>
+          <button type="button" id="btn-chart-engine-tv" aria-pressed="false" class="px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]">TV内嵌</button>
         </span>
 
-        <a id="modal-external-link" href="#" target="_blank" rel="noopener noreferrer" class="px-2 py-0.5 rounded-[4px] bg-[#3b82f6]/[0.12] hover:bg-[#3b82f6]/[0.22] text-[#8ab8ff] hover:text-white border border-[#3b82f6]/35 text-[11px] font-medium inline-flex items-center gap-1 transition-colors" title="在 TradingView 打开专属画线布局">
-          <span>TV画线</span>
+        <a id="modal-external-link" href="#" target="_blank" rel="noopener noreferrer" class="btn-primary-cobalt px-2 py-0.5 rounded-[4px] text-[11px] inline-flex items-center gap-1 transition-colors" title="在 TradingView 打开专属画线布局">
+          <span>TV 画线</span>
           <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true">
             <path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </a>
 
-        <button id="modal-close-btn" type="button" autofocus class="w-8 h-8 sm:w-6 sm:h-6 rounded-[4px] bg-[#151c27] hover:bg-[#222b38] text-[#9fb0c5] hover:text-[#f1f5f9] border border-[#283446] inline-flex items-center justify-center transition-colors" title="关闭 (Esc)" aria-label="关闭弹窗">
+        <button id="modal-close-btn" type="button" class="w-8 h-8 sm:w-6 sm:h-6 rounded-[4px] bg-[#151c27] hover:bg-[#222b38] text-[#9fb0c5] hover:text-[#f1f5f9] border border-[#283446] inline-flex items-center justify-center transition-colors" title="关闭 (Esc)" aria-label="关闭弹窗">
           <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
@@ -353,20 +369,35 @@
       </div>
     </div>
 
-    <div class="flex-1 w-full h-full bg-[#0b0e13] relative overflow-hidden">
+    <div id="modal-chart-stage" tabindex="-1" autofocus class="flex-1 w-full min-h-0 bg-[#0b0e13] relative overflow-hidden">
       <div id="modal-native-chart-view" class="w-full h-full relative">
-        <canvas id="modal-kline-canvas" class="w-full h-full block select-none"></canvas>
+        <canvas id="modal-kline-canvas" role="img" aria-label="K线走势图" class="w-full h-full block select-none"></canvas>
         <div id="modal-chart-tooltip" class="absolute top-2.5 left-3 bg-[#10151d]/95 border border-[#324055] px-3 py-2 rounded-[4px] text-[11px] font-mono tabular-nums text-[#f1f5f9] hidden pointer-events-none z-20"></div>
-        <div id="modal-chart-loading" class="absolute inset-0 bg-[#0b0e13]/80 flex flex-col items-center justify-center gap-2 text-[#9fb0c5] text-xs font-medium z-30">
+        <div id="modal-chart-loading" class="absolute inset-0 bg-[#0b0e13]/80 flex flex-col items-center justify-center gap-2 text-[#9fb0c5] text-xs font-sans font-medium z-30">
           <span>正在拉取实时 K 线序列...</span>
         </div>
-        <div id="modal-chart-error" class="absolute inset-0 bg-[#0b0e13]/90 hidden flex-col items-center justify-center gap-3 text-[#f8717e] text-xs font-medium z-30">
-          <span>K 线序列读取失败，请检查网络连接后重试</span>
+        <div id="modal-chart-error" class="hidden absolute inset-0 bg-[#0b0e13]/90 flex flex-col items-center justify-center gap-3 text-[#f8717e] text-xs font-sans font-medium z-30 px-4 text-center">
+          <span id="modal-chart-error-text">K 线序列读取失败，请检查网络连接后重试</span>
           <button type="button" id="modal-chart-retry-btn" class="px-3 py-1.5 bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] rounded-[4px] border border-[#324055] text-xs">重新加载</button>
         </div>
       </div>
       <div id="modal-tv-view" class="w-full h-full hidden relative bg-[#0b0e13]">
         <iframe id="modal-tv-iframe" class="w-full h-full border-0" title="TradingView 实时图表" referrerpolicy="no-referrer" allowfullscreen></iframe>
+        <div id="modal-tv-loading" class="hidden absolute inset-0 bg-[#0b0e13]/85 flex flex-col items-center justify-center gap-2 text-[#9fb0c5] text-xs font-sans font-medium z-20">
+          <span>正在加载 TradingView 图表...</span>
+        </div>
+        <div id="modal-tv-fallback" class="hidden absolute inset-0 bg-[#0b0e13]/90 flex flex-col items-center justify-center gap-3 text-xs font-sans z-30 px-4 text-center">
+          <span id="modal-tv-fallback-text" class="text-[#f5c451]">TradingView 内嵌图表加载超时或受网络限制</span>
+          <div class="flex items-center justify-center gap-2 flex-wrap">
+            <button type="button" id="modal-tv-switch-native-btn" class="px-3 py-1.5 bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] rounded-[4px] border border-[#324055] text-xs font-medium transition-colors">切回极速K线</button>
+            <a id="modal-tv-open-ext-btn" href="#" target="_blank" rel="noopener noreferrer" class="btn-primary-cobalt px-3 py-1.5 rounded-[4px] text-xs inline-flex items-center gap-1 transition-colors">
+              <span>新窗口打开</span>
+              <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                <path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </a>
+          </div>
+        </div>
       </div>
     </div>
   </dialog>

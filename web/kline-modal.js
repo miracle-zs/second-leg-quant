@@ -13,6 +13,7 @@
 
   const VALID_BAR_COUNTS = new Set([60, 120, 168]);
   const RIGHT_AXIS_WIDTH = 78;
+  const TV_IFRAME_TIMEOUT_MS = 10000;
 
   let modalCurrentSymbol = '';
   let modalCurrentTvSymbol = '';
@@ -21,14 +22,18 @@
   let modalActiveEngine = 'native';
   let modalCandles = [];
   let modalHoverIndex = -1;
+  let modalNavTotal = 0;
   let modalFetchController = null;
   let modalRenderRafId = null;
+  let tvLoadTimer = null;
+  let tvLoadSeq = 0;
   let onVisibleBarsChange = null;
   let onNavigateSymbol = null;
   let supportsDisplayTransition;
   let lastFocusedElement = null;
 
   const chartModal = document.getElementById('chart-modal');
+  const modalHeaderToolbar = document.getElementById('modal-header-toolbar');
   const modalCloseBtn = document.getElementById('modal-close-btn');
   const modalNavGroup = document.getElementById('modal-nav-group');
   const modalPrevBtn = document.getElementById('modal-prev-btn');
@@ -40,10 +45,16 @@
   const modalNativeView = document.getElementById('modal-native-chart-view');
   const modalTvView = document.getElementById('modal-tv-view');
   const modalTvIframe = document.getElementById('modal-tv-iframe');
+  const modalTvLoading = document.getElementById('modal-tv-loading');
+  const modalTvFallback = document.getElementById('modal-tv-fallback');
+  const modalTvFallbackText = document.getElementById('modal-tv-fallback-text');
+  const modalTvSwitchNativeBtn = document.getElementById('modal-tv-switch-native-btn');
+  const modalTvOpenExtBtn = document.getElementById('modal-tv-open-ext-btn');
   const modalCanvas = document.getElementById('modal-kline-canvas');
   const modalTooltip = document.getElementById('modal-chart-tooltip');
   const modalLoading = document.getElementById('modal-chart-loading');
   const modalError = document.getElementById('modal-chart-error');
+  const modalErrorText = document.getElementById('modal-chart-error-text');
   const modalRetryBtn = document.getElementById('modal-chart-retry-btn');
   const btnEngineNative = document.getElementById('btn-chart-engine-native');
   const btnEngineTv = document.getElementById('btn-chart-engine-tv');
@@ -475,33 +486,105 @@
     }
   }
 
+  function updateCanvasAriaLabel(visibleCount) {
+    if (!modalCanvas || typeof modalCanvas.setAttribute !== 'function') return;
+    if (!modalCurrentSymbol) {
+      modalCanvas.setAttribute('aria-label', 'K线走势图');
+      return;
+    }
+    const suffix = visibleCount > 0 ? `（显示近 ${visibleCount} 根）` : '';
+    modalCanvas.setAttribute('aria-label', `${modalCurrentSymbol} ${modalCurrentInterval} K线走势图${suffix}`);
+  }
+
+  function showModalChartError(message) {
+    if (modalLoading) modalLoading.classList.add('hidden');
+    if (!modalError) return;
+    const textEl = modalErrorText || (typeof modalError.querySelector === 'function' ? modalError.querySelector('span') : null);
+    if (textEl) {
+      textEl.textContent = message || 'K 线序列读取失败，请检查网络连接后重试';
+    }
+    modalError.classList.remove('hidden');
+  }
+
+  function hideModalChartError() {
+    if (modalError) modalError.classList.add('hidden');
+  }
+
+  function clearTvLoadTimer() {
+    if (tvLoadTimer !== null) {
+      clearTimeout(tvLoadTimer);
+      tvLoadTimer = null;
+    }
+  }
+
+  function hideTvOverlays() {
+    tvLoadSeq += 1;
+    clearTvLoadTimer();
+    if (modalTvLoading) modalTvLoading.classList.add('hidden');
+    if (modalTvFallback) modalTvFallback.classList.add('hidden');
+  }
+
+  function showTvFallback(message) {
+    clearTvLoadTimer();
+    if (modalTvLoading) modalTvLoading.classList.add('hidden');
+    if (modalTvFallbackText && message) {
+      modalTvFallbackText.textContent = message;
+    }
+    if (modalTvFallback) modalTvFallback.classList.remove('hidden');
+  }
+
   function loadTvIframe() {
     if (!modalTvIframe || !modalCurrentTvSymbol) return;
     const tvInterval = TV_INTERVAL_MAP[modalCurrentInterval];
     if (!tvInterval) {
-      throw new Error(`Unsupported modal interval: ${modalCurrentInterval}`);
+      showTvFallback(`不支持的 K 线周期: ${modalCurrentInterval}`);
+      return;
+    }
+    if (modalFetchController) {
+      modalFetchController.abort();
+      modalFetchController = null;
+    }
+    if (modalTvOpenExtBtn) {
+      modalTvOpenExtBtn.href = getTvUrl(modalCurrentTvSymbol, null, modalCurrentInterval);
     }
     modalTvIframe.setAttribute('referrerpolicy', 'no-referrer');
     modalTvIframe.referrerPolicy = 'no-referrer';
     modalTvIframe.removeAttribute('allowtransparency');
     modalTvIframe.removeAttribute('scrolling');
+
+    clearTvLoadTimer();
+    const seq = ++tvLoadSeq;
+    if (modalTvFallback) modalTvFallback.classList.add('hidden');
+    if (modalTvLoading) modalTvLoading.classList.remove('hidden');
+    tvLoadTimer = setTimeout(() => {
+      tvLoadTimer = null;
+      if (seq !== tvLoadSeq || modalActiveEngine !== 'tv') return;
+      showTvFallback('TradingView 内嵌图表加载超时或受网络限制');
+    }, TV_IFRAME_TIMEOUT_MS);
+    if (tvLoadTimer && typeof tvLoadTimer.unref === 'function') tvLoadTimer.unref();
+
     modalTvIframe.src = `https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(modalCurrentTvSymbol)}&interval=${tvInterval}&theme=dark&style=1&timezone=Asia%2FShanghai&locale=zh_CN`;
   }
 
   async function fetchModalKlines(sym, interval) {
     if (!modalNativeView || !modalLoading) return;
+    if (!interval || !Object.hasOwn(TV_INTERVAL_MAP, interval)) {
+      showModalChartError(`不支持的时间周期: ${interval || '未知'}`);
+      return;
+    }
     if (modalFetchController) modalFetchController.abort();
-    modalFetchController = new AbortController();
-    const signal = modalFetchController.signal;
+    const controller = new AbortController();
+    modalFetchController = controller;
+    const signal = controller.signal;
 
     clearModalChartDisplay();
     modalLoading.classList.remove('hidden');
-    if (modalError) modalError.classList.add('hidden');
+    hideModalChartError();
 
     try {
       const url = `api/binance/klines?symbol=${encodeURIComponent(sym)}&interval=${encodeURIComponent(interval)}&limit=168`;
       const { data: raw } = await fetchJsonWithTimeout(url, { signal }, 12000);
-      if (signal.aborted) return;
+      if (signal.aborted || modalActiveEngine !== 'native') return;
       if (!Array.isArray(raw) || raw.length === 0) throw new Error('No kline data');
 
       modalCandles = raw.map((d, idx) => {
@@ -542,12 +625,18 @@
         modalChartPrice.textContent = formatCryptoPrice(last.close);
         modalChartPrice.className = `font-mono tabular-nums font-bold text-xs sm:text-[13px] ${isUp ? 'text-[#38d99f]' : 'text-[#f8717e]'}`;
       }
+      updateCanvasAriaLabel(Math.min(modalVisibleBars, modalCandles.length));
       renderModalChart();
     } catch (err) {
       if (err && err.name === 'AbortError') return;
+      if (modalActiveEngine !== 'native') return;
       console.error('Failed to load klines:', err);
-      if (modalError) modalError.classList.remove('hidden');
+      const errMsg = err && err.message ? err.message : '未知网络错误';
+      showModalChartError(`K 线序列读取失败: ${errMsg}`);
     } finally {
+      if (modalFetchController === controller) {
+        modalFetchController = null;
+      }
       if (modalLoading && !signal.aborted) modalLoading.classList.add('hidden');
     }
   }
@@ -559,10 +648,17 @@
       const bodyEl = typeof document !== 'undefined' ? document.body : null;
       lastFocusedElement = (activeEl && activeEl !== bodyEl) ? activeEl : (triggerEl || activeEl);
     }
+    if (modalFetchController) {
+      modalFetchController.abort();
+      modalFetchController = null;
+    }
     chartModal.removeAttribute('data-closing');
     modalCurrentSymbol = sym;
     modalCurrentTvSymbol = tvSym;
     clearModalChartDisplay();
+    hideModalChartError();
+    hideTvOverlays();
+    updateCanvasAriaLabel(0);
 
     if (modalChartTitle) modalChartTitle.textContent = sym;
     if (modalExternalLink) modalExternalLink.href = getTvUrl(tvSym, null, modalCurrentInterval);
@@ -575,6 +671,7 @@
       if (modalTvView) modalTvView.classList.add('hidden');
       fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
     } else {
+      if (modalLoading) modalLoading.classList.add('hidden');
       if (modalNativeView) modalNativeView.classList.add('hidden');
       if (modalTvView) modalTvView.classList.remove('hidden');
       loadTvIframe();
@@ -595,7 +692,16 @@
 
   function resetModalStateOnClose() {
     if (chartModal) chartModal.removeAttribute('data-closing');
-    if (modalFetchController) modalFetchController.abort();
+    if (modalRenderRafId !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(modalRenderRafId);
+      modalRenderRafId = null;
+    }
+    if (modalFetchController) {
+      modalFetchController.abort();
+      modalFetchController = null;
+    }
+    hideTvOverlays();
+    hideModalChartError();
     if (modalTvIframe) modalTvIframe.src = 'about:blank';
     clearModalChartDisplay();
     restoreFocusAfterClose();
@@ -608,21 +714,84 @@
 
   function scheduleModalRender() {
     if (modalRenderRafId !== null) return;
+    let ranSync = false;
     modalRenderRafId = requestAnimationFrame(() => {
+      ranSync = true;
       modalRenderRafId = null;
       renderModalChart();
     });
+    if (ranSync) {
+      modalRenderRafId = null;
+    }
   }
 
-  function updateModalBarsUi() {
-    modalBarsBtns.forEach((b) => {
-      const active = Number(b.getAttribute('data-bars')) === modalVisibleBars;
+  function updateModalIntervalUi() {
+    modalIntervalBtns.forEach((b) => {
+      const active = b.getAttribute('data-interval') === modalCurrentInterval;
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
       b.classList.toggle('bg-[#192231]', active);
       b.classList.toggle('text-[#f1f5f9]', active);
       b.classList.toggle('font-semibold', active);
       b.classList.toggle('hover:bg-[#151c27]', !active);
       b.classList.toggle('text-[#9fb0c5]', !active);
     });
+  }
+
+  function updateModalBarsUi() {
+    modalBarsBtns.forEach((b) => {
+      const active = Number(b.getAttribute('data-bars')) === modalVisibleBars;
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+      b.classList.toggle('bg-[#192231]', active);
+      b.classList.toggle('text-[#f1f5f9]', active);
+      b.classList.toggle('font-semibold', active);
+      b.classList.toggle('hover:bg-[#151c27]', !active);
+      b.classList.toggle('text-[#9fb0c5]', !active);
+    });
+  }
+
+  function updateModalEngineUi() {
+    const isNative = modalActiveEngine === 'native';
+    if (btnEngineNative) {
+      btnEngineNative.setAttribute('aria-pressed', isNative ? 'true' : 'false');
+      btnEngineNative.className = isNative
+        ? 'px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold'
+        : 'px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]';
+    }
+    if (btnEngineTv) {
+      btnEngineTv.setAttribute('aria-pressed', !isNative ? 'true' : 'false');
+      btnEngineTv.className = !isNative
+        ? 'px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold'
+        : 'px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]';
+    }
+  }
+
+  function switchChartEngine(targetEngine) {
+    if (targetEngine !== 'native' && targetEngine !== 'tv') return;
+    if (modalActiveEngine === targetEngine) return;
+    modalActiveEngine = targetEngine;
+    updateModalEngineUi();
+    if (targetEngine === 'native') {
+      hideTvOverlays();
+      if (modalBarsGroup) modalBarsGroup.hidden = false;
+      if (modalTvView) modalTvView.classList.add('hidden');
+      if (modalNativeView) modalNativeView.classList.remove('hidden');
+      if (modalCurrentSymbol) {
+        fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
+      }
+    } else {
+      if (modalFetchController) {
+        modalFetchController.abort();
+        modalFetchController = null;
+      }
+      if (modalLoading) modalLoading.classList.add('hidden');
+      hideModalChartError();
+      if (modalBarsGroup) modalBarsGroup.hidden = true;
+      if (modalNativeView) modalNativeView.classList.add('hidden');
+      if (modalTvView) modalTvView.classList.remove('hidden');
+      if (modalCurrentTvSymbol) {
+        loadTvIframe();
+      }
+    }
   }
 
   if (modalNativeView) {
@@ -644,6 +813,7 @@
       }
     };
     const clearModalHover = () => {
+      if (modalTooltip) modalTooltip.classList.add('hidden');
       if (modalHoverIndex !== -1) {
         modalHoverIndex = -1;
         scheduleModalRender();
@@ -663,40 +833,40 @@
       if (e.cancelable) e.preventDefault();
       updateModalHoverAtClientX(e.touches[0].clientX);
     }, { passive: false });
+    modalNativeView.addEventListener('touchend', clearModalHover, { passive: true });
     modalNativeView.addEventListener('touchcancel', clearModalHover, { passive: true });
   }
 
   modalBarsBtns.forEach((btn) => {
     btn.addEventListener('click', () => {
       const bars = Number(btn.getAttribute('data-bars'));
-      if (!VALID_BAR_COUNTS.has(bars)) return;
+      if (!VALID_BAR_COUNTS.has(bars) || bars === modalVisibleBars) return;
       modalVisibleBars = bars;
       modalHoverIndex = -1;
       updateModalBarsUi();
       if (typeof onVisibleBarsChange === 'function') {
         onVisibleBarsChange(bars);
       }
+      updateCanvasAriaLabel(Math.min(modalVisibleBars, modalCandles.length));
       renderModalChart();
     });
   });
 
   modalIntervalBtns.forEach((btn) => {
     btn.addEventListener('click', () => {
-      modalIntervalBtns.forEach((b) => {
-        b.classList.remove('bg-[#192231]', 'text-[#f1f5f9]', 'font-semibold');
-        b.classList.add('hover:bg-[#151c27]', 'text-[#9fb0c5]');
-      });
-      btn.classList.add('bg-[#192231]', 'text-[#f1f5f9]', 'font-semibold');
-      btn.classList.remove('hover:bg-[#151c27]', 'text-[#9fb0c5]');
-
       const nextInterval = btn.getAttribute('data-interval');
       if (!nextInterval || !Object.hasOwn(TV_INTERVAL_MAP, nextInterval)) {
-        throw new Error(`Unsupported modal interval: ${nextInterval}`);
+        showModalChartError(`不支持的时间周期: ${nextInterval || '未知'}`);
+        return;
       }
+      if (nextInterval === modalCurrentInterval) return;
       modalCurrentInterval = nextInterval;
+      updateModalIntervalUi();
       if (modalExternalLink && modalCurrentTvSymbol) {
         modalExternalLink.href = getTvUrl(modalCurrentTvSymbol, null, modalCurrentInterval);
       }
+      updateCanvasAriaLabel(Math.min(modalVisibleBars, modalCandles.length));
+      if (!modalCurrentSymbol) return;
       if (modalActiveEngine === 'native') {
         fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
       } else {
@@ -706,23 +876,23 @@
   });
 
   if (btnEngineNative && btnEngineTv) {
-    btnEngineNative.addEventListener('click', () => {
-      modalActiveEngine = 'native';
-      btnEngineNative.className = 'px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold';
-      btnEngineTv.className = 'px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]';
-      if (modalBarsGroup) modalBarsGroup.hidden = false;
-      if (modalTvView) modalTvView.classList.add('hidden');
-      if (modalNativeView) modalNativeView.classList.remove('hidden');
-      fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
+    btnEngineNative.addEventListener('click', () => switchChartEngine('native'));
+    btnEngineTv.addEventListener('click', () => switchChartEngine('tv'));
+  }
+
+  if (modalTvSwitchNativeBtn) {
+    modalTvSwitchNativeBtn.addEventListener('click', () => switchChartEngine('native'));
+  }
+
+  if (modalTvIframe) {
+    modalTvIframe.addEventListener('load', () => {
+      if (modalActiveEngine !== 'tv') return;
+      if (!modalTvIframe.src || modalTvIframe.src === 'about:blank') return;
+      hideTvOverlays();
     });
-    btnEngineTv.addEventListener('click', () => {
-      modalActiveEngine = 'tv';
-      btnEngineTv.className = 'px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold';
-      btnEngineNative.className = 'px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]';
-      if (modalBarsGroup) modalBarsGroup.hidden = true;
-      if (modalNativeView) modalNativeView.classList.add('hidden');
-      if (modalTvView) modalTvView.classList.remove('hidden');
-      loadTvIframe();
+    modalTvIframe.addEventListener('error', () => {
+      if (modalActiveEngine !== 'tv') return;
+      showTvFallback('TradingView 内嵌图表加载失败，请切回极速 K 线或新窗口打开');
     });
   }
 
@@ -737,7 +907,10 @@
     });
   }
   if (modalRetryBtn) {
-    modalRetryBtn.addEventListener('click', () => fetchModalKlines(modalCurrentSymbol, modalCurrentInterval));
+    modalRetryBtn.addEventListener('click', () => {
+      if (!modalCurrentSymbol) return;
+      fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
+    });
   }
   if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeTvModal);
   if (chartModal) {
@@ -748,8 +921,17 @@
     });
     chartModal.addEventListener('keydown', (event) => {
       if (!chartModal.open || typeof onNavigateSymbol !== 'function') return;
-      const tag = document.activeElement ? document.activeElement.tagName : '';
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      if (modalNavTotal <= 1) return;
+      const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+      const tag = activeEl ? activeEl.tagName : '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (activeEl && activeEl.isContentEditable)) return;
+      if (
+        activeEl &&
+        typeof activeEl.closest === 'function' &&
+        (activeEl.closest('[role="group"]') || (modalHeaderToolbar && activeEl.closest('#modal-header-toolbar')))
+      ) {
+        return;
+      }
       if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
         event.preventDefault();
         onNavigateSymbol(-1);
@@ -781,6 +963,7 @@
   });
 
   function setNavMeta(index, total) {
+    modalNavTotal = Number.isInteger(total) ? total : 0;
     if (!modalNavGroup || !modalNavPos) return;
     if (Number.isInteger(index) && Number.isInteger(total) && total > 1 && index >= 0 && index < total) {
       modalNavPos.textContent = `${index + 1}/${total}`;
@@ -797,7 +980,9 @@
     }
     onVisibleBarsChange = typeof options.onVisibleBarsChange === 'function' ? options.onVisibleBarsChange : null;
     onNavigateSymbol = typeof options.onNavigateSymbol === 'function' ? options.onNavigateSymbol : null;
+    updateModalIntervalUi();
     updateModalBarsUi();
+    updateModalEngineUi();
   }
 
   global.SecondLegKlineModal = Object.freeze({
