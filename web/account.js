@@ -334,7 +334,7 @@
         ? (p.trailing_stop_triggered ? '<span class="text-[#38d99f] font-semibold">已激活锁利</span>' : '<span class="text-[#9fb0c5]">待触发</span>')
         : (unknownMonitored
           ? '<span class="text-[#f5c451]">风控状态缺失</span>'
-          : '<span class="text-[#f5c451]">未纳入风控</span>');
+          : '<span class="text-[#7f91a8]">--</span>');
       const slHtml = riskMonitored
         ? (p.stop_loss_notified ? '<span class="text-[#f8717e] font-semibold">已推送止损</span>' : '<span class="text-[#38d99f]">巡检监控中</span>')
         : (side === 'SHORT'
@@ -551,6 +551,28 @@
     }
   };
 
+  const emptyStatePlugin = {
+    id: 'emptyState',
+    afterDraw(chart, _args, pluginOpts) {
+      const text = pluginOpts && pluginOpts.text;
+      if (!text || !chart.chartArea) return;
+      const datasets = chart.data && Array.isArray(chart.data.datasets) ? chart.data.datasets : [];
+      const hasData = datasets.some(ds => Array.isArray(ds.data) && ds.data.length > 0);
+      if (hasData) return;
+      const ctx = chart.ctx;
+      if (!ctx) return;
+      const cx = (chart.chartArea.left + chart.chartArea.right) / 2;
+      const cy = (chart.chartArea.top + chart.chartArea.bottom) / 2;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#7f91a8';
+      ctx.font = '500 12px "Inter", -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.fillText(text, cx, cy);
+      ctx.restore();
+    }
+  };
+
   const doughnutCenterPlugin = {
     id: 'doughnutCenter',
     afterDraw(chart) {
@@ -653,7 +675,7 @@
     const winCount = Number(summary.win_count);
     const lossCount = Number(summary.loss_count);
     const beCount = Number(summary.breakeven_count);
-    setText('win-loss-summary-badge', winCount + '胜 / ' + lossCount + '负 / ' + beCount + '平');
+    setText('win-loss-summary-badge', (winCount + lossCount + beCount) + ' 笔');
 
     const totalBinned = bins.reduce((sum, b, idx) => {
       if (!b || typeof b !== 'object' || typeof b.label !== 'string' || !isFiniteNumber(b.count)) {
@@ -732,12 +754,14 @@
       }
       upsertChart('eq', eqCanvas, {
         type: 'line',
+        plugins: [emptyStatePlugin],
         data: { labels: eqLabels, datasets: datasets },
         options: {
           responsive: true,
           maintainAspectRatio: false,
           interaction: { mode: 'index', intersect: false },
           plugins: {
+            emptyState: { text: '暂无净值数据' },
             tooltip: {
               ...tooltipConfig,
               callbacks: {
@@ -776,7 +800,7 @@
       });
       upsertChart('daily', dailyCanvas, {
         type: 'bar',
-        plugins: [barValueLabelsPlugin],
+        plugins: [barValueLabelsPlugin, emptyStatePlugin],
         data: {
           labels: dLabels,
           datasets: [{
@@ -796,6 +820,7 @@
           maintainAspectRatio: false,
           layout: { padding: { top: 20, bottom: 18 } },
           plugins: {
+            emptyState: { text: '暂无每日盈亏' },
             barValueLabels: {
               enabled: true,
               signed: true,
@@ -940,9 +965,7 @@
       !Array.isArray(accountData.daily_pnl) ||
       !accountData.pnl_distribution ||
       typeof accountData.pnl_distribution !== 'object' ||
-      !Array.isArray(accountData.pnl_distribution.bins) ||
-      !accountData.income_breakdown ||
-      typeof accountData.income_breakdown !== 'object'
+      !Array.isArray(accountData.pnl_distribution.bins)
     ) {
       throw new Error('Invalid /api/account payload');
     }
