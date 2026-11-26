@@ -16,6 +16,42 @@
     '币安人生USDT': 'BINANCE:BIANRENSHENGUSDT.P',
     '牛来USDT': 'BINANCE:NIULAIUSDT.P',
   });
+  const FORBIDDEN_CONFIG_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+  let activeChineseTvMap = Object.freeze({ ...CHINESE_TV_MAP });
+
+  function mergeChineseTvMap(overrideMap) {
+    const merged = { ...CHINESE_TV_MAP };
+    if (overrideMap && typeof overrideMap === 'object' && !Array.isArray(overrideMap)) {
+      for (const [rawKey, rawVal] of Object.entries(overrideMap)) {
+        if (FORBIDDEN_CONFIG_KEYS.has(rawKey)) continue;
+        const key = typeof rawKey === 'string' ? rawKey.trim() : '';
+        const val = typeof rawVal === 'string' ? rawVal.trim() : '';
+        if (key && val && !FORBIDDEN_CONFIG_KEYS.has(key)) {
+          merged[key] = val;
+        }
+      }
+    }
+    return Object.freeze(merged);
+  }
+
+  function buildConfigSnapshot(layoutId, chineseTvMap, rawData) {
+    const snapshot = {};
+    if (rawData && typeof rawData === 'object' && !Array.isArray(rawData)) {
+      for (const [k, v] of Object.entries(rawData)) {
+        if (FORBIDDEN_CONFIG_KEYS.has(k)) continue;
+        if (k === 'tradingview_layout_id' || k === 'chinese_tv_map') continue;
+        if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+          snapshot[k] = v;
+        }
+      }
+    }
+    snapshot.tradingview_layout_id = layoutId || '';
+    snapshot.chinese_tv_map = chineseTvMap;
+    return Object.freeze(snapshot);
+  }
+
+  let activeConfig = buildConfigSnapshot(activeTvLayoutId, activeChineseTvMap, null);
 
   function escapeHtml(val) {
     if (val === null || val === undefined) return '';
@@ -80,7 +116,10 @@
     }
     const sym = symbol.trim();
     if (sym.includes(':')) return sym;
-    return CHINESE_TV_MAP[sym] || `BINANCE:${sym}.P`;
+    if (Object.prototype.hasOwnProperty.call(activeChineseTvMap, sym)) {
+      return activeChineseTvMap[sym];
+    }
+    return `BINANCE:${sym}.P`;
   }
 
   function getTvLayoutId() {
@@ -88,6 +127,21 @@
       throw new Error('TradingView layout ID has not been configured');
     }
     return activeTvLayoutId;
+  }
+
+  function getConfig() {
+    return activeConfig;
+  }
+
+  function getConfigValue(key, fallback) {
+    if (typeof key !== 'string' || !key || FORBIDDEN_CONFIG_KEYS.has(key)) {
+      return fallback;
+    }
+    if (Object.prototype.hasOwnProperty.call(activeConfig, key)) {
+      const val = activeConfig[key];
+      return val !== undefined ? val : fallback;
+    }
+    return fallback;
   }
 
   function applyTvLayoutLinks() {
@@ -108,6 +162,7 @@
       throw new Error('TradingView layout ID must be a non-empty string');
     }
     activeTvLayoutId = layoutId.trim();
+    activeConfig = buildConfigSnapshot(activeTvLayoutId, activeChineseTvMap, activeConfig);
     applyTvLayoutLinks();
     return activeTvLayoutId;
   }
@@ -127,6 +182,8 @@
           if (!data || typeof data.tradingview_layout_id !== 'string' || !data.tradingview_layout_id.trim()) {
             throw new Error('Invalid /api/config payload: missing tradingview_layout_id');
           }
+          activeChineseTvMap = mergeChineseTvMap(data.chinese_tv_map);
+          activeConfig = buildConfigSnapshot(data.tradingview_layout_id.trim(), activeChineseTvMap, data);
           return setTvLayoutId(data.tradingview_layout_id);
         })
         .catch((err) => {
@@ -207,6 +264,7 @@
 
   global.SecondLegCommon = Object.freeze({
     TV_INTERVAL_MAP,
+    CHINESE_TV_MAP,
     escapeHtml,
     isFiniteNum,
     formatCryptoPrice,
@@ -214,6 +272,8 @@
     getTvSymbol,
     getTvLayoutId,
     setTvLayoutId,
+    getConfig,
+    getConfigValue,
     ensureConfig,
     getTvUrl,
     fetchJsonWithTimeout,
