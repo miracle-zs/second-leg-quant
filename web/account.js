@@ -113,10 +113,10 @@
       badge.className = 'px-2 py-0.5 font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5';
       badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span><span>币安实盘在线</span>';
     } else if (mode === 'BINANCE_PARTIAL') {
-      badge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/12 text-[#f5c451] inline-flex items-center gap-1.5';
+      badge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5';
       badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安部分数据可用</span>';
     } else if (mode === 'BINANCE_SNAPSHOT_PENDING_INCOME') {
-      badge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/12 text-[#f5c451] inline-flex items-center gap-1.5';
+      badge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5';
       badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安快照同步中</span>';
     } else if (mode === 'OFFLINE_FALLBACK') {
       badge.className = 'px-2 py-0.5 font-medium bg-[#151c27] text-[#f5c451] inline-flex items-center gap-1.5';
@@ -192,9 +192,11 @@
       '均亏: ' + (isFiniteNumber(summary.avg_loss) ? formatMoney(-Math.abs(Number(summary.avg_loss))) : '--')
     );
 
+    const ddPctVal = isFiniteNumber(summary.max_drawdown_pct) ? Math.abs(Number(summary.max_drawdown_pct)) : null;
+    const ddPctFixed = ddPctVal === null ? null : ddPctVal.toFixed(2);
     const ddPctEl = setText(
       'kpi-max-dd-pct',
-      isFiniteNumber(summary.max_drawdown_pct) ? ('-' + Math.abs(Number(summary.max_drawdown_pct)).toFixed(2) + '%') : '--'
+      ddPctFixed === null ? '--' : (ddPctFixed === '0.00' ? '0.00%' : ('-' + ddPctFixed + '%'))
     );
     const ddUsdEl = setText(
       'kpi-max-dd-usd',
@@ -314,7 +316,7 @@
       const sideBadge = side === 'SHORT'
         ? '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono font-semibold bg-[#f25565]/15 text-[#f8717e] border border-[#f25565]/30">SHORT</span>'
         : (side === 'LONG'
-          ? '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono font-semibold bg-[#22c58b]/12 text-[#38d99f] border border-[#22c58b]/30">LONG</span>'
+          ? '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono font-semibold bg-[#22c58b]/[0.12] text-[#38d99f] border border-[#22c58b]/30">LONG</span>'
           : '<span class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono font-semibold bg-[#151c27] text-[#9fb0c5] border border-[#283446]">' + safeSide + '</span>');
 
       const pnlVal = isFiniteNumber(p.unrealized_pnl) ? Number(p.unrealized_pnl) : null;
@@ -429,10 +431,10 @@
     const text = String(reason);
     const safeReason = escapeHtml(text);
     if (text.includes('保本') || text.includes('锁利')) {
-      return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#22c58b]/12 text-[#38d99f] border border-[#22c58b]/30">' + safeReason + '</span>';
+      return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#22c58b]/[0.12] text-[#38d99f] border border-[#22c58b]/30">' + safeReason + '</span>';
     }
     if (text.includes('止损') || text.includes('跌破')) {
-      return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#f25565]/12 text-[#f8717e] border border-[#f25565]/30">' + safeReason + '</span>';
+      return '<span class="px-2 py-0.5 rounded-[3px] text-[10px] font-sans font-medium bg-[#f25565]/[0.12] text-[#f8717e] border border-[#f25565]/30">' + safeReason + '</span>';
     }
     if (text.includes('实盘') || text.includes('BINANCE')) {
       return '<span class="text-[11px] font-sans text-[#9fb0c5]">' + safeReason + '</span>';
@@ -554,10 +556,17 @@
   const emptyStatePlugin = {
     id: 'emptyState',
     afterDraw(chart, _args, pluginOpts) {
-      const text = pluginOpts && pluginOpts.text;
+      if (!pluginOpts || pluginOpts.enabled === false) return;
+      const text = pluginOpts.text;
       if (!text || !chart.chartArea) return;
       const datasets = chart.data && Array.isArray(chart.data.datasets) ? chart.data.datasets : [];
-      const hasData = datasets.some(ds => Array.isArray(ds.data) && ds.data.length > 0);
+      const hasData = datasets.some(ds => {
+        if (!Array.isArray(ds.data) || ds.data.length === 0) return false;
+        if (pluginOpts.emptyWhenNonPositive) {
+          return ds.data.some(v => Number(v) > 0);
+        }
+        return true;
+      });
       if (hasData) return;
       const ctx = chart.ctx;
       if (!ctx) return;
@@ -898,7 +907,7 @@
       });
       upsertChart('dist', distCanvas, {
         type: 'bar',
-        plugins: [barValueLabelsPlugin],
+        plugins: [barValueLabelsPlugin, emptyStatePlugin],
         data: {
           labels: binLabels,
           datasets: [{
@@ -916,6 +925,7 @@
           maintainAspectRatio: false,
           layout: { padding: { top: 20 } },
           plugins: {
+            emptyState: { enabled: true, text: '暂无交易样本', emptyWhenNonPositive: true },
             barValueLabels: {
               enabled: true,
               signed: false,
