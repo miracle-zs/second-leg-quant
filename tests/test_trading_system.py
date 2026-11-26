@@ -160,6 +160,75 @@ class TestTVCloudAndFallback(unittest.TestCase):
         self.assertEqual(drawings["YBUSDT"][0]["id"], "none_lw")
         self.assertEqual(drawings["YBUSDT"][0]["line_width"], 1)
 
+    def test_tv_drawings_normalizes_right_to_left_anchors_and_updates_cache_when_trendlines_deleted(self):
+        rtl_sources = {
+            "rtl_desc": {
+                "symbol": "BINANCE:YBUSDT.P",
+                "state": {
+                    "type": "LineToolTrendLine",
+                    "points": [
+                        {"time_t": 1795210000, "price": 1.0},
+                        {"time_t": 1795200000, "price": 1.2},
+                    ],
+                    "state": {"interval": "15"},
+                },
+            },
+            "bad_zero": {
+                "symbol": "BINANCE:YBUSDT.P",
+                "state": {
+                    "type": "LineToolTrendLine",
+                    "points": [
+                        {"time_t": 1795200000, "price": 0.0},
+                        {"time_t": 1795210000, "price": 1.0},
+                    ],
+                    "state": {"interval": "15"},
+                },
+            },
+            "bad_same_t": {
+                "symbol": "BINANCE:YBUSDT.P",
+                "state": {
+                    "type": "LineToolTrendLine",
+                    "points": [
+                        {"time_t": 1795200000, "price": 1.2},
+                        {"time_t": 1795200000, "price": 1.0},
+                    ],
+                    "state": {"interval": "15"},
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            runs_dir = Path(directory)
+            cache_file = runs_dir / "tradingview_drawings_test-layout.json"
+            with patch.object(tve, "RUNS_DIR", runs_dir), patch.object(
+                tve, "get_chart_token", return_value="tok"
+            ), patch.object(tve, "get_layout_chart_ids", return_value=["_shared"]), patch.object(
+                tve, "request_json", return_value={"payload": {"sources": rtl_sources}}
+            ):
+                drawings = tve.get_layout_drawings("test-layout", save_cache=True)
+
+            self.assertEqual(len(drawings["YBUSDT"]), 1)
+            norm = drawings["YBUSDT"][0]
+            self.assertEqual(norm["t1"], 1795200000)
+            self.assertEqual(norm["p1"], 1.2)
+            self.assertEqual(norm["t2"], 1795210000)
+            self.assertEqual(norm["p2"], 1.0)
+            self.assertLessEqual(norm["dt1_str"], norm["dt2_str"])
+            self.assertIn("YBUSDT", json.loads(cache_file.read_text(encoding="utf-8"))["drawings_by_symbol"])
+
+            # User deletes all trendlines while keeping other drawing objects -> cache overwritten with {}
+            other_only_sources = {
+                "hline_1": {"symbol": "BINANCE:YBUSDT.P", "state": {"type": "LineToolHorzLine", "points": []}}
+            }
+            with patch.object(tve, "RUNS_DIR", runs_dir), patch.object(
+                tve, "get_chart_token", return_value="tok"
+            ), patch.object(tve, "get_layout_chart_ids", return_value=["_shared"]), patch.object(
+                tve, "request_json", return_value={"payload": {"sources": other_only_sources}}
+            ):
+                drawings_after = tve.get_layout_drawings("test-layout", save_cache=True)
+
+            self.assertEqual(drawings_after, {})
+            self.assertEqual(json.loads(cache_file.read_text(encoding="utf-8"))["drawings_by_symbol"], {})
+
     def test_fetch_layout_drawings_uses_disk_mtime_and_respects_ttl(self):
         layout_id = "ttl-layout"
         stale_drawings = {"YBUSDT": [{"id": "OLD", "interval": "15", "p1": 1.2, "t1": 100, "p2": 1.0, "t2": 200}]}
@@ -809,6 +878,25 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         self.assertTrue(status.get("had_error"))
         self.assertNotIn("YBUSDT", candle_cache)
 
+    def test_feature_2_time_aware_slope_handles_right_to_left_cached_lines(self):
+        now = 1795234500
+        rtl_desc = {"id": "RTL_DESC", "interval": "15", "p1": 0.05757, "t1": 1795155300, "p2": 0.06306, "t2": 1795104900}
+        rtl_asc = {"id": "RTL_ASC", "interval": "15", "p1": 0.05000, "t1": 1795155300, "p2": 0.04500, "t2": 1795104900}
+        candle = {
+            "symbol": "YBUSDT",
+            "open": 0.04982,
+            "close": 0.05030,
+            "open_time": now,
+            "close_time": now + 899,
+            "candle_time": "2026-11-21 12:15",
+            "prev_candle": {"close": 0.04975, "open_time": now - 900, "close_time": now - 1},
+        }
+        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [rtl_asc, rtl_desc]}), patch.object(
+            tad, "get_closed_15m_candle", return_value=candle
+        ):
+            alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
+        self.assertEqual([a["trendline_id"] for a in alerts], ["RTL_DESC"])
+
 
 class TestFeature3PositionStopLoss(unittest.TestCase):
     """5. Feature 3: Position stop-loss and trendline persistence"""
@@ -999,6 +1087,42 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
         with patch.object(tad, "fetch_ticker_prices", return_value={"BADUSDT": 1.5}):
             events = tad.check_feature_4_trailing_stops(self.notifier, self.pos_store)
         self.assertEqual(events, [])
+
+    def test_add_position_entry_change_resets_trailing_and_pending_state(self):
+        self.pos_store.add_position(
+            "COINUSDT",
+            entry_price=1.0,
+            amount=10.0,
+            highest_price=1.2,
+            trailing_stop_triggered=True,
+            trailing_stop_price=1.01,
+            trailing_stop_activated_at="2026-11-25 12:00:00",
+            profit_lock_notified=True,
+            stop_loss_notified=True,
+            pending_stop_loss_candle={"open_time": 100},
+            pending_trailing_activation_price=1.07,
+            pending_profit_lock_price=1.005,
+        )
+        # Same entry_price preserves existing tracking state
+        self.pos_store.add_position("COINUSDT", entry_price=1.0, amount=15.0)
+        unchanged = self.pos_store.get_open_positions()[0]
+        self.assertEqual(unchanged["highest_price"], 1.2)
+        self.assertTrue(unchanged["trailing_stop_triggered"])
+        self.assertEqual(unchanged["amount"], 15.0)
+
+        # Changed entry_price resets highest_price, flags, and pending_* / activated_at
+        self.pos_store.add_position("COINUSDT", entry_price=0.80, amount=20.0)
+        reset_pos = self.pos_store.get_open_positions()[0]
+        self.assertEqual(reset_pos["entry_price"], 0.80)
+        self.assertEqual(reset_pos["highest_price"], 0.80)
+        self.assertFalse(reset_pos["trailing_stop_triggered"])
+        self.assertIsNone(reset_pos["trailing_stop_price"])
+        self.assertFalse(reset_pos["profit_lock_notified"])
+        self.assertFalse(reset_pos["stop_loss_notified"])
+        self.assertNotIn("trailing_stop_activated_at", reset_pos)
+        self.assertNotIn("pending_stop_loss_candle", reset_pos)
+        self.assertNotIn("pending_trailing_activation_price", reset_pos)
+        self.assertNotIn("pending_profit_lock_price", reset_pos)
 
 
 class TestDaemonLoggingConfigAndCLI(unittest.TestCase):

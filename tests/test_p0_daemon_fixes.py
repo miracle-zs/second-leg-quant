@@ -81,6 +81,65 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
     def test_feature_2_releases_db_lock_and_does_not_break_on_failed_send(self):
         store = tad.ResonanceStateStore(self.db_path)
         store.data["initialized"] = True
+        store.data["active_resonance_symbols"] = ["ETHUSDT", "YBUSDT"]
+        store.save()
+
+        now = 1795234500
+        eth_line = {"id": "E1", "interval": "15", "p1": 3000.0, "t1": 1795104900, "p2": 2900.0, "t2": 1795155300}
+        line1 = {"id": "L1", "interval": "15", "p1": 0.06306, "t1": 1795104900, "p2": 0.05757, "t2": 1795155300}
+        line2 = {"id": "L2", "interval": "15", "p1": 0.06400, "t1": 1795104900, "p2": 0.05800, "t2": 1795155300}
+        candle_eth = {
+            "symbol": "ETHUSDT",
+            "open": 2700.0,
+            "close": 2800.0,
+            "open_time": now,
+            "close_time": now + 899,
+            "candle_time": "2026-11-21 12:15",
+            "prev_candle": {"close": 2650.0, "open_time": now - 900, "close_time": now - 1},
+        }
+        candle_yb = {
+            "symbol": "YBUSDT",
+            "open": 0.04982,
+            "close": 0.05030,
+            "open_time": now,
+            "close_time": now + 899,
+            "candle_time": "2026-11-21 12:15",
+            "prev_candle": {"close": 0.04975, "open_time": now - 900, "close_time": now - 1},
+        }
+
+        def fake_drawings(_layout):
+            self._assert_sqlite_unlocked()
+            self.assertIsNone(store._tx_conn)
+            return {"ETHUSDT": [eth_line], "YBUSDT": [line1, line2]}
+
+        def fake_candle(sym):
+            self._assert_sqlite_unlocked()
+            self.assertIsNone(store._tx_conn)
+            return candle_eth if sym == "ETHUSDT" else candle_yb
+
+        send_calls = []
+
+        def fake_send(title, _desp):
+            self._assert_sqlite_unlocked()
+            self.assertIsNone(store._tx_conn)
+            send_calls.append(title)
+            return "YBUSDT" not in title
+
+        with patch.object(tad, "fetch_layout_drawings", side_effect=fake_drawings), patch.object(
+            tad, "get_closed_15m_candle", side_effect=fake_candle
+        ), patch.object(self.notifier, "send_alert", side_effect=fake_send):
+            alerts = tad.check_feature_2_breakout(self.notifier, store)
+
+        self.assertEqual([a["symbol"] for a in alerts], ["ETHUSDT"])
+        self.assertEqual(len(send_calls), 2)
+        reloaded = tad.ResonanceStateStore(self.db_path)
+        self.assertEqual(list(reloaded.data["pending_breakouts"].keys()), ["YBUSDT_L1"])
+        self.assertTrue(reloaded.has_breakout_notified("ETHUSDT_E1"))
+        self.assertFalse(reloaded.has_breakout_notified("YBUSDT_L2"))
+
+    def test_feature_2_queues_at_most_one_pending_breakout_per_symbol_across_retries(self):
+        store = tad.ResonanceStateStore(self.db_path)
+        store.data["initialized"] = True
         store.data["active_resonance_symbols"] = ["YBUSDT"]
         store.save()
 
@@ -97,32 +156,57 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             "prev_candle": {"close": 0.04975, "open_time": now - 900, "close_time": now - 1},
         }
 
-        def fake_drawings(_layout):
-            self._assert_sqlite_unlocked()
-            self.assertIsNone(store._tx_conn)
-            return {"YBUSDT": [line1, line2]}
+        with patch.object(tad, "fetch_layout_drawings", return_value={"YBUSDT": [line1, line2]}), patch.object(
+            tad, "get_closed_15m_candle", return_value=candle
+        ), patch.object(self.notifier, "send_alert", side_effect=[False, False, True]) as send_mock:
+            # Cycle 1: L1 fails -> only YBUSDT_L1 queued, L2 not queued or notified
+            self.assertEqual(tad.check_feature_2_breakout(self.notifier, store), [])
+            self.assertEqual(list(tad.ResonanceStateStore(self.db_path).data["pending_breakouts"].keys()), ["YBUSDT_L1"])
+            # Cycle 2: L1 retry fails -> L2 still blocked while YBUSDT has pending breakout
+            self.assertEqual(tad.check_feature_2_breakout(self.notifier, store), [])
+            self.assertEqual(list(tad.ResonanceStateStore(self.db_path).data["pending_breakouts"].keys()), ["YBUSDT_L1"])
+            # Cycle 3: L1 retry succeeds -> L1 notified, L2 not also fired in same cycle
+            self.assertEqual(tad.check_feature_2_breakout(self.notifier, store), [])
+            reloaded = tad.ResonanceStateStore(self.db_path)
+            self.assertEqual(reloaded.data["pending_breakouts"], {})
+            self.assertTrue(reloaded.has_breakout_notified("YBUSDT_L1"))
+            self.assertFalse(reloaded.has_breakout_notified("YBUSDT_L2"))
+            self.assertEqual(send_mock.call_count, 3)
 
-        def fake_candle(_sym):
-            self._assert_sqlite_unlocked()
-            self.assertIsNone(store._tx_conn)
-            return candle
-
-        send_results = [False, True]
-
-        def fake_send(_title, _desp):
-            self._assert_sqlite_unlocked()
-            self.assertIsNone(store._tx_conn)
-            return send_results.pop(0)
-
-        with patch.object(tad, "fetch_layout_drawings", side_effect=fake_drawings), patch.object(
-            tad, "get_closed_15m_candle", side_effect=fake_candle
-        ), patch.object(self.notifier, "send_alert", side_effect=fake_send):
-            alerts = tad.check_feature_2_breakout(self.notifier, store)
-
-        self.assertEqual([a["trendline_id"] for a in alerts], ["L2"])
-        reloaded = tad.ResonanceStateStore(self.db_path)
-        self.assertIn("YBUSDT_L1", reloaded.data["pending_breakouts"])
-        self.assertTrue(reloaded.has_breakout_notified("YBUSDT_L2"))
+    def test_daemon_feature_4_uses_ticker_last_price_consistently_with_check_once(self):
+        cfg_map = {
+            "serverchan_sendkey": "",
+            "binance_api_key": "k",
+            "binance_api_secret": "s",
+            "tradingview_layout_id": "ig0LuDL8",
+            "trailing_activation_pct": 6.0,
+            "trailing_lock_pct": 1.0,
+            "database_path": str(self.db_path),
+        }
+        daemon = tad.TradeAlertDaemon(cfg_map, dry_run=True)
+        active_longs = [
+            {
+                "symbol": "ILLIQUSDT",
+                "amount": 100.0,
+                "entry_price": 1.00,
+                "mark_price": 1.00,  # mark_price lagged at +0%
+                "unrealized_pnl": 0.0,
+                "leverage": 5,
+                "notional": 100.0,
+            }
+        ]
+        with patch.object(daemon.binance_client, "get_active_positions", return_value=active_longs), patch.object(
+            tad, "fetch_layout_drawings", return_value={}
+        ), patch.object(tad, "fetch_ticker_prices", return_value={"ILLIQUSDT": 1.08}) as mock_tickers, patch.object(
+            daemon.notifier, "send_alert", return_value=True
+        ) as mock_send:
+            daemon.run_iteration(now=1800000005)
+        mock_tickers.assert_called_once_with(["ILLIQUSDT"])
+        self.assertEqual(mock_send.call_count, 1)
+        pos = tad.PositionStore(self.db_path).get_open_positions()[0]
+        self.assertTrue(pos["trailing_stop_triggered"])
+        self.assertEqual(pos["current_price"], 1.08)
+        self.assertEqual(pos["highest_price"], 1.08)
 
     def test_feature_3_releases_db_lock_requires_open_time_and_retries_only_pending(self):
         pos_store = tad.PositionStore(self.db_path)

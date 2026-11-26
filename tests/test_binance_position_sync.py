@@ -224,6 +224,61 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
         self.assertIsNotNone(chosen)
         self.assertEqual(chosen["id"], "GOOD_15M")
 
+    def test_select_best_position_trendline_uses_time_aware_slope(self):
+        now = int(time.time())
+        rtl_ascending = {"id": "RTL_ASC", "interval": "15", "p1": 11.0, "t1": now - 300, "p2": 9.0, "t2": now - 3600}
+        rtl_descending = {"id": "RTL_DESC", "interval": "15", "p1": 9.0, "t1": now - 600, "p2": 11.0, "t2": now - 3600}
+        chosen = bpc.select_best_position_trendline([rtl_ascending, rtl_descending], current_time=now)
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen["id"], "RTL_DESC")
+
+    def test_entry_changed_resets_highest_price_without_carrying_old_peak(self):
+        self.pos_store.add_position(
+            "YBUSDT",
+            entry_price=1.0,
+            amount=100.0,
+            source="BINANCE_SYNC",
+            highest_price=1.5,
+            trailing_stop_triggered=True,
+            trailing_stop_price=1.01,
+        )
+        reopened_lower = [
+            {
+                "symbol": "YBUSDT",
+                "amount": 100.0,
+                "entry_price": 0.60,
+                "mark_price": 0.62,
+                "unrealized_pnl": 2.0,
+                "leverage": 10,
+                "notional": 62.0,
+            }
+        ]
+        with patch.object(self.client, "get_active_positions", return_value=reopened_lower), patch(
+            "tv_trendline_engine.get_layout_drawings", return_value={}
+        ):
+            res = bpc.sync_binance_positions(self.client, self.pos_store)
+        self.assertTrue(res["synced"])
+        pos = self.pos_store.get_open_positions()[0]
+        self.assertEqual(pos["highest_price"], 0.62)
+
+        zero_mark_reentry = [
+            {
+                "symbol": "YBUSDT",
+                "amount": 100.0,
+                "entry_price": 0.50,
+                "mark_price": 0.0,
+                "unrealized_pnl": 0.0,
+                "leverage": 10,
+                "notional": 50.0,
+            }
+        ]
+        with patch.object(self.client, "get_active_positions", return_value=zero_mark_reentry), patch(
+            "tv_trendline_engine.get_layout_drawings", return_value={}
+        ):
+            bpc.sync_binance_positions(self.client, self.pos_store)
+        pos2 = self.pos_store.get_open_positions()[0]
+        self.assertEqual(pos2["highest_price"], 0.50)
+
     def test_auto_register_new_position_and_match_trendline(self):
         now = int(time.time())
         mock_active_longs = [
@@ -319,7 +374,7 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
                 self.assertFalse(open_pos["profit_lock_notified"])
                 self.assertFalse(open_pos["stop_loss_notified"])
                 self.assertNotIn("pending_profit_lock_price", open_pos)
-                self.assertEqual(open_pos["highest_price"], 0.0580)
+                self.assertEqual(open_pos["highest_price"], 0.0550)
 
     def test_micro_priced_entry_change_and_manual_source_current_price_preservation(self):
         self.pos_store.add_position(
@@ -350,7 +405,7 @@ class TestBinanceAutoSyncLifecycle(unittest.TestCase):
         open_pos = self.pos_store.get_open_positions()[0]
         self.assertEqual(open_pos["entry_price"], 4.6e-7)
         self.assertFalse(open_pos["trailing_stop_triggered"])
-        self.assertEqual(open_pos["highest_price"], 5.2e-7)
+        self.assertEqual(open_pos["highest_price"], 4.7e-7)
         self.assertEqual(open_pos["source"], "MANUAL")
         self.assertEqual(open_pos["mark_price"], 4.7e-7)
         self.assertEqual(open_pos["current_price"], 4.9e-7)

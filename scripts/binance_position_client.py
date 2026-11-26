@@ -42,7 +42,7 @@ def select_best_position_trendline(
     """
     从同一币种的多条规范化 TradingView 画线中筛选最适合作为持仓止损线的 15m 趋势线:
     1. 严格要求 15m 周期且更新时间/锚点在 72 小时以内（拒绝非 15m 与陈旧线）。
-    2. 优先选择下行趋势线 (p1 >= p2)，其次按最近更新时间降序选取。
+    2. 优先选择下行趋势线 ((p2 - p1) * (t2 - t1) <= 0)，其次按最近更新时间降序选取。
     """
     if not lines:
         return None
@@ -54,19 +54,25 @@ def select_best_position_trendline(
         if not tve.is_valid_15m_trendline(line, current_time=current_time):
             continue
         try:
-            p1 = float(line["p1"])
-            p2 = float(line["p2"])
-            t1 = int(line["t1"])
-            t2 = int(line["t2"])
+            raw_p1 = line["p1"]
+            raw_p2 = line["p2"]
+            raw_t1 = line["t1"]
+            raw_t2 = line["t2"]
+            if any(isinstance(v, bool) for v in (raw_p1, raw_p2, raw_t1, raw_t2)):
+                raise TypeError("boolean trendline coordinate")
+            p1 = float(raw_p1)
+            p2 = float(raw_p2)
+            t1 = int(raw_t1)
+            t2 = int(raw_t2)
             s_time = line.get("server_update_time")
-            recency = int(s_time) if s_time is not None else t2
+            recency = int(s_time) if s_time is not None else max(t1, t2)
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("跳过畸形 15m 趋势线 (%s): %s", line.get("id"), exc)
             continue
         if not math.isfinite(p1) or not math.isfinite(p2) or p1 <= 0 or p2 <= 0 or t1 == t2:
             logger.warning("跳过无效几何参数 15m 趋势线 (%s): p1=%r p2=%r t1=%r t2=%r", line.get("id"), p1, p2, t1, t2)
             continue
-        descending = 1 if p1 >= p2 else 0
+        descending = 1 if (p2 - p1) * (t2 - t1) <= 0 else 0
         valid.append((descending, recency, dict(line)))
 
     if not valid:
@@ -200,11 +206,9 @@ def sync_binance_positions(
                 local_p["trailing_stop_price"] = None
                 local_p["profit_lock_notified"] = False
                 local_p["stop_loss_notified"] = False
-                local_p["highest_price"] = max(
-                    float(local_p["highest_price"]) if local_p.get("highest_price") is not None else 0.0,
-                    b_pos["mark_price"],
-                    b_pos["entry_price"],
-                )
+                mark_val = float(b_pos["mark_price"])
+                entry_val = float(b_pos["entry_price"])
+                local_p["highest_price"] = max(mark_val, entry_val) if mark_val > 0 else entry_val
                 for key in (
                     "trailing_stop_activated_at",
                     "pending_stop_loss_candle",

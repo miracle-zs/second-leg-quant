@@ -574,11 +574,16 @@ def check_feature_2_breakout(
 
     _flush_retried_breakouts(state_store, retried_succeeded, active_line_keys=active_line_keys)
     pending_keys_set = {key for key, _ in pending_snapshot} - {key for key, _ in retried_succeeded}
+    blocked_symbols = {
+        clean_symbol(str(event["symbol"]))
+        for _, event in pending_snapshot
+        if event.get("symbol")
+    }
 
     target_symbols = [
         clean_symbol(sym)
         for sym in active_symbols
-        if drawings_map.get(clean_symbol(sym))
+        if clean_symbol(sym) not in blocked_symbols and drawings_map.get(clean_symbol(sym))
     ]
     candles_by_symbol = _fetch_15m_candles_batch(
         target_symbols,
@@ -591,6 +596,8 @@ def check_feature_2_breakout(
     candidates_by_sym: list[list[dict[str, Any]]] = []
     for sym in active_symbols:
         sym_clean = clean_symbol(sym)
+        if sym_clean in blocked_symbols:
+            continue
         matched_lines = drawings_map.get(sym_clean)
         candle = candles_by_symbol.get(sym_clean)
         if not matched_lines or candle is None:
@@ -613,12 +620,31 @@ def check_feature_2_breakout(
             if not is_valid_15m_trendline(line, current_time=c_ts):
                 continue
             try:
-                p1_val = float(line["p1"])
-                p2_val = float(line["p2"])
+                raw_p1 = line["p1"]
+                raw_p2 = line["p2"]
+                raw_t1 = line["t1"]
+                raw_t2 = line["t2"]
+                if any(isinstance(v, bool) for v in (raw_p1, raw_p2, raw_t1, raw_t2)):
+                    raise TypeError("boolean trendline coordinate")
+                p1_val = float(raw_p1)
+                p2_val = float(raw_p2)
+                t1_val = int(raw_t1)
+                t2_val = int(raw_t2)
             except (KeyError, TypeError, ValueError) as e:
                 logger.warning(f"跳过 {sym} 畸形趋势线 ({line_id}): {e}")
                 continue
-            if p1_val < p2_val:
+            if (
+                not math.isfinite(p1_val)
+                or not math.isfinite(p2_val)
+                or p1_val <= 0
+                or p2_val <= 0
+                or t1_val == t2_val
+            ):
+                logger.warning(
+                    f"跳过 {sym} 无效几何趋势线 ({line_id}): p1={p1_val!r} t1={t1_val!r} p2={p2_val!r} t2={t2_val!r}"
+                )
+                continue
+            if (p2_val - p1_val) * (t2_val - t1_val) > 0:
                 continue
 
             try:
@@ -669,8 +695,11 @@ def check_feature_2_breakout(
         for cand in sym_candidates:
             trendline_key = cand["trendline_key"]
             sym = cand["info"]["symbol"]
+            sym_clean = clean_symbol(sym)
             with state_store.transaction():
                 pending = state_store.data.setdefault("pending_breakouts", {})
+                if any(clean_symbol(str(ev.get("symbol", ""))) == sym_clean for ev in pending.values()):
+                    break
                 if trendline_key in pending or state_store.has_breakout_notified(trendline_key):
                     continue
                 pending[trendline_key] = cand["pending_record"]
@@ -694,7 +723,7 @@ def check_feature_2_breakout(
                     state_store.data.setdefault("pending_breakouts", {}).pop(trendline_key, None)
                     state_store.save()
                 breakout_alerts.append(cand["info"])
-                break
+            break
 
     return breakout_alerts
 
@@ -897,7 +926,7 @@ def check_feature_4_trailing_stops(
 ) -> List[dict]:
     """
     Feature 4 (持仓动态移动止盈保护):
-    使用批量 ticker 接口获取缺失现价，持久化 highest_price/current_price/pnl_pct 状态变更。
+    统一使用实时批量 ticker 最新成交价 (lastPrice) 获取现价，持久化 highest_price/current_price/pnl_pct 状态变更。
     所有网络 I/O（批量行情拉取、Server酱 通知）均在 SQLite 写事务外执行。
     """
     initial_open = pos_store.get_open_positions()

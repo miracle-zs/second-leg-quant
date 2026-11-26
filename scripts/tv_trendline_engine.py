@@ -202,7 +202,7 @@ def _read_cached_drawings(cache_path: Path, max_age_sec: float) -> Optional[dict
         logger.warning("Failed to read TV drawings cache %s: %s", cache_path, exc)
         return None
     drawings = payload.get("drawings_by_symbol") if isinstance(payload, dict) else None
-    if isinstance(drawings, dict) and drawings:
+    if isinstance(drawings, dict):
         return drawings
     return None
 
@@ -293,12 +293,32 @@ def _parse_trendline_source(
     t2, p2 = pt2.get("time_t"), pt2.get("price")
     if t1 is None or p1 is None or t2 is None or p2 is None:
         raise ValueError(f"({norm_sym}) missing time_t/price")
+    if any(isinstance(v, bool) for v in (t1, p1, t2, p2)):
+        raise ValueError(f"({norm_sym}) invalid boolean time_t/price")
 
     raw_linewidth = inner_state.get("linewidth")
     p1_flt = float(p1)
     p2_flt = float(p2)
-    t1_int = int(t1)
-    t2_int = int(t2)
+    t1_flt = float(t1)
+    t2_flt = float(t2)
+    if (
+        not math.isfinite(p1_flt)
+        or not math.isfinite(p2_flt)
+        or not math.isfinite(t1_flt)
+        or not math.isfinite(t2_flt)
+        or p1_flt <= 0
+        or p2_flt <= 0
+    ):
+        raise ValueError(
+            f"({norm_sym}) invalid non-positive/non-finite geometry: p1={p1!r}, t1={t1!r}, p2={p2!r}, t2={t2!r}"
+        )
+    t1_int = t1 if isinstance(t1, int) else int(t1_flt)
+    t2_int = t2 if isinstance(t2, int) else int(t2_flt)
+    if t1_int == t2_int:
+        raise ValueError(f"({norm_sym}) degenerate vertical trendline: t1 == t2 == {t1_int}")
+    if t1_int > t2_int:
+        t1_int, t2_int = t2_int, t1_int
+        p1_flt, p2_flt = p2_flt, p1_flt
     line_width = int(raw_linewidth) if raw_linewidth is not None else 1
     server_update_time = _normalize_server_update_time(sdata.get("serverUpdateTime"))
 
@@ -380,14 +400,6 @@ def get_layout_drawings(
         )
 
     if save_cache:
-        if raw_sources and not symbol_to_trendlines and _read_cached_drawings(cache_path, float("inf")) is not None:
-            logger.warning(
-                "Layout %s returned %d raw sources but 0 LineToolTrendLine drawings; preserving non-empty cache %s",
-                layout_id,
-                len(raw_sources),
-                cache_path,
-            )
-            return symbol_to_trendlines
         cache_payload = {
             "layout_id": layout_id,
             "updated_at": get_beijing_time_str(),

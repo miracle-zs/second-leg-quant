@@ -25,6 +25,7 @@ import argparse
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import math
 import signal
 import sqlite3
 import sys
@@ -232,15 +233,25 @@ class PositionStore(_SqliteStore):
         **kwargs: Any,
     ) -> dict:
         entry_val = float(entry_price)
-        if entry_val <= 0:
+        if not math.isfinite(entry_val) or entry_val <= 0:
             raise ValueError(f"entry_price must be positive for {symbol}: {entry_price}")
 
         with self.transaction():
             sym = _normalize_futures_symbol(symbol)
             for p in self.get_open_positions():
                 if p["symbol"] == sym:
+                    old_entry = float(p["entry_price"])
+                    entry_changed = not math.isclose(old_entry, entry_val, rel_tol=1e-9, abs_tol=1e-12)
                     logger.info(f"仓位 {sym} 已存在，正在更新开仓价 {entry_val}...")
                     p["entry_price"] = entry_val
+                    if entry_changed:
+                        p["highest_price"] = entry_val
+                        p["trailing_stop_triggered"] = False
+                        p["trailing_stop_price"] = None
+                        p["profit_lock_notified"] = False
+                        p["stop_loss_notified"] = False
+                        for key in [k for k in p if k.startswith("pending_")] + ["trailing_stop_activated_at"]:
+                            p.pop(key, None)
                     if amount > 0:
                         p["amount"] = float(amount)
                     if trendline:
@@ -561,7 +572,6 @@ class TradeAlertDaemon:
         now_ts = now if now is not None else time.time()
         layout_id = self.cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID)
 
-        price_cache: Dict[str, float] = {}
         positions_synced = False
         if self.binance_client.is_configured():
             try:
@@ -573,9 +583,6 @@ class TradeAlertDaemon:
                 )
                 if sync_res["synced"]:
                     positions_synced = True
-                    for p in sync_res["active_positions"]:
-                        if p["mark_price"] is not None:
-                            price_cache[p["symbol"]] = float(p["mark_price"])
             except (BinanceAPIError, HttpError, urllib.error.URLError, TimeoutError, OSError) as e:
                 logger.warning(f"后台自动同步币安持仓异常: {e}")
 
@@ -682,7 +689,6 @@ class TradeAlertDaemon:
                 self.pos_store,
                 float(self.cfg.get("trailing_activation_pct", 6.0)),
                 float(self.cfg.get("trailing_lock_pct", 1.0)),
-                price_cache=price_cache or None,
             )
 
     def start(self) -> None:
