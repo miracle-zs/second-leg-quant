@@ -124,7 +124,6 @@
   const syncStatusBadge = document.getElementById('sync-status-badge');
   const poolUpdatedEl = document.getElementById('pool-updated-time');
   const countBadge = document.getElementById('pool-count-badge');
-  const activeZonePill = document.getElementById('active-zone-pill');
   const searchInput = document.getElementById('symbol-search-input');
   const resetBtn = document.getElementById('btn-reset-filter');
   const kpiCards = document.querySelectorAll('.kpi-card');
@@ -236,28 +235,6 @@
     return `<span class="text-[#f1f5f9] font-bold font-sans text-[13px] tracking-tight">${escapeHtml(sym)}</span>`;
   }
 
-  function buildZonesHtml(c) {
-    if (c.is_resonance && c.is_neg_funding) {
-      return '<div class="flex items-center gap-1.5"><span class="px-2 py-0.5 rounded-[3px] text-[11px] font-semibold bg-[#f25565]/14 text-[#f8717e] border border-[#f25565]/35" title="1h顺势+高换手，4h负费率贴水逼空">贴水双核共振</span></div>';
-    }
-    if (c.is_resonance) {
-      return '<div class="flex items-center gap-1.5"><span class="px-2 py-0.5 rounded-[3px] text-[11px] font-semibold bg-[#f0b429]/14 text-[#f5c451] border border-[#f0b429]/35" title="1h顺势+高换手，资金面健康">双核黄金共振</span></div>';
-    }
-
-    const tags = [];
-    if (c.is_ema_bull) {
-      tags.push('<span class="inline-flex items-center gap-1 text-[11px] text-[#38d99f]"><span class="w-1 h-1 rounded-full bg-[#22c58b]" aria-hidden="true"></span>1h顺势</span>');
-    }
-    if (c.is_high_turnover) {
-      tags.push('<span class="inline-flex items-center gap-1 text-[11px] text-[#8ab8ff]"><span class="w-1 h-1 rounded-full bg-[#3b82f6]" aria-hidden="true"></span>高换手</span>');
-    }
-    if (c.is_neg_funding) {
-      tags.push('<span class="inline-flex items-center gap-1 text-[11px] text-[#f8717e]" title="合约相对现货贴水"><span class="w-1 h-1 rounded-full bg-[#f25565]" aria-hidden="true"></span>负费率贴水</span>');
-    }
-
-    return `<div class="flex items-center gap-2.5 flex-wrap">${tags.length ? tags.join('') : '<span class="text-[#7f91a8] text-[11px]">基础底池</span>'}</div>`;
-  }
-
   function buildIntervalBadge(interval) {
     if (interval === 1) {
       return '<span class="text-[10px] font-mono font-semibold text-[#f5c451]" title="每 1 小时结算资金费率">1h</span>';
@@ -284,33 +261,19 @@
     const spread = isFiniteNum(c.ema_spread_pct) ? c.ema_spread_pct : null;
     const spreadText = spread !== null ? escapeHtml(formatSignedPct(spread, 2)) : '--';
 
+    let dotClass = 'bg-[#4b5c75]';
+    let textClass = 'text-[#7f91a8]';
     if (spread !== null && Math.abs(spread) <= 0.35) {
-      return `<div class="whitespace-nowrap">
-        <div class="flex items-center gap-1.5">
-          <span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span>
-          <span class="text-[#f5c451] font-semibold text-xs">粘合收敛</span>
-          <span class="text-[11px] text-[#f5c451] font-mono tabular-nums">${spreadText}</span>
-        </div>
-        <div class="text-[10px] text-[#7f91a8] font-mono tabular-nums mt-0.5">${ema5Str} / ${ema10Str}</div>
-      </div>`;
+      dotClass = 'bg-[#f0b429]';
+      textClass = 'text-[#f5c451] font-semibold';
+    } else if (c.is_ema_bull) {
+      dotClass = 'bg-[#22c58b]';
+      textClass = 'text-[#38d99f] font-semibold';
     }
-    if (c.is_ema_bull) {
-      return `<div class="whitespace-nowrap">
-        <div class="flex items-center gap-1.5">
-          <span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>
-          <span class="text-[#38d99f] font-semibold text-xs">多头顺势</span>
-          <span class="text-[11px] text-[#38d99f] font-mono tabular-nums">${spreadText}</span>
-        </div>
-        <div class="text-[10px] text-[#7f91a8] font-mono tabular-nums mt-0.5">${ema5Str} / ${ema10Str}</div>
-      </div>`;
-    }
-    return `<div class="whitespace-nowrap">
-      <div class="flex items-center gap-1.5">
-        <span class="w-1.5 h-1.5 rounded-full bg-[#4b5c75]" aria-hidden="true"></span>
-        <span class="text-[#9fb0c5] text-xs">空头回撤</span>
-        <span class="text-[11px] text-[#7f91a8] font-mono tabular-nums">${spreadText}</span>
-      </div>
-      <div class="text-[10px] text-[#7f91a8] font-mono tabular-nums mt-0.5">${ema5Str} / ${ema10Str}</div>
+
+    return `<div class="inline-flex items-center gap-1.5 whitespace-nowrap" title="EMA5 ${ema5Str} / EMA10 ${ema10Str}">
+      <span class="w-1.5 h-1.5 rounded-full ${dotClass} shrink-0" aria-hidden="true"></span>
+      <span class="text-[11px] font-mono tabular-nums ${textClass}">${spreadText}</span>
     </div>`;
   }
 
@@ -464,7 +427,7 @@
 
     const emptyRowHtml = `
       <tr id="empty-search-row" class="hidden">
-        <td colspan="11" class="py-14 text-center text-[#9fb0c5] font-sans">
+        <td colspan="10" class="py-14 text-center text-[#9fb0c5] font-sans">
           <div class="text-sm font-semibold text-[#f1f5f9]">当前筛选下无匹配合约</div>
           <div class="text-xs text-[#7f91a8] mt-1">按 <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">Esc</kbd> 清空搜索词或点击重置返回全池</div>
         </td>
@@ -514,14 +477,14 @@
       const frSettleStr = escapeHtml(formatSignedPct(c.funding_rate_pct, 4));
       const frColor = getFundingClass(c.funding_rate_4h_pct);
       const cycleBadge = buildIntervalBadge(c.funding_interval_hours);
+      const showSettleNote = c.funding_interval_hours !== 4 && isFiniteNum(c.funding_rate_pct);
 
       return `<tr class="${getRowClass(c)}" data-sym="${safeSym}" data-tv-sym="${safeTvSym}">
         <td class="py-2.5 px-2 text-center text-[#7f91a8] font-mono tabular-nums text-[11px] sym-rank">${idx + 1}</td>
         <th scope="row" class="py-2 px-3 font-normal whitespace-nowrap sticky-col">
           <div class="flex items-baseline gap-0.5">${formatTickerDisplayHtml(sym)}</div>
           <div class="flex items-center gap-1 mt-1 -ml-1 font-sans">
-            <button type="button" class="btn-preview-chart row-micro-btn row-micro-primary" data-sym="${safeSym}" data-tv="${safeTvSym}" title="站内弹窗预览 15m 实时 K 线">15m图</button>
-            <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="在 TradingView 打开 15m 专属画线布局 (ig0LuDL8)"><span>TV</span>${EXT_ARROW_SVG}</a>
+            <a href="${escapeHtml(tvUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="在 TradingView 打开 15m 专属画线布局"><span>TV</span>${EXT_ARROW_SVG}</a>
             <a href="${escapeHtml(binanceUrl)}" target="_blank" rel="noopener noreferrer" class="row-micro-btn" title="打开币安合约盘口"><span>币安</span>${EXT_ARROW_SVG}</a>
             <button type="button" class="btn-copy-sym row-micro-btn" data-copy="${safeTvSym}" data-label="复制" title="复制 TV 代码 (${safeTvSym})">复制</button>
           </div>
@@ -544,11 +507,10 @@
             <span class="${frColor}">${fr4hStr}</span>
             ${cycleBadge}
           </div>
-          <div class="text-[10px] text-[#7f91a8] font-mono tabular-nums sym-fr-settle mt-0.5">单期: ${frSettleStr}</div>
+          <div class="text-[10px] text-[#7f91a8] font-mono tabular-nums sym-fr-settle mt-0.5${showSettleNote ? '' : ' hidden'}">${showSettleNote ? `(${frSettleStr})` : ''}</div>
         </td>
         <td class="py-2.5 px-3 font-sans whitespace-nowrap">${buildEmaHtml(c)}</td>
         <td class="py-2.5 px-3 font-sans whitespace-nowrap sym-duration border-l border-[#1c2532]">${buildDurationHtml(c)}</td>
-        <td class="py-2.5 px-3 font-sans whitespace-nowrap sym-zones">${buildZonesHtml(c)}</td>
       </tr>`;
     }).join('');
 
@@ -559,6 +521,7 @@
       if (!sym) return;
       rowRefsBySym.set(sym, {
         rowEl,
+        dirty: false,
         rankEl: rowEl.querySelector('.sym-rank'),
         priceEl: rowEl.querySelector('.sym-price'),
         posBoxEl: rowEl.querySelector('.sym-pos-box'),
@@ -571,7 +534,6 @@
         fr4hEl: rowEl.querySelector('.sym-fr-4h'),
         frSettleEl: rowEl.querySelector('.sym-fr-settle'),
         durationEl: rowEl.querySelector('.sym-duration'),
-        zonesEl: rowEl.querySelector('.sym-zones'),
       });
     });
   }
@@ -646,6 +608,75 @@
     return true;
   }
 
+  function syncRowDom(c, refs, { animatePrice = false, prevPrice = undefined, prevRes = c.is_resonance, prevNegFr = c.is_neg_funding } = {}) {
+    if (!refs) return;
+    if (isFiniteNum(c.price) && refs.priceEl) {
+      if (animatePrice && prevPrice !== undefined && prevPrice !== c.price && !prefersReducedMotion) {
+        refs.priceEl.animate(
+          [
+            { color: c.price > prevPrice ? '#38d99f' : '#f8717e' },
+            { color: '#f1f5f9' },
+          ],
+          { duration: 480, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }
+        );
+      }
+      refs.priceEl.textContent = formatCryptoPrice(c.price);
+    }
+
+    const posPct = computePositionPct(c.price, c.low_24h, c.high_24h);
+    if (refs.posBarEl && posPct !== null) {
+      refs.posBarEl.style.width = posPct.toFixed(1) + '%';
+      refs.posBarEl.className = `sym-pos-bar h-full ${getPosBarColor(posPct)} transition-all duration-300`;
+    }
+    if (refs.posTextEl) {
+      refs.posTextEl.textContent = posPct !== null ? `${Math.round(posPct)}%` : '--';
+    }
+    if (refs.posBoxEl && isFiniteNum(c.low_24h) && isFiniteNum(c.high_24h) && posPct !== null) {
+      refs.posBoxEl.setAttribute('title', `24h振幅区间: ${formatCryptoPrice(c.low_24h)} ~ ${formatCryptoPrice(c.high_24h)} (现价分位: ${Math.round(posPct)}%)`);
+    }
+
+    if (isFiniteNum(c.price_chg_24h) && refs.chgEl) {
+      refs.chgEl.textContent = formatSignedPct(c.price_chg_24h, 2);
+      const nextChgCls = c.price_chg_24h > 0
+        ? 'text-[#38d99f] font-semibold'
+        : (c.price_chg_24h < 0 ? 'text-[#f8717e] font-semibold' : 'text-[#f1f5f9] font-medium');
+      refs.chgEl.className = `py-2.5 px-2.5 font-mono tabular-nums sym-chg whitespace-nowrap text-right ${nextChgCls}`;
+    }
+
+    if (isFiniteNum(c.volume_24h_usd) && refs.volEl) {
+      refs.volEl.textContent = formatMillions(c.volume_24h_usd);
+    }
+    if (isFiniteNum(c.market_cap_usd) && refs.mcValEl) {
+      refs.mcValEl.textContent = formatMillions(c.market_cap_usd);
+    }
+    if (isFiniteNum(c.turnover_ratio) && refs.trBadgeEl) {
+      refs.trBadgeEl.textContent = c.turnover_ratio.toFixed(2) + 'x';
+      refs.trBadgeEl.className = getTurnoverBadgeClass(c.turnover_ratio);
+    }
+
+    if (refs.frSettleEl) {
+      if (c.funding_interval_hours !== 4 && isFiniteNum(c.funding_rate_pct)) {
+        refs.frSettleEl.textContent = `(${formatSignedPct(c.funding_rate_pct, 4)})`;
+        refs.frSettleEl.classList.remove('hidden');
+      } else {
+        refs.frSettleEl.textContent = '';
+        refs.frSettleEl.classList.add('hidden');
+      }
+    }
+    if (refs.fr4hEl && isFiniteNum(c.funding_rate_4h_pct)) {
+      refs.fr4hEl.textContent = formatSignedPct(c.funding_rate_4h_pct, 4);
+      refs.fr4hEl.className = getFundingClass(c.funding_rate_4h_pct);
+    }
+
+    if (refs.rowEl && (prevRes !== c.is_resonance || prevNegFr !== c.is_neg_funding)) {
+      refs.rowEl.className = getRowClass(c);
+    }
+    if (refs.durationEl && prevRes !== c.is_resonance) {
+      refs.durationEl.innerHTML = buildDurationHtml(c);
+    }
+    refs.dirty = false;
+  }
+
   function applyFilter() {
     let visibleCount = 0;
     candidatesState.forEach((c) => {
@@ -657,6 +688,9 @@
         refs.rowEl.style.display = nextDisplay;
       }
       if (shouldShow) {
+        if (refs.dirty) {
+          syncRowDom(c, refs, { prevRes: !c.is_resonance, prevNegFr: !c.is_neg_funding });
+        }
         visibleCount += 1;
         if (refs.rankEl) {
           const nextRank = String(visibleCount);
@@ -671,12 +705,6 @@
       const nextCountText = `${visibleCount} / ${candidatesState.length} 标的`;
       if (countBadge.textContent !== nextCountText) {
         countBadge.textContent = nextCountText;
-      }
-    }
-    if (activeZonePill) {
-      const nextZoneText = ZONE_NAMES[currentZone] || '自定义筛选';
-      if (activeZonePill.textContent !== nextZoneText) {
-        activeZonePill.textContent = nextZoneText;
       }
     }
     const emptyRow = document.getElementById('empty-search-row');
@@ -779,6 +807,8 @@
         const prevHighTr = c.is_high_turnover;
         const prevNegFr = c.is_neg_funding;
         const prevTrText = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) : '';
+        void prevTrText;
+        let oldPrice;
 
         if (t) {
           const pVal = parseFloat(t.lastPrice);
@@ -791,65 +821,23 @@
           }
 
           if (isFiniteNum(pVal)) {
-            const oldP = prevPriceBySym.get(sym);
-            if (refs && refs.priceEl) {
-              if (oldP !== undefined && oldP !== pVal && !prefersReducedMotion) {
-                refs.priceEl.animate(
-                  [
-                    { color: pVal > oldP ? '#38d99f' : '#f8717e' },
-                    { color: '#f1f5f9' },
-                  ],
-                  { duration: 480, easing: 'cubic-bezier(0.16, 1, 0.3, 1)' }
-                );
-              }
-              refs.priceEl.textContent = formatCryptoPrice(pVal);
-            }
+            oldPrice = prevPriceBySym.get(sym);
             prevPriceBySym.set(sym, pVal);
             c.price = pVal;
           }
 
           if (isFiniteNum(highVal)) c.high_24h = highVal;
           if (isFiniteNum(lowVal)) c.low_24h = lowVal;
-          const posPct = computePositionPct(c.price, c.low_24h, c.high_24h);
-          if (refs && refs.posBarEl && posPct !== null) {
-            refs.posBarEl.style.width = posPct.toFixed(1) + '%';
-            refs.posBarEl.className = `sym-pos-bar h-full ${getPosBarColor(posPct)} transition-all duration-300`;
-          }
-          if (refs && refs.posTextEl) {
-            refs.posTextEl.textContent = posPct !== null ? `${Math.round(posPct)}%` : '--';
-          }
-          if (refs && refs.posBoxEl && isFiniteNum(c.low_24h) && isFiniteNum(c.high_24h) && posPct !== null) {
-            refs.posBoxEl.setAttribute('title', `24h振幅区间: ${formatCryptoPrice(c.low_24h)} ~ ${formatCryptoPrice(c.high_24h)} (现价分位: ${Math.round(posPct)}%)`);
-          }
-
-          if (isFiniteNum(chgVal)) {
-            c.price_chg_24h = chgVal;
-            if (refs && refs.chgEl) {
-              refs.chgEl.textContent = formatSignedPct(chgVal, 2);
-              const nextChgCls = chgVal > 0
-                ? 'text-[#38d99f] font-semibold'
-                : (chgVal < 0 ? 'text-[#f8717e] font-semibold' : 'text-[#f1f5f9] font-medium');
-              refs.chgEl.className = `py-2.5 px-2.5 font-mono tabular-nums sym-chg whitespace-nowrap text-right ${nextChgCls}`;
-            }
-          }
-
-          if (isFiniteNum(volVal)) {
-            c.volume_24h_usd = volVal;
-            if (refs && refs.volEl) refs.volEl.textContent = formatMillions(volVal);
-          }
+          if (isFiniteNum(chgVal)) c.price_chg_24h = chgVal;
+          if (isFiniteNum(volVal)) c.volume_24h_usd = volVal;
 
           const cs = getEffectiveSupply(c);
           if (cs > 0 && isFiniteNum(c.price)) {
             const currentMcap = c.price * cs;
             c.market_cap_usd = currentMcap;
-            if (refs && refs.mcValEl) refs.mcValEl.textContent = formatMillions(currentMcap);
             if (isFiniteNum(c.volume_24h_usd) && currentMcap > 0) {
               const trVal = c.volume_24h_usd / currentMcap;
               c.turnover_ratio = trVal;
-              if (refs && refs.trBadgeEl) {
-                refs.trBadgeEl.textContent = trVal.toFixed(2) + 'x';
-                refs.trBadgeEl.className = getTurnoverBadgeClass(trVal);
-              }
             }
           }
         }
@@ -861,16 +849,8 @@
             console.warn(`Malformed Binance premiumIndex lastFundingRate for ${sym}:`, pr);
           } else {
             c.funding_rate_pct = settleVal;
-            if (refs && refs.frSettleEl) {
-              refs.frSettleEl.textContent = `单期: ${formatSignedPct(settleVal, 4)}`;
-            }
             if (isFiniteNum(interval) && interval > 0) {
-              const fr4hVal = settleVal * (4.0 / interval);
-              c.funding_rate_4h_pct = fr4hVal;
-              if (refs && refs.fr4hEl) {
-                refs.fr4hEl.textContent = formatSignedPct(fr4hVal, 4);
-                refs.fr4hEl.className = getFundingClass(fr4hVal);
-              }
+              c.funding_rate_4h_pct = settleVal * (4.0 / interval);
             }
           }
         }
@@ -884,21 +864,20 @@
             sortMetricChanged = true;
           }
         }
-        const currTrText = isFiniteNum(c.turnover_ratio) ? c.turnover_ratio.toFixed(1) : '';
         const classChanged = (
           prevRes !== c.is_resonance ||
           prevHighTr !== c.is_high_turnover ||
           prevNegFr !== c.is_neg_funding
         );
         if (classChanged) anyClassChanged = true;
-        if (refs && refs.rowEl && (prevRes !== c.is_resonance || prevNegFr !== c.is_neg_funding)) {
-          refs.rowEl.className = getRowClass(c);
-        }
-        if (refs && refs.zonesEl && (classChanged || (c.is_high_turnover && prevTrText !== currTrText))) {
-          refs.zonesEl.innerHTML = buildZonesHtml(c);
-        }
-        if (refs && refs.durationEl && prevRes !== c.is_resonance) {
-          refs.durationEl.innerHTML = buildDurationHtml(c);
+
+        const isRowHidden = Boolean(refs && refs.rowEl && refs.rowEl.style.display === 'none');
+        if (refs) {
+          if (isRowHidden) {
+            refs.dirty = true;
+          } else {
+            syncRowDom(c, refs, { animatePrice: true, prevPrice: oldPrice, prevRes, prevNegFr });
+          }
         }
       });
 
@@ -948,7 +927,10 @@
 
       currentVersion = payload.updated_at;
       if (poolUpdatedEl) {
-        poolUpdatedEl.textContent = `更新: ${formatUpdatedAtBeijing(currentVersion)}`;
+        const shortUpdated = formatUpdatedAtBeijing(currentVersion)
+          .replace(/^\d{4}-/, '')
+          .replace(/\s*\(北京时间\)$/, '');
+        poolUpdatedEl.textContent = `更新: ${shortUpdated}`;
         poolUpdatedEl.className = 'hidden sm:inline-flex px-2 py-0.5 font-mono tabular-nums text-[#9fb0c5] bg-[#10151d]';
       }
 
@@ -1001,7 +983,7 @@
         poolUpdatedEl.className = 'px-2 py-0.5 font-mono text-[#f8717e] bg-[#f25565]/10 inline-flex';
       }
       if (!candidatesState.length && tableBody) {
-        tableBody.innerHTML = `<tr><td colspan="11" class="py-14 text-center text-[#f8717e] font-sans text-xs">候选币池读取失败 (${escapeHtml(err.message)})，请检查后台 API 服务是否在线。</td></tr>`;
+        tableBody.innerHTML = `<tr><td colspan="10" class="py-14 text-center text-[#f8717e] font-sans text-xs">候选币池读取失败 (${escapeHtml(err.message)})，请检查后台 API 服务是否在线。</td></tr>`;
       }
     }
   }
@@ -1113,7 +1095,10 @@
   if (batchExportBtn) {
     batchExportBtn.addEventListener('click', () => {
       const symbols = getVisibleTvSymbols();
-      if (!symbols.length) return;
+      if (!symbols.length) {
+        showToast('当前筛选下无可见标的');
+        return;
+      }
       const blob = new Blob([symbols.join('\n')], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -1182,18 +1167,6 @@
           copyResetTimers.delete(copyBtn);
         }, 1200);
         copyResetTimers.set(copyBtn, timerId);
-        return;
-      }
-
-      const previewBtn = e.target.closest('.btn-preview-chart');
-      if (previewBtn) {
-        e.stopPropagation();
-        const sym = previewBtn.getAttribute('data-sym');
-        const tvSym = previewBtn.getAttribute('data-tv');
-        if (!sym || !tvSym) {
-          throw new Error('Preview button missing data-sym or data-tv');
-        }
-        openCandidateChartModal(sym, tvSym);
         return;
       }
 

@@ -50,8 +50,12 @@
   const btnEngineTv = document.getElementById('btn-chart-engine-tv');
   const modalBarsGroup = document.getElementById('modal-bars-group');
   const modalBarsBtns = document.querySelectorAll('.modal-bars-btn');
-  const modalHudEma5 = document.getElementById('modal-hud-ema5');
-  const modalHudEma10 = document.getElementById('modal-hud-ema10');
+  const modalIntervalBtns = document.querySelectorAll('.modal-interval-btn');
+
+  let baseChartCanvas = null;
+  let baseChartKey = '';
+  let modalChartMetrics = null;
+  let tooltipRefs = null;
 
   function canTransitionDisplay() {
     if (supportsDisplayTransition !== undefined) return supportsDisplayTransition;
@@ -143,27 +147,51 @@
     return `${mm}/${dd} ${hh}:${mi}`;
   }
 
-  function renderModalChart() {
-    if (!modalCanvas || !modalNativeView || !modalCandles.length) return;
-    const ctx = modalCanvas.getContext('2d');
-    if (!ctx) return;
-
-    const visibleCandles = modalCandles.slice(-modalVisibleBars);
-    if (!visibleCandles.length) return;
-
-    const dpr = global.devicePixelRatio || 1;
-    const w = modalNativeView.clientWidth;
-    const h = modalNativeView.clientHeight;
-    if (w <= 0 || h <= 0) return;
-
-    const targetW = Math.round(w * dpr);
-    const targetH = Math.round(h * dpr);
-    if (modalCanvas.width !== targetW || modalCanvas.height !== targetH) {
-      modalCanvas.width = targetW;
-      modalCanvas.height = targetH;
+  function ensureTooltipNodes() {
+    if (!modalTooltip) return null;
+    if (tooltipRefs) return tooltipRefs;
+    if (typeof global.document === 'undefined' || typeof global.document.createElement !== 'function') {
+      return null;
     }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const header = global.document.createElement('div');
+    header.className = 'flex items-center gap-2 mb-1';
+    const timeEl = global.document.createElement('span');
+    timeEl.className = 'text-[#f1f5f9] font-bold';
+    const chgEl = global.document.createElement('span');
+    header.append(timeEl, chgEl);
 
+    const ohlc = global.document.createElement('div');
+    ohlc.className = 'grid grid-cols-4 gap-x-3 gap-y-0.5 text-[#9fb0c5]';
+    const makeCell = (label) => {
+      const wrap = global.document.createElement('div');
+      wrap.append(label + ' ');
+      const val = global.document.createElement('span');
+      val.className = 'text-[#f1f5f9]';
+      wrap.append(val);
+      ohlc.append(wrap);
+      return val;
+    };
+    const oEl = makeCell('开');
+    const hEl = makeCell('高');
+    const lEl = makeCell('低');
+    const cEl = makeCell('收');
+
+    const footer = global.document.createElement('div');
+    footer.className = 'flex items-center gap-3 mt-1 pt-1 border-t border-[#222b38] text-[10px]';
+    const ema5El = global.document.createElement('span');
+    ema5El.className = 'text-[#f5c451]';
+    const ema10El = global.document.createElement('span');
+    ema10El.className = 'text-[#8ab8ff]';
+    const volEl = global.document.createElement('span');
+    volEl.className = 'text-[#9fb0c5]';
+    footer.append(ema5El, ema10El, volEl);
+
+    modalTooltip.replaceChildren(header, ohlc, footer);
+    tooltipRefs = { timeEl, chgEl, oEl, hEl, lEl, cEl, ema5El, ema10El, volEl };
+    return tooltipRefs;
+  }
+
+  function renderModalBaseChart(ctx, visibleCandles, w, h) {
     const topPadding = 14;
     const bottomAxisH = 22;
     const plotH = Math.max(96, h - bottomAxisH);
@@ -281,10 +309,9 @@
     drawEmaLine('ema5', '#f0b429');
     drawEmaLine('ema10', '#60a5fa');
 
-    const last = visibleCandles[visibleCandles.length - 1];
-    if (last) {
-      const lastY = getY(last.close);
-      const isBull = last.close >= last.open;
+    if (lastCandle) {
+      const lastY = getY(lastCandle.close);
+      const isBull = lastCandle.close >= lastCandle.open;
       ctx.beginPath();
       ctx.setLineDash([3, 3]);
       ctx.strokeStyle = isBull ? '#22c58b' : '#f25565';
@@ -297,8 +324,61 @@
       ctx.fillRect(chartW + 2, lastY - 9, rightPadding - 4, 18);
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 10px "JetBrains Mono", "SF Mono", monospace';
-      ctx.fillText(formatCryptoPrice(last.close), chartW + 6, lastY + 4);
+      ctx.fillText(formatCryptoPrice(lastCandle.close), chartW + 6, lastY + 4);
     }
+
+    return { n, slot, plotH, chartW, rightPadding, getY };
+  }
+
+  function renderModalChart() {
+    if (!modalCanvas || !modalNativeView || !modalCandles.length) return;
+    const ctx = modalCanvas.getContext('2d');
+    if (!ctx) return;
+
+    const visibleCandles = modalCandles.slice(-modalVisibleBars);
+    if (!visibleCandles.length) return;
+
+    const dpr = global.devicePixelRatio || 1;
+    const w = modalNativeView.clientWidth;
+    const h = modalNativeView.clientHeight;
+    if (w <= 0 || h <= 0) return;
+
+    const targetW = Math.round(w * dpr);
+    const targetH = Math.round(h * dpr);
+    if (modalCanvas.width !== targetW || modalCanvas.height !== targetH) {
+      modalCanvas.width = targetW;
+      modalCanvas.height = targetH;
+    }
+
+    const lastCandle = visibleCandles[visibleCandles.length - 1];
+    const nextBaseKey = `${modalCurrentSymbol}:${modalCurrentInterval}:${modalVisibleBars}:${visibleCandles.length}:${lastCandle ? lastCandle.time : 0}:${targetW}x${targetH}:${dpr}`;
+
+    if (typeof global.document !== 'undefined' && typeof global.document.createElement === 'function') {
+      if (!baseChartCanvas) {
+        baseChartCanvas = global.document.createElement('canvas');
+      }
+      if (baseChartCanvas.width !== targetW || baseChartCanvas.height !== targetH) {
+        baseChartCanvas.width = targetW;
+        baseChartCanvas.height = targetH;
+        baseChartKey = '';
+      }
+      if (baseChartKey !== nextBaseKey || !modalChartMetrics) {
+        const baseCtx = baseChartCanvas.getContext('2d');
+        if (baseCtx) {
+          baseCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          modalChartMetrics = renderModalBaseChart(baseCtx, visibleCandles, w, h);
+          baseChartKey = nextBaseKey;
+        }
+      }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(baseChartCanvas, 0, 0);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    } else {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      modalChartMetrics = renderModalBaseChart(ctx, visibleCandles, w, h);
+    }
+
+    const { n, slot, plotH, chartW, rightPadding, getY } = modalChartMetrics;
 
     if (modalHoverIndex >= 0 && modalHoverIndex < n && modalTooltip) {
       const c = visibleCandles[modalHoverIndex];
@@ -355,23 +435,19 @@
         modalTooltip.style.right = 'auto';
       }
 
-      modalTooltip.innerHTML = `
-        <div class="flex items-center gap-2 mb-1">
-          <span class="text-[#f1f5f9] font-bold">${escapeHtml(timeStr)}</span>
-          <span class="${isBull ? 'text-[#38d99f]' : 'text-[#f8717e]'} font-bold">${escapeHtml(chgLabel)}</span>
-        </div>
-        <div class="grid grid-cols-4 gap-x-3 gap-y-0.5 text-[#9fb0c5]">
-          <div>开 <span class="text-[#f1f5f9]">${escapeHtml(formatCryptoPrice(c.open))}</span></div>
-          <div>高 <span class="text-[#f1f5f9]">${escapeHtml(formatCryptoPrice(c.high))}</span></div>
-          <div>低 <span class="text-[#f1f5f9]">${escapeHtml(formatCryptoPrice(c.low))}</span></div>
-          <div>收 <span class="text-[#f1f5f9]">${escapeHtml(formatCryptoPrice(c.close))}</span></div>
-        </div>
-        <div class="flex items-center gap-3 mt-1 pt-1 border-t border-[#222b38] text-[10px]">
-          <span class="text-[#f5c451]">EMA5 ${escapeHtml(formatCryptoPrice(c.ema5))}</span>
-          <span class="text-[#8ab8ff]">EMA10 ${escapeHtml(formatCryptoPrice(c.ema10))}</span>
-          <span class="text-[#9fb0c5]">成交量 ${escapeHtml(formatCompactVolume(c.volume))}</span>
-        </div>
-      `;
+      const refs = ensureTooltipNodes();
+      if (refs) {
+        refs.timeEl.textContent = timeStr;
+        refs.chgEl.textContent = chgLabel;
+        refs.chgEl.className = `${isBull ? 'text-[#38d99f]' : 'text-[#f8717e]'} font-bold`;
+        refs.oEl.textContent = formatCryptoPrice(c.open);
+        refs.hEl.textContent = formatCryptoPrice(c.high);
+        refs.lEl.textContent = formatCryptoPrice(c.low);
+        refs.cEl.textContent = formatCryptoPrice(c.close);
+        refs.ema5El.textContent = `EMA5 ${formatCryptoPrice(c.ema5)}`;
+        refs.ema10El.textContent = `EMA10 ${formatCryptoPrice(c.ema10)}`;
+        refs.volEl.textContent = `成交量 ${formatCompactVolume(c.volume)}`;
+      }
       modalTooltip.classList.remove('hidden');
     } else if (modalTooltip) {
       modalTooltip.classList.add('hidden');
@@ -381,13 +457,13 @@
   function clearModalChartDisplay() {
     modalCandles = [];
     modalHoverIndex = -1;
+    baseChartKey = '';
+    modalChartMetrics = null;
     if (modalTooltip) modalTooltip.classList.add('hidden');
     if (modalChartPrice) {
       modalChartPrice.textContent = '--';
-      modalChartPrice.className = 'font-mono tabular-nums text-[#38d99f] font-bold text-sm';
+      modalChartPrice.className = 'font-mono tabular-nums text-[#38d99f] font-bold text-xs sm:text-[13px]';
     }
-    if (modalHudEma5) modalHudEma5.textContent = '--';
-    if (modalHudEma10) modalHudEma10.textContent = '--';
     if (modalCanvas && typeof modalCanvas.getContext === 'function') {
       const ctx = modalCanvas.getContext('2d');
       if (ctx) {
@@ -460,9 +536,7 @@
       if (last && modalChartPrice) {
         const isUp = last.close >= last.open;
         modalChartPrice.textContent = formatCryptoPrice(last.close);
-        modalChartPrice.className = `font-mono tabular-nums font-bold text-sm ${isUp ? 'text-[#38d99f]' : 'text-[#f8717e]'}`;
-        if (modalHudEma5) modalHudEma5.textContent = formatCryptoPrice(last.ema5);
-        if (modalHudEma10) modalHudEma10.textContent = formatCryptoPrice(last.ema10);
+        modalChartPrice.className = `font-mono tabular-nums font-bold text-xs sm:text-[13px] ${isUp ? 'text-[#38d99f]' : 'text-[#f8717e]'}`;
       }
       renderModalChart();
     } catch (err) {
@@ -569,9 +643,9 @@
     });
   });
 
-  document.querySelectorAll('.modal-interval-btn').forEach((btn) => {
+  modalIntervalBtns.forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.modal-interval-btn').forEach((b) => {
+      modalIntervalBtns.forEach((b) => {
         b.classList.remove('bg-[#192231]', 'text-[#f1f5f9]', 'font-semibold');
         b.classList.add('hover:bg-[#151c27]', 'text-[#9fb0c5]');
       });
@@ -665,7 +739,7 @@
   }
   global.addEventListener('resize', () => {
     if (chartModal && chartModal.open && modalActiveEngine === 'native') {
-      renderModalChart();
+      scheduleModalRender();
     }
   });
 
