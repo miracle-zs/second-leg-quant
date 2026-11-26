@@ -258,7 +258,7 @@ class AccountAnalyticsEngine:
                 fee_rate=self.fee_rate,
                 default_leverage=self.default_leverage,
             )
-            income_agg = aggregate_income_ledger(income_list)
+            income_agg = aggregate_income_ledger(income_list, start_ms=cutoff)
             net_transfers_val = float(income_agg["net_transfer_usdt"])
             effective_transfers = net_transfers_val if net_transfers_val > 0 else None
             funding_fee_usdt = float(income_agg["funding_fee_usdt"])
@@ -273,7 +273,11 @@ class AccountAnalyticsEngine:
                 income_agg["transfers"],
             )
             daily_pnl_db = build_db_daily_pnl(
-                income_list, trade_history, initial_equity, income_agg=income_agg
+                income_list,
+                trade_history,
+                initial_equity,
+                income_agg=income_agg,
+                start_ms=cutoff,
             )
             summary, equity_curve, daily_pnl = calculate_quant_risk_metrics(
                 trades=trade_history,

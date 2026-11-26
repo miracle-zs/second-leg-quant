@@ -115,16 +115,16 @@ def _build_local_trade_index(
     return indexed
 
 
-def _pop_indexed_local_trade(
+def _find_indexed_local_trade(
     sym: str,
     closed_sec: float,
     indexed: Dict[str, Tuple[List[float], List[Tuple[int, Optional[str], float, Mapping[str, Any]]]]],
     used_indices: set[int],
     side: Optional[str] = None,
-) -> Optional[Mapping[str, Any]]:
+) -> Tuple[Optional[int], Optional[Mapping[str, Any]]]:
     bucket = indexed.get(sym)
     if bucket is None:
-        return None
+        return None, None
     timestamps, entries = bucket
     pos = bisect_left(timestamps, closed_sec - _LOCAL_MATCH_WINDOW_SEC)
     best_idx: Optional[int] = None
@@ -145,17 +145,14 @@ def _pop_indexed_local_trade(
             best_idx = idx
             best_entry = loc
 
-    if best_idx is not None:
-        used_indices.add(best_idx)
-        return best_entry
-    return None
+    return best_idx, best_entry
 
 
 def _precompute_both_zero_close(
     sorted_fills: Sequence[Mapping[str, Any]],
     realized_by_trade: Mapping[Tuple[str, str], float],
 ) -> set[int]:
-    """O(N) 反向扫描预计算单向模式 (BOTH) 空队列 0 盈亏平仓下标集合。"""
+    """O(N) 预计算单向模式 (BOTH) 空队列/越界 0 盈亏盘前平仓下标集合。"""
     both_indices_by_sym: Dict[str, List[int]] = {}
     for idx, f in enumerate(sorted_fills):
         if str(f.get("positionSide") or "BOTH").upper() == "BOTH":
@@ -164,39 +161,122 @@ def _precompute_both_zero_close(
 
     zero_close_indices: set[int] = set()
     for sym, indices in both_indices_by_sym.items():
-        has_close_before_opp: Dict[str, bool] = {"BUY": False, "SELL": False}
-        next_opp: Dict[str, Optional[Tuple[Optional[float], object, float]]] = {"BUY": None, "SELL": None}
-        for idx in reversed(indices):
+        pos_side: Optional[str] = None
+        pos_qty = Decimal("0")
+        pos_notional = 0.0
+        tentative_indices: List[int] = []
+        confirmed_open = False
+
+        for idx in indices:
             g = sorted_fills[idx]
             g_side = str(g["side"]).upper()
-            opp_side = "SELL" if g_side == "BUY" else "BUY"
-            g_price = float(g["price"])
+            fill_dir_side = "LONG" if g_side == "BUY" else "SHORT"
+            qty = Decimal(str(g["qty"]))
+            price = float(g["price"])
+            quote_qty = float(g["quoteQty"]) if g.get("quoteQty") is not None else (price * float(qty))
             g_key = (sym, str(g["id"]))
             g_income_rpnl = realized_by_trade.get(g_key)
             g_raw_rpnl = g.get("realizedPnl")
-            g_has_nonzero_rpnl = g_raw_rpnl is not None and abs(float(g_raw_rpnl)) > 1e-12
+            g_parsed_rpnl = float(g_raw_rpnl) if g_raw_rpnl is not None else None
+            g_has_nonzero_rpnl = g_parsed_rpnl is not None and abs(g_parsed_rpnl) > 1e-12
+            g_fill_realized = (
+                g_income_rpnl if g_income_rpnl is not None else (g_parsed_rpnl if g_has_nonzero_rpnl else None)
+            )
+            g_reduce_only = bool(g.get("reduceOnly"))
+            g_has_close_signal = g_fill_realized is not None or g_reduce_only
+            g_explicit_zero_rpnl = (
+                g_income_rpnl is None
+                and g_parsed_rpnl is not None
+                and abs(g_parsed_rpnl) <= 1e-12
+                and not g_reduce_only
+            )
 
-            is_zero_close = False
-            if has_close_before_opp.get(g_side):
-                is_zero_close = True
+            if pos_qty == 0:
+                if not g_has_close_signal:
+                    pos_side = fill_dir_side
+                    pos_qty = qty
+                    pos_notional = quote_qty
+                    tentative_indices = [idx] if g_explicit_zero_rpnl else []
+                    confirmed_open = False
+                continue
+
+            assert pos_side is not None
+            if fill_dir_side == pos_side:
+                if g_has_close_signal:
+                    # Same-side fill with realized PnL / reduceOnly proves prior tentative fills closed pre-recording inventory.
+                    zero_close_indices.update(tentative_indices)
+                    pos_side = None
+                    pos_qty = Decimal("0")
+                    pos_notional = 0.0
+                    tentative_indices = []
+                    confirmed_open = False
+                else:
+                    pos_qty += qty
+                    pos_notional += quote_qty
+                    if not confirmed_open and g_explicit_zero_rpnl:
+                        tentative_indices.append(idx)
+                continue
+
+            avg_entry = pos_notional / float(pos_qty)
+            if g_explicit_zero_rpnl:
+                price_matches = abs(price - avg_entry) <= max(1e-8, avg_entry * 1e-6)
+                if price_matches:
+                    if qty < pos_qty:
+                        pos_qty -= qty
+                        pos_notional = avg_entry * float(pos_qty)
+                    elif qty == pos_qty:
+                        pos_side = None
+                        pos_qty = Decimal("0")
+                        pos_notional = 0.0
+                        tentative_indices = []
+                        confirmed_open = False
+                    else:
+                        rem_qty = qty - pos_qty
+                        pos_side = fill_dir_side
+                        pos_qty = rem_qty
+                        pos_notional = quote_qty * float(rem_qty / qty)
+                        tentative_indices = [idx]
+                        confirmed_open = False
+                else:
+                    # Zero-PnL opposite fill at a different price contradicts tentative open lots.
+                    zero_close_indices.update(tentative_indices)
+                    pos_side = fill_dir_side
+                    pos_qty = qty
+                    pos_notional = quote_qty
+                    tentative_indices = [idx]
+                    confirmed_open = False
+                continue
+
+            if qty <= pos_qty or g_reduce_only:
+                if qty < pos_qty:
+                    pos_qty -= qty
+                    pos_notional = avg_entry * float(pos_qty)
+                else:
+                    pos_side = None
+                    pos_qty = Decimal("0")
+                    pos_notional = 0.0
+                    tentative_indices = []
+                    confirmed_open = False
             else:
-                opp_info = next_opp.get(g_side)
-                if opp_info is not None:
-                    opp_inc, opp_raw, opp_price = opp_info
-                    if (
-                        opp_inc is None
-                        and opp_raw is not None
-                        and abs(float(opp_raw)) <= 1e-12
-                        and abs(opp_price - g_price) > max(1e-8, g_price * 1e-6)
-                    ):
-                        is_zero_close = True
-            if is_zero_close:
-                zero_close_indices.add(idx)
-
-            if g_income_rpnl is not None or g_has_nonzero_rpnl or bool(g.get("reduceOnly")):
-                has_close_before_opp[g_side] = True
-            has_close_before_opp[opp_side] = False
-            next_opp[opp_side] = (g_income_rpnl, g_raw_rpnl, g_price)
+                direction = 1.0 if pos_side == "LONG" else -1.0
+                known_ratio = float(pos_qty / qty)
+                known_close_notional = quote_qty * known_ratio
+                expected_known_rpnl = (known_close_notional - pos_notional) * direction
+                tol = max(1e-3, abs(expected_known_rpnl) * 0.02, known_close_notional * 1e-4)
+                is_pre_recording_close = g_fill_realized is not None and abs(g_fill_realized - expected_known_rpnl) > tol
+                if is_pre_recording_close:
+                    pos_side = None
+                    pos_qty = Decimal("0")
+                    pos_notional = 0.0
+                    tentative_indices = []
+                    confirmed_open = False
+                else:
+                    rem_qty = qty - pos_qty
+                    pos_side = fill_dir_side
+                    pos_qty = rem_qty
+                    pos_notional = quote_qty * float(rem_qty / qty)
+                    tentative_indices = []
+                    confirmed_open = True
 
     return zero_close_indices
 
@@ -515,9 +595,11 @@ def reconstruct_binance_trades(
             duration_str = "--"
             entry_time = "--"
 
-        matched_local = _pop_indexed_local_trade(
+        matched_idx, matched_local = _find_indexed_local_trade(
             sym, closed_ts / 1000.0, local_index, used_local_indices, side=side
         )
+        if matched_idx is not None:
+            used_local_indices.add(matched_idx)
         trendline_id, trendline_label, trendline_info = _extract_trendline_meta(
             matched_local.get("trendline") if matched_local else None
         )
@@ -640,7 +722,9 @@ def reconstruct_binance_trades(
         non_usdt = {k: round(v, 6) for k, v in non_usdt.items() if v > 0}
         net_pnl = round(realized_pnl - fee, 4)
 
-        matched_local = _pop_indexed_local_trade(sym, closed_ts / 1000.0, local_index, used_local_indices)
+        matched_idx, matched_local = _find_indexed_local_trade(
+            sym, closed_ts / 1000.0, local_index, used_local_indices
+        )
         pnl_consistent = False
         if matched_local:
             enriched = enrich_trade_record(
@@ -655,6 +739,8 @@ def reconstruct_binance_trades(
                 and abs(local_realized - realized_pnl) <= max(0.05, abs(realized_pnl) * 0.05)
             )
             if pnl_consistent:
+                assert matched_idx is not None
+                used_local_indices.add(matched_idx)
                 enriched["realized_pnl"] = realized_pnl
                 enriched["fee"] = fee
                 enriched["non_usdt_fees"] = non_usdt

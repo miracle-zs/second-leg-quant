@@ -119,7 +119,11 @@ def compute_risk_ratios(
     return sharpe, sortino, "DAILY_RETURNS"
 
 
-def aggregate_income_ledger(income_list: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+def aggregate_income_ledger(
+    income_list: Sequence[Mapping[str, Any]],
+    *,
+    start_ms: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Aggregate Binance income events in a single pass for transfers, commissions,
     non-USDT fees, funding fees, coverage window, and per-day Beijing buckets.
@@ -159,10 +163,11 @@ def aggregate_income_ledger(income_list: Sequence[Mapping[str, Any]]) -> Dict[st
             continue
 
         if itype == "TRANSFER":
-            transfers.append((ts_ms, amount))
-            net_transfer_usdt += amount
-            d_str = get_beijing_time_str(ts_ms / 1000.0)[:10]
-            transfers_by_date[d_str] = transfers_by_date.get(d_str, 0.0) + amount
+            if start_ms is None or ts_ms > start_ms:
+                transfers.append((ts_ms, amount))
+                net_transfer_usdt += amount
+                d_str = get_beijing_time_str(ts_ms / 1000.0)[:10]
+                transfers_by_date[d_str] = transfers_by_date.get(d_str, 0.0) + amount
         elif itype == "FUNDING_FEE":
             funding_fee_usdt += amount
         elif itype == "COMMISSION":
@@ -233,39 +238,50 @@ def _recompute_curve_drawdowns(
 
     for idx, pt in enumerate(equity_curve):
         pt_ts = int(pt["timestamp"])
-        while transfer_idx < len(effective_transfers) and effective_transfers[transfer_idx][0] <= pt_ts:
-            net_flow += effective_transfers[transfer_idx][1]
-            transfer_idx += 1
-        raw_eq = raw_equities[idx] if raw_equities is not None else float(pt["equity"])
-        adjusted_equity = raw_eq - net_flow
-        peak_adjusted = max(peak_adjusted, adjusted_equity)
-        stored_peak = pt.get("peak_adjusted_equity")
-        if stored_peak is not None:
-            peak_adjusted = max(peak_adjusted, float(stored_peak))
-        peak_capital_base = max(peak_capital_base, peak_adjusted, initial_equity + max(0.0, net_flow))
-        stored_cap = pt.get("peak_capital_base")
-        if stored_cap is not None:
-            peak_capital_base = max(peak_capital_base, float(stored_cap))
+        if raw_equities is not None:
+            samples: Sequence[Tuple[int, float]] = ((pt_ts, raw_equities[idx]),)
+        elif pt.get("bucket_samples"):
+            samples = [(int(s[0]), float(s[1])) for s in pt["bucket_samples"]]
+        else:
+            raw_eq = float(pt["raw_equity"]) if pt.get("raw_equity") is not None else float(pt["equity"])
+            samples = ((pt_ts, raw_eq),)
 
-        drawdown = max(0.0, peak_adjusted - adjusted_equity)
-        dd_usd = round(drawdown, 2)
-        dd_num = dd_usd if raw_equities is not None else drawdown
-        dd_pct = round(dd_num / peak_capital_base * 100.0, 2) if peak_capital_base > 0 else 0.0
+        bucket_max_dd_usd = 0.0
+        bucket_max_dd_pct = 0.0
+        adjusted_equity = initial_equity
+        dd_usd = 0.0
+        dd_pct = 0.0
+
+        for s_ts, s_raw_eq in samples:
+            while transfer_idx < len(effective_transfers) and effective_transfers[transfer_idx][0] <= s_ts:
+                net_flow += effective_transfers[transfer_idx][1]
+                transfer_idx += 1
+            adjusted_equity = s_raw_eq - net_flow
+            peak_adjusted = max(peak_adjusted, adjusted_equity)
+            peak_capital_base = max(peak_capital_base, peak_adjusted, initial_equity + max(0.0, net_flow))
+
+            drawdown = max(0.0, peak_adjusted - adjusted_equity)
+            dd_usd = round(drawdown, 2)
+            dd_num = dd_usd if raw_equities is not None else drawdown
+            dd_pct = round(dd_num / peak_capital_base * 100.0, 2) if peak_capital_base > 0 else 0.0
+            bucket_max_dd_usd = max(bucket_max_dd_usd, dd_usd)
+            bucket_max_dd_pct = max(bucket_max_dd_pct, dd_pct)
+            max_dd_usd = max(max_dd_usd, dd_usd)
+            max_dd_pct = max(max_dd_pct, dd_pct)
+
         pt["cumulative_pnl"] = round(adjusted_equity - initial_equity, 2)
         pt["drawdown_usd"] = dd_usd
         pt["drawdown_pct"] = dd_pct
-        if "peak_adjusted_equity" in pt:
+        if len(samples) > 1 or "peak_adjusted_equity" in pt:
             pt["peak_adjusted_equity"] = peak_adjusted
-        if "peak_capital_base" in pt:
+        if len(samples) > 1 or "peak_capital_base" in pt:
             pt["peak_capital_base"] = peak_capital_base
-        if "bucket_max_dd_usd" in pt:
-            pt["bucket_max_dd_usd"] = max(float(pt["bucket_max_dd_usd"]), dd_usd)
-        if "bucket_max_dd_pct" in pt:
-            pt["bucket_max_dd_pct"] = max(float(pt["bucket_max_dd_pct"]), dd_pct)
+        if len(samples) > 1 or "bucket_max_dd_usd" in pt:
+            pt["bucket_max_dd_usd"] = bucket_max_dd_usd
+        if len(samples) > 1 or "bucket_max_dd_pct" in pt:
+            pt["bucket_max_dd_pct"] = bucket_max_dd_pct
         last_dd_usd = dd_usd
         last_dd_pct = dd_pct
-        max_dd_usd = max(max_dd_usd, dd_usd)
-        max_dd_pct = max(max_dd_pct, dd_pct)
 
     return peak_adjusted, peak_capital_base, last_dd_usd, last_dd_pct, max_dd_usd, max_dd_pct
 
@@ -425,6 +441,7 @@ def build_db_equity_curve(
         "timestamp": current_ms,
         "datetime": get_beijing_time_str(current_ms / 1000.0),
         "equity": round(equity, 2),
+        "raw_equity": equity,
         "cash": round(wallet_balance, 2),
         "event": "币安账户快照",
     }
@@ -437,15 +454,23 @@ def build_db_equity_curve(
     same_ts = bool(equity_curve) and int(equity_curve[-1]["timestamp"]) == current_ms
     if same_bucket or same_ts:
         prev_pt = equity_curve[-1]
-        prev_peak_adj, prev_peak_cap, prev_dd_usd, prev_dd_pct, _, _ = _recompute_curve_drawdowns(
-            equity_curve, initial_equity, effective_transfers
-        )
-        new_point["peak_adjusted_equity"] = prev_peak_adj
-        new_point["peak_capital_base"] = prev_peak_cap
-        new_point["bucket_max_dd_usd"] = max(prev_dd_usd, float(prev_pt.get("bucket_max_dd_usd") or 0.0))
-        new_point["bucket_max_dd_pct"] = max(prev_dd_pct, float(prev_pt.get("bucket_max_dd_pct") or 0.0))
+        if prev_pt.get("bucket_samples"):
+            samples = [[int(s[0]), float(s[1])] for s in prev_pt["bucket_samples"]]
+        else:
+            prev_raw_eq = float(prev_pt["raw_equity"]) if prev_pt.get("raw_equity") is not None else float(prev_pt["equity"])
+            samples = [[int(prev_pt["timestamp"]), prev_raw_eq]]
+        if samples and int(samples[-1][0]) == current_ms:
+            samples[-1][1] = equity
+        elif len(samples) >= 2 and samples[-1][1] == equity and samples[-2][1] == equity and current_ms >= int(samples[-1][0]):
+            samples[-1][0] = current_ms
+        else:
+            samples.append([current_ms, equity])
+            if len(samples) >= 2 and int(samples[-1][0]) < int(samples[-2][0]):
+                samples.sort(key=lambda s: int(s[0]))
+        new_point["bucket_samples"] = samples
         equity_curve[-1] = new_point
     else:
+        new_point["bucket_samples"] = [[current_ms, equity]]
         equity_curve.append(new_point)
 
     _recompute_curve_drawdowns(equity_curve, initial_equity, effective_transfers)
@@ -459,11 +484,19 @@ def build_db_daily_pnl(
     initial_equity: float,
     *,
     income_agg: Optional[Mapping[str, Any]] = None,
+    start_ms: Optional[int] = None,
 ) -> List[dict]:
     """Build transfer-aware Beijing-date daily PnL combining trade outcomes and ledger cashflows."""
-    agg = income_agg if income_agg is not None else aggregate_income_ledger(income_list)
+    agg = income_agg if income_agg is not None else aggregate_income_ledger(income_list, start_ms=start_ms)
     daily_income: Mapping[str, Mapping[str, float]] = agg["daily_income"]
-    transfers_by_date: Mapping[str, float] = agg["transfers_by_date"]
+    if start_ms is not None and income_agg is not None:
+        transfers_by_date: Dict[str, float] = {}
+        for ts_ms, amt in agg["transfers"]:
+            if int(ts_ms) > start_ms:
+                d_str = get_beijing_time_str(int(ts_ms) / 1000.0)[:10]
+                transfers_by_date[d_str] = transfers_by_date.get(d_str, 0.0) + float(amt)
+    else:
+        transfers_by_date = agg["transfers_by_date"]
 
     def _get_day_bucket(d_str: str) -> dict[str, Any]:
         return daily_by_date.setdefault(d_str, {
@@ -614,8 +647,8 @@ def calculate_quant_risk_metrics(
     avg_loss = round((gross_loss / loss_count), 2) if loss_count > 0 else 0.0
     payoff_ratio: Optional[float] = round(avg_win / avg_loss, 2) if avg_loss > 1e-4 else None
 
-    largest_win_usd = max((float(t["net_pnl"]) for t in priced_trades), default=0.0)
-    largest_loss_usd = min((float(t["net_pnl"]) for t in priced_trades), default=0.0)
+    largest_win_usd = max((float(t["net_pnl"]) for t in winning_trades), default=0.0)
+    largest_loss_usd = min((float(t["net_pnl"]) for t in losing_trades), default=0.0)
 
     max_consecutive_wins = 0
     max_consecutive_losses = 0

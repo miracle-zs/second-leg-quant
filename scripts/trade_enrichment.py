@@ -143,21 +143,24 @@ def _resolve_close_reason(
     status = str(raw.get("status") or "").upper()
     trailing_triggered = bool(raw.get("trailing_stop_triggered", False))
     direction = 1.0 if side == "LONG" else -1.0
+    is_non_loss_exit = entry_price > 0 and exit_price > 0 and (exit_price - entry_price) * direction >= 0
 
-    if trailing_triggered or "TRAILING" in status:
+    if status == "PROFIT_LOCKED" or "TRAILING" in status:
         return "动态移动保本锁利", "TRAILING_PROFIT_LOCK"
     if status == "STOP_LOSS_TRIGGERED":
-        if entry_price > 0 and (exit_price - entry_price) * direction >= 0:
+        if is_non_loss_exit:
             return "动态移动保本锁利", "TRAILING_PROFIT_LOCK"
         return "跌破趋势线止损", "TRENDLINE_BREAK_STOP"
     if status == "BREAK_TRENDLINE_STOP":
         return "跌破趋势线止损", "TRENDLINE_BREAK_STOP"
-    if status == "BINANCE_POSITION_CLOSED":
-        return "币安实盘平仓", "BINANCE_AUTO_CLOSED"
     if status == "MANUAL_CLOSE":
         return "手动平仓", "MANUAL_CLOSE"
     if status == "TAKE_PROFIT":
         return "止盈离场", "TAKE_PROFIT"
+    if trailing_triggered and is_non_loss_exit:
+        return "动态移动保本锁利", "TRAILING_PROFIT_LOCK"
+    if status == "BINANCE_POSITION_CLOSED":
+        return "币安实盘平仓", "BINANCE_AUTO_CLOSED"
     return str(raw.get("notes") or status or "平仓归档"), "OTHER_CLOSE"
 
 

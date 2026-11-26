@@ -40,7 +40,9 @@ import binance_position_client as bpc  # noqa: E402
 import db_store  # noqa: E402
 import http_client  # noqa: E402
 import ledger_sync  # noqa: E402
+import quant_metrics as qm  # noqa: E402
 import trade_alert_daemon as tad  # noqa: E402
+import trade_enrichment as te  # noqa: E402
 import trade_reconstructor as tr  # noqa: E402
 
 
@@ -841,6 +843,271 @@ class TestAccountFailFastRegressionFixes(unittest.TestCase):
             fake_client.get_income.return_value = []
             with self.assertRaises(TypeError):
                 ledger_sync.sync_db_ledger(fake_client, db_path, {"totalMarginBalance": "1000"}, [], None)
+
+
+class TestLedgerBugfixRegressions(unittest.TestCase):
+    def test_both_mode_multi_fill_breakeven_close_not_misclassified_as_phantom_short(self):
+        # BUY 1@100 + BUY 1@102 then SELL 2@101 (realizedPnl=0) must reconstruct 1 LONG breakeven trade.
+        fills = [
+            {"symbol": "BTCUSDT", "id": 1, "orderId": 1, "side": "BUY", "positionSide": "BOTH", "time": 1000, "price": "100", "qty": "1", "quoteQty": "100", "realizedPnl": "0"},
+            {"symbol": "BTCUSDT", "id": 2, "orderId": 2, "side": "BUY", "positionSide": "BOTH", "time": 2000, "price": "102", "qty": "1", "quoteQty": "102", "realizedPnl": "0"},
+            {"symbol": "BTCUSDT", "id": 3, "orderId": 3, "side": "SELL", "positionSide": "BOTH", "time": 3000, "price": "101", "qty": "2", "quoteQty": "202", "realizedPnl": "0"},
+        ]
+        trades, open_fee = tr.reconstruct_binance_trades([], [], fills)
+        self.assertEqual(open_fee, 0.0)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["side"], "LONG")
+        self.assertAlmostEqual(trades[0]["amount"], 2.0)
+        self.assertAlmostEqual(trades[0]["entry_price"], 101.0)
+        self.assertAlmostEqual(trades[0]["exit_price"], 101.0)
+        self.assertAlmostEqual(trades[0]["realized_pnl"], 0.0)
+
+        # Partial close at weighted-average breakeven followed by profit close on remaining qty
+        fills_partial = [
+            {"symbol": "ETHUSDT", "id": 10, "orderId": 10, "side": "BUY", "positionSide": "BOTH", "time": 1000, "price": "100", "qty": "1", "quoteQty": "100", "realizedPnl": "0"},
+            {"symbol": "ETHUSDT", "id": 11, "orderId": 11, "side": "BUY", "positionSide": "BOTH", "time": 2000, "price": "102", "qty": "1", "quoteQty": "102", "realizedPnl": "0"},
+            {"symbol": "ETHUSDT", "id": 12, "orderId": 12, "side": "SELL", "positionSide": "BOTH", "time": 3000, "price": "101", "qty": "1", "quoteQty": "101", "realizedPnl": "0"},
+            {"symbol": "ETHUSDT", "id": 13, "orderId": 13, "side": "SELL", "positionSide": "BOTH", "time": 4000, "price": "105", "qty": "1", "quoteQty": "105", "realizedPnl": "4"},
+        ]
+        trades_partial, _ = tr.reconstruct_binance_trades([], [], fills_partial)
+        self.assertEqual(len(trades_partial), 2)
+        self.assertTrue(all(t["side"] == "LONG" for t in trades_partial))
+        self.assertAlmostEqual(sum(t["realized_pnl"] for t in trades_partial), 5.0)
+
+        # Genuine multi-fill pre-recording 0-PnL close followed by opposite-side open still works
+        fills_pre = [
+            {"symbol": "SOLUSDT", "id": 20, "orderId": 20, "side": "SELL", "positionSide": "BOTH", "time": 1000, "price": "100", "qty": "1", "quoteQty": "100", "realizedPnl": "0"},
+            {"symbol": "SOLUSDT", "id": 21, "orderId": 21, "side": "SELL", "positionSide": "BOTH", "time": 2000, "price": "102", "qty": "1", "quoteQty": "102", "realizedPnl": "0"},
+            {"symbol": "SOLUSDT", "id": 22, "orderId": 22, "side": "BUY", "positionSide": "BOTH", "time": 3000, "price": "105", "qty": "1", "quoteQty": "105", "realizedPnl": "0"},
+        ]
+        trades_pre, _ = tr.reconstruct_binance_trades([], [], fills_pre)
+        self.assertEqual(len(trades_pre), 2)
+        self.assertTrue(all(t["side"] == "LONG" for t in trades_pre))
+        self.assertTrue(all(t["realized_pnl"] == 0.0 for t in trades_pre))
+
+    def test_inconsistent_local_match_does_not_burn_record_for_next_cluster(self):
+        t0 = 1795200000
+        local_history = [
+            {
+                "symbol": "ETHUSDT",
+                "side": "LONG",
+                "entry_price": 100.0,
+                "exit_price": 150.0,
+                "amount": 1.0,  # realized_pnl = +50
+                "entry_time": aae.get_beijing_time_str(t0 - 600),
+                "closed_at": aae.get_beijing_time_str(t0 + 2),
+                "status": "PROFIT_LOCKED",
+                "trendline": {"id": "TL_GOOD", "p1": 110, "p2": 105},
+            }
+        ]
+        # Cluster 1 at t0 (+5 PnL) fails pnl_consistent; Cluster 2 at t0+10s (+50 PnL) must still match TL_GOOD.
+        income = [
+            {"symbol": "ETHUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "tradeId": "1", "time": t0 * 1000, "income": "5", "asset": "USDT"},
+            {"symbol": "ETHUSDT", "incomeType": "REALIZED_PNL", "tranId": 2, "tradeId": "2", "time": (t0 + 10) * 1000, "income": "50", "asset": "USDT"},
+        ]
+        trades, _ = tr.reconstruct_binance_trades(income, local_history, fills=[])
+        self.assertEqual(len(trades), 2)
+        self.assertEqual(trades[0]["source"], "BINANCE_REALTIME")
+        self.assertIsNone(trades[0]["trendline_id"])
+        self.assertEqual(trades[1]["source"], "BINANCE_REALTIME_VERIFIED")
+        self.assertEqual(trades[1]["trendline_id"], "TL_GOOD")
+        self.assertEqual(trades[1]["close_reason_code"], "TRAILING_PROFIT_LOCK")
+
+    def test_resolve_close_reason_handles_profit_locked_and_stop_losses_with_trailing_flag(self):
+        # Losing STOP_LOSS_TRIGGERED even if trailing_stop_triggered=True must remain trendline stop loss.
+        losing_sl = te.enrich_trade_record(
+            {
+                "symbol": "BTCUSDT",
+                "side": "LONG",
+                "entry_price": 100.0,
+                "exit_price": 95.0,
+                "amount": 1.0,
+                "trailing_stop_triggered": True,
+                "status": "STOP_LOSS_TRIGGERED",
+            },
+            0,
+        )
+        self.assertEqual(losing_sl["close_reason"], "跌破趋势线止损")
+        self.assertEqual(losing_sl["close_reason_code"], "TRENDLINE_BREAK_STOP")
+
+        # Missing exit_price on SHORT STOP_LOSS_TRIGGERED must not treat 0.0 as profitable exit.
+        short_no_exit = te.enrich_trade_record(
+            {
+                "symbol": "BTCUSDT",
+                "side": "SHORT",
+                "entry_price": 100.0,
+                "amount": 1.0,
+                "trailing_stop_triggered": True,
+                "status": "STOP_LOSS_TRIGGERED",
+            },
+            1,
+        )
+        self.assertEqual(short_no_exit["close_reason_code"], "TRENDLINE_BREAK_STOP")
+
+        # BREAK_TRENDLINE_STOP and MANUAL_CLOSE take precedence over trailing_stop_triggered.
+        break_sl = te.enrich_trade_record(
+            {
+                "symbol": "ETHUSDT",
+                "side": "LONG",
+                "entry_price": 100.0,
+                "exit_price": 101.0,
+                "amount": 1.0,
+                "trailing_stop_triggered": True,
+                "status": "BREAK_TRENDLINE_STOP",
+            },
+            2,
+        )
+        self.assertEqual(break_sl["close_reason_code"], "TRENDLINE_BREAK_STOP")
+
+        manual = te.enrich_trade_record(
+            {
+                "symbol": "ETHUSDT",
+                "side": "LONG",
+                "entry_price": 100.0,
+                "exit_price": 101.0,
+                "amount": 1.0,
+                "trailing_stop_triggered": True,
+                "status": "MANUAL_CLOSE",
+            },
+            3,
+        )
+        self.assertEqual(manual["close_reason_code"], "MANUAL_CLOSE")
+
+        # Explicit PROFIT_LOCKED status maps to TRAILING_PROFIT_LOCK.
+        profit_locked = te.enrich_trade_record(
+            {
+                "symbol": "SOLUSDT",
+                "side": "LONG",
+                "entry_price": 100.0,
+                "exit_price": 101.0,
+                "amount": 1.0,
+                "status": "PROFIT_LOCKED",
+            },
+            4,
+        )
+        self.assertEqual(profit_locked["close_reason"], "动态移动保本锁利")
+        self.assertEqual(profit_locked["close_reason_code"], "TRAILING_PROFIT_LOCK")
+
+        # BINANCE_POSITION_CLOSED only becomes trailing lock when exit is non-losing.
+        bin_win = te._resolve_close_reason(
+            {"status": "BINANCE_POSITION_CLOSED", "trailing_stop_triggered": True},
+            exit_price=102.0,
+            entry_price=100.0,
+            side="LONG",
+        )
+        self.assertEqual(bin_win, ("动态移动保本锁利", "TRAILING_PROFIT_LOCK"))
+        bin_loss = te._resolve_close_reason(
+            {"status": "BINANCE_POSITION_CLOSED", "trailing_stop_triggered": True},
+            exit_price=98.0,
+            entry_price=100.0,
+            side="LONG",
+        )
+        self.assertEqual(bin_loss, ("币安实盘平仓", "BINANCE_AUTO_CLOSED"))
+
+    def test_largest_win_and_loss_default_to_zero_when_one_sided(self):
+        all_losses = [
+            {"symbol": "A", "net_pnl": -50.0, "realized_pnl": -50.0, "fee": 0.0, "closed_at": "2026-11-20 10:00:00", "close_reason": "SL"},
+            {"symbol": "B", "net_pnl": -20.0, "realized_pnl": -20.0, "fee": 0.0, "closed_at": "2026-11-20 11:00:00", "close_reason": "SL"},
+        ]
+        loss_summary, _, _ = qm.calculate_quant_risk_metrics(all_losses, [], None)
+        self.assertEqual(loss_summary["largest_win_usd"], 0.0)
+        self.assertEqual(loss_summary["largest_loss_usd"], -50.0)
+
+        all_wins = [
+            {"symbol": "A", "net_pnl": 20.0, "realized_pnl": 20.0, "fee": 0.0, "closed_at": "2026-11-20 10:00:00", "close_reason": "TP"},
+            {"symbol": "B", "net_pnl": 80.0, "realized_pnl": 80.0, "fee": 0.0, "closed_at": "2026-11-20 11:00:00", "close_reason": "TP"},
+        ]
+        win_summary, _, _ = qm.calculate_quant_risk_metrics(all_wins, [], None)
+        self.assertEqual(win_summary["largest_win_usd"], 80.0)
+        self.assertEqual(win_summary["largest_loss_usd"], 0.0)
+
+    def test_start_ms_transfer_boundary_consistent_strictly_gt_everywhere(self):
+        start_ms = int(te.parse_to_timestamp("2026-11-20 10:00:00") * 1000)
+        client = bc.BinanceFuturesClient("k", "s")
+        engine = aae.AccountAnalyticsEngine(client=client)
+        previous = {
+            "recording": {
+                "start_ms": start_ms,
+                "started_at": aae.get_beijing_time_str(start_ms / 1000.0),
+                "initial_equity": 1000.0,
+            },
+            "equity_curve": [],
+        }
+        income = [
+            {"incomeType": "TRANSFER", "tranId": 1, "time": start_ms, "income": "500", "asset": "USDT"},
+            {"incomeType": "TRANSFER", "tranId": 2, "time": start_ms + 1000, "income": "200", "asset": "USDT"},
+            {"incomeType": "REALIZED_PNL", "symbol": "BTCUSDT", "tranId": 3, "tradeId": "10", "time": start_ms + 2000, "income": "60", "asset": "USDT"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "boundary.sqlite3"
+            db_store.publish_report(db_path, previous)
+            with patch.object(client, "get_server_time", return_value=start_ms + 10_000), patch.object(
+                client,
+                "_send_signed_request",
+                side_effect=lambda endpoint, params=None: (
+                    {"totalWalletBalance": "1260", "totalMarginBalance": "1260"}
+                    if endpoint == "/fapi/v2/account"
+                    else (income if endpoint == "/fapi/v1/income" else [])
+                ),
+            ):
+                report = engine.run(database=db_path)
+
+        self.assertAlmostEqual(report["summary"]["net_external_transfers"], 200.0)
+        self.assertAlmostEqual(report["income_breakdown"]["transfer"], 200.0)
+        self.assertEqual(len(report["daily_pnl"]), 1)
+        self.assertAlmostEqual(report["daily_pnl"][0]["net_transfer"], 200.0)
+        self.assertAlmostEqual(report["daily_pnl"][0]["return_pct"], 5.0, places=2)
+        self.assertAlmostEqual(report["summary"]["total_return_pct"], 5.0, places=2)
+
+    def test_delayed_transfer_clears_artificial_drawdown_while_preserving_genuine_intra_bucket_dd(self):
+        start_ms = 1_800_000_000_000
+        recording = {
+            "start_ms": start_ms,
+            "started_at": aae.get_beijing_time_str(start_ms / 1000.0),
+            "initial_equity": 1000.0,
+        }
+
+        # 1) Genuine trading gain (+200 -> 1200), genuine trading drop (-150 -> 1050),
+        #    then delayed withdrawal (-400 at +35s -> 650 at +40s) before income API syncs it.
+        eq1, _ = qm.build_db_equity_curve(
+            recording, start_ms, None, {"totalMarginBalance": "1200", "totalWalletBalance": "1200"}, [], now_ms=start_ms + 20_000
+        )
+        eq2, _ = qm.build_db_equity_curve(
+            recording, None, {"recording": recording, "equity_curve": eq1}, {"totalMarginBalance": "1050", "totalWalletBalance": "1050"}, [], now_ms=start_ms + 30_000
+        )
+        eq3, _ = qm.build_db_equity_curve(
+            recording, None, {"recording": recording, "equity_curve": eq2}, {"totalMarginBalance": "650", "totalWalletBalance": "650"}, [], now_ms=start_ms + 40_000
+        )
+        # Before transfer sync, artificial drawdown is 550.
+        self.assertEqual(eq3[-1]["bucket_max_dd_usd"], 550.0)
+
+        # Next 5m bucket: delayed withdrawal (start_ms + 35_000, -400) finally syncs!
+        transfers = [(start_ms + 35_000, -400.0)]
+        eq4, flow4 = qm.build_db_equity_curve(
+            recording, None, {"recording": recording, "equity_curve": eq3}, {"totalMarginBalance": "650", "totalWalletBalance": "650"}, transfers, now_ms=start_ms + 360_000
+        )
+        self.assertEqual(flow4, -400.0)
+        self.assertEqual(eq4[1]["bucket_max_dd_usd"], 150.0)
+        self.assertEqual(eq4[1]["drawdown_usd"], 150.0)
+        summary, _, _ = qm.calculate_quant_risk_metrics([], [], None, equity_curve_override=eq4)
+        self.assertEqual(summary["max_drawdown_usd"], 150.0)
+
+        # 2) Delayed deposit: +500 arrives at +20s before income syncs it, inflating peak to 1500,
+        #    then syncs at +360s -> peak_adjusted_equity must correct back to 1000 with 0 drawdown.
+        dep1, _ = qm.build_db_equity_curve(
+            recording, start_ms, None, {"totalMarginBalance": "1500", "totalWalletBalance": "1500"}, [], now_ms=start_ms + 20_000
+        )
+        dep2, _ = qm.build_db_equity_curve(
+            recording, None, {"recording": recording, "equity_curve": dep1}, {"totalMarginBalance": "1500", "totalWalletBalance": "1500"}, [], now_ms=start_ms + 40_000
+        )
+        self.assertEqual(dep2[-1]["peak_adjusted_equity"], 1500.0)
+
+        dep3, _ = qm.build_db_equity_curve(
+            recording, None, {"recording": recording, "equity_curve": dep2}, {"totalMarginBalance": "1500", "totalWalletBalance": "1500"}, [(start_ms + 10_000, 500.0)], now_ms=start_ms + 360_000
+        )
+        self.assertEqual(dep3[1]["peak_adjusted_equity"], 1000.0)
+        self.assertEqual(dep3[1]["drawdown_usd"], 0.0)
+        self.assertEqual(dep3[-1]["drawdown_usd"], 0.0)
 
 
 if __name__ == "__main__":
