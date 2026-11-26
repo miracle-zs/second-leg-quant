@@ -18,6 +18,10 @@
   const chartInstances = {};
   const HISTORY_SORT = { column: 'closed_ts', asc: false };
   const VISIBILITY_COOLDOWN_MS = 5000;
+  const POLL_INTERVAL_MS = 30000;
+  const HISTORY_PAGE_SIZE = 50;
+  const MAX_EQUITY_CHART_POINTS = 500;
+  const CHART_CANVAS_IDS = ['chart-equity-curve', 'chart-daily-pnl', 'chart-win-loss', 'chart-pnl-dist'];
   let currentAccountData = null;
   let latestSnapshot = '';
   let lastEtag = null;
@@ -26,6 +30,11 @@
   let lastSuccessfulLoadAt = 0;
   let chartDefaultsConfigured = false;
   let historySearchTimer = null;
+  let pollTimerId = null;
+  let historyCurrentPage = 1;
+  let lastApiStatusHtml = '';
+  let lastApiStatusClass = '';
+  let lastLoadStatusSignature = '';
   let cachedEqGradient = null;
   let cachedEqGradientTop = null;
   let cachedEqGradientHeight = null;
@@ -98,30 +107,40 @@
     const badge = document.getElementById('api-status-badge');
     if (!badge) return;
 
+    let nextClassName = '';
+    let nextHtml = '';
+
     if (fetchError) {
-      badge.className = 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f25565]" aria-hidden="true"></span><span>数据拉取失败</span>';
-      return;
+      nextClassName = 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5';
+      nextHtml = '<span class="w-1.5 h-1.5 rounded-full bg-[#f25565]" aria-hidden="true"></span><span>数据拉取失败</span>';
+    } else {
+      const mode = (accountData && accountData.api_status && accountData.api_status.mode) || '';
+      if (mode === 'BINANCE_REALTIME') {
+        nextClassName = 'px-2 py-0.5 font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5';
+        nextHtml = '<span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span><span>币安实盘在线</span>';
+      } else if (mode === 'BINANCE_PARTIAL') {
+        nextClassName = 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5';
+        nextHtml = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安部分数据可用</span>';
+      } else if (mode === 'BINANCE_SNAPSHOT_PENDING_INCOME') {
+        nextClassName = 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5';
+        nextHtml = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安快照同步中</span>';
+      } else if (mode === 'OFFLINE_FALLBACK') {
+        nextClassName = 'px-2 py-0.5 font-medium bg-[#151c27] text-[#f5c451] inline-flex items-center gap-1.5';
+        nextHtml = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>离线风控同步</span>';
+      } else {
+        nextClassName = 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5';
+        const label = mode ? ('接口状态异常 (' + mode + ')') : '接口状态缺失';
+        nextHtml = '<span class="w-1.5 h-1.5 rounded-full bg-[#f25565]" aria-hidden="true"></span><span>' + escapeHtml(label) + '</span>';
+      }
     }
 
-    const mode = (accountData && accountData.api_status && accountData.api_status.mode) || '';
-    if (mode === 'BINANCE_REALTIME') {
-      badge.className = 'px-2 py-0.5 font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span><span>币安实盘在线</span>';
-    } else if (mode === 'BINANCE_PARTIAL') {
-      badge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安部分数据可用</span>';
-    } else if (mode === 'BINANCE_SNAPSHOT_PENDING_INCOME') {
-      badge.className = 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>币安快照同步中</span>';
-    } else if (mode === 'OFFLINE_FALLBACK') {
-      badge.className = 'px-2 py-0.5 font-medium bg-[#151c27] text-[#f5c451] inline-flex items-center gap-1.5';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span>离线风控同步</span>';
-    } else {
-      badge.className = 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5';
-      const label = mode ? ('接口状态异常 (' + mode + ')') : '接口状态缺失';
-      badge.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-[#f25565]" aria-hidden="true"></span><span>' + escapeHtml(label) + '</span>';
+    if (lastApiStatusClass === nextClassName && lastApiStatusHtml === nextHtml) {
+      return;
     }
+    lastApiStatusClass = nextClassName;
+    lastApiStatusHtml = nextHtml;
+    badge.className = nextClassName;
+    badge.innerHTML = nextHtml;
   }
 
   function updateKpis(summary) {
@@ -343,7 +362,7 @@
 
       return (
         '<tr class="hover:bg-[#17202e] transition-colors font-mono tabular-nums text-xs">' +
-          '<td class="px-3.5 py-2.5 font-sans font-bold text-[#f1f5f9]">' +
+          '<td class="px-3.5 py-2.5 font-sans font-bold text-[#f1f5f9] whitespace-nowrap">' +
             '<div class="flex items-center gap-1.5">' +
               '<a href="' + escapeHtml(tvUrl) + '" target="_blank" rel="noopener noreferrer" class="text-[#f1f5f9] hover:text-[#8ab8ff] hover:underline inline-flex items-center gap-1">' +
                 '<span>' + safeSym + '</span>' + EXT_ARROW_SVG +
@@ -351,17 +370,38 @@
               sideBadge +
             '</div>' +
           '</td>' +
-          '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9]"><div>' + escapeHtml(levStr) + ' · ' + escapeHtml(notionalStr) + '</div><div class="text-[10px] text-[#7f91a8]">' + escapeHtml(amtStr) + '</div></td>' +
-          '<td class="px-3.5 py-2.5 text-right text-[#9fb0c5]">' + escapeHtml(formatDollarPrice(p.entry_price)) + '</td>' +
-          '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9] font-semibold">' + escapeHtml(formatDollarPrice(p.mark_price)) + '</td>' +
-          '<td class="px-3.5 py-2.5 text-right font-bold ' + pnlCls + '"><div>' + escapeHtml(pnlStr) + '</div><div class="text-[10px] font-medium">' + escapeHtml(roeStr) + '</div></td>' +
-          '<td class="px-3.5 py-2.5 text-right text-[#f8717e]">' + escapeHtml(formatDollarPrice(p.liquidation_price)) + '</td>' +
-          '<td class="px-3.5 py-2.5 font-sans text-xs">' + trailingHtml + '</td>' +
-          '<td class="px-3.5 py-2.5 font-sans text-xs">' + slHtml + '</td>' +
-          '<td class="px-3.5 py-2.5 text-[#9fb0c5]">' + (riskMonitored ? safeTlId : '--') + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9] whitespace-nowrap"><div>' + escapeHtml(levStr) + ' · ' + escapeHtml(notionalStr) + '</div><div class="text-[10px] text-[#7f91a8]">' + escapeHtml(amtStr) + '</div></td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#9fb0c5] whitespace-nowrap">' + escapeHtml(formatDollarPrice(p.entry_price)) + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9] font-semibold whitespace-nowrap">' + escapeHtml(formatDollarPrice(p.mark_price)) + '</td>' +
+          '<td class="px-3.5 py-2.5 text-right font-bold whitespace-nowrap ' + pnlCls + '"><div>' + escapeHtml(pnlStr) + '</div><div class="text-[10px] font-medium">' + escapeHtml(roeStr) + '</div></td>' +
+          '<td class="px-3.5 py-2.5 text-right text-[#f8717e] whitespace-nowrap">' + escapeHtml(formatDollarPrice(p.liquidation_price)) + '</td>' +
+          '<td class="px-3.5 py-2.5 font-sans text-xs whitespace-nowrap">' + trailingHtml + '</td>' +
+          '<td class="px-3.5 py-2.5 font-sans text-xs whitespace-nowrap">' + slHtml + '</td>' +
+          '<td class="px-3.5 py-2.5 text-[#9fb0c5] whitespace-nowrap">' + (riskMonitored ? safeTlId : '--') + '</td>' +
         '</tr>'
       );
     }).join('');
+  }
+
+  function buildHistorySearchKey(h) {
+    if (!h || typeof h !== 'object') return '';
+    return [
+      h.symbol || '',
+      h.close_reason || '',
+      h.trendline_label || '',
+      h.trendline_id || '',
+      h.side || '',
+      h.closed_at || ''
+    ].join(' ').toLowerCase();
+  }
+
+  function prepareHistorySearchKeys(history) {
+    for (let i = 0; i < history.length; i += 1) {
+      const h = history[i];
+      if (h && typeof h === 'object' && Object.isExtensible(h)) {
+        h._searchKey = buildHistorySearchKey(h);
+      }
+    }
   }
 
   function getFilteredAndSortedHistory(history) {
@@ -375,14 +415,7 @@
         return false;
       }
       if (!query) return true;
-      const haystack = [
-        h.symbol || '',
-        h.close_reason || '',
-        h.trendline_label || '',
-        h.trendline_id || '',
-        h.side || '',
-        h.closed_at || ''
-      ].join(' ').toLowerCase();
+      const haystack = typeof h._searchKey === 'string' ? h._searchKey : buildHistorySearchKey(h);
       return haystack.includes(query);
     });
 
@@ -438,6 +471,37 @@
     return '<span class="text-[11px] font-sans text-[#7f91a8]">' + safeReason + '</span>';
   }
 
+  function updateHistoryPaginationControls(totalFiltered, startIdx, endIdx, totalPages) {
+    const bar = document.getElementById('history-pagination-bar');
+    if (!bar) return;
+    if (totalFiltered <= HISTORY_PAGE_SIZE) {
+      bar.hidden = true;
+      return;
+    }
+    bar.hidden = false;
+    setText('history-page-range', '显示第 ' + (startIdx + 1) + ' - ' + endIdx + ' 笔 · 共 ' + totalFiltered + ' 笔');
+    setText('history-page-info', historyCurrentPage + ' / ' + totalPages);
+
+    const prevBtn = document.getElementById('btn-history-prev-page');
+    if (prevBtn) {
+      const prevDisabled = historyCurrentPage <= 1;
+      prevBtn.disabled = prevDisabled;
+      if (prevBtn.classList) {
+        prevBtn.classList.toggle('opacity-75', prevDisabled);
+        prevBtn.classList.toggle('pointer-events-none', prevDisabled);
+      }
+    }
+    const nextBtn = document.getElementById('btn-history-next-page');
+    if (nextBtn) {
+      const nextDisabled = historyCurrentPage >= totalPages;
+      nextBtn.disabled = nextDisabled;
+      if (nextBtn.classList) {
+        nextBtn.classList.toggle('opacity-75', nextDisabled);
+        nextBtn.classList.toggle('pointer-events-none', nextDisabled);
+      }
+    }
+  }
+
   function renderHistoryTable() {
     const histTbody = document.getElementById('history-tbody');
     if (!histTbody || !currentAccountData) return;
@@ -453,12 +517,22 @@
     updateSortIndicators();
 
     if (rows.length === 0) {
+      historyCurrentPage = 1;
+      updateHistoryPaginationControls(0, 0, 0, 1);
       histTbody.innerHTML = '<tr><td colspan="10" class="py-10 text-center text-[#9fb0c5] text-xs font-sans">' +
         (fullHistory.length === 0 ? '暂无历史开平仓流水记录' : '当前筛选条件下无匹配交易记录') + '</td></tr>';
       return;
     }
 
-    histTbody.innerHTML = rows.map(h => {
+    const totalPages = Math.max(1, Math.ceil(rows.length / HISTORY_PAGE_SIZE));
+    if (historyCurrentPage > totalPages) historyCurrentPage = totalPages;
+    if (historyCurrentPage < 1) historyCurrentPage = 1;
+    const startIdx = (historyCurrentPage - 1) * HISTORY_PAGE_SIZE;
+    const endIdx = Math.min(rows.length, startIdx + HISTORY_PAGE_SIZE);
+    const pageRows = rows.slice(startIdx, endIdx);
+    updateHistoryPaginationControls(rows.length, startIdx, endIdx, totalPages);
+
+    histTbody.innerHTML = pageRows.map(h => {
       if (!h || typeof h !== 'object' || typeof h.symbol !== 'string' || !h.symbol.trim() || typeof h.side !== 'string' || !h.side.trim()) {
         throw new Error('Invalid trade_history entry: missing symbol or side');
       }
@@ -629,12 +703,112 @@
     chartDefaultsConfigured = true;
   }
 
+  function isPlainObject(val) {
+    return Object.prototype.toString.call(val) === '[object Object]';
+  }
+
+  function syncObjectInPlace(target, source) {
+    if (!isPlainObject(target) || !isPlainObject(source)) return source;
+    Object.keys(target).forEach(k => {
+      if (!Object.prototype.hasOwnProperty.call(source, k)) {
+        delete target[k];
+      }
+    });
+    Object.keys(source).forEach(k => {
+      const nextVal = source[k];
+      const curVal = target[k];
+      if (isPlainObject(curVal) && isPlainObject(nextVal)) {
+        syncObjectInPlace(curVal, nextVal);
+      } else {
+        target[k] = nextVal;
+      }
+    });
+    return target;
+  }
+
+  function resetEqGradientCache() {
+    cachedEqGradient = null;
+    cachedEqGradientTop = null;
+    cachedEqGradientHeight = null;
+    cachedEqGradientCtx = null;
+  }
+
+  function destroyAllCharts() {
+    Object.keys(chartInstances).forEach(key => {
+      const chart = chartInstances[key];
+      if (chart && typeof chart.destroy === 'function') {
+        chart.destroy();
+      }
+      delete chartInstances[key];
+    });
+    resetEqGradientCache();
+  }
+
+  function downsampleEquityCurve(points, maxPoints) {
+    const limit = maxPoints > 2 ? maxPoints : MAX_EQUITY_CHART_POINTS;
+    if (!Array.isArray(points) || points.length <= limit) return points;
+    const sampled = [points[0]];
+    const lastIdx = points.length - 1;
+    const step = lastIdx / (limit - 1);
+    let prevIdx = 0;
+    for (let i = 1; i < limit - 1; i += 1) {
+      const idx = Math.min(lastIdx - 1, Math.max(prevIdx + 1, Math.round(i * step)));
+      if (idx > prevIdx && idx < lastIdx) {
+        sampled.push(points[idx]);
+        prevIdx = idx;
+      }
+    }
+    sampled.push(points[lastIdx]);
+    return sampled;
+  }
+
+  function showChartsUnavailableFallback(message) {
+    const text = message || '图表组件 (Chart.js) 加载失败，暂无法渲染可视化图表，核心账本与交易数据仍可正常查看。';
+    CHART_CANVAS_IDS.forEach(id => {
+      const canvas = document.getElementById(id);
+      if (canvas) canvas.hidden = true;
+      let fallback = document.getElementById(id + '-fallback');
+      if (!fallback && canvas && canvas.parentElement && typeof document.createElement === 'function') {
+        fallback = document.createElement('div');
+        fallback.id = id + '-fallback';
+        fallback.className = 'w-full h-full flex items-center justify-center text-center px-4 text-xs text-[#9fb0c5] font-sans bg-[#0b0e13]/80 border border-[#222b38] rounded-[4px]';
+        canvas.parentElement.appendChild(fallback);
+      }
+      if (fallback) {
+        fallback.textContent = text;
+        fallback.hidden = false;
+      }
+    });
+  }
+
+  function hideChartsUnavailableFallback() {
+    CHART_CANVAS_IDS.forEach(id => {
+      const canvas = document.getElementById(id);
+      if (canvas) canvas.hidden = false;
+      const fallback = document.getElementById(id + '-fallback');
+      if (fallback) fallback.hidden = true;
+    });
+  }
+
   function upsertChart(key, canvas, config) {
     if (!canvas || typeof Chart === 'undefined') return;
-    if (chartInstances[key]) {
-      chartInstances[key].data = config.data;
-      chartInstances[key].update('none');
-      return;
+    const existing = chartInstances[key];
+    if (existing) {
+      if (existing.canvas && existing.canvas !== canvas) {
+        if (typeof existing.destroy === 'function') {
+          existing.destroy();
+        }
+        delete chartInstances[key];
+      } else {
+        existing.data = config.data;
+        if (isPlainObject(existing.options) && isPlainObject(config.options)) {
+          syncObjectInPlace(existing.options, config.options);
+        } else {
+          existing.options = config.options;
+        }
+        existing.update('none');
+        return;
+      }
     }
     chartInstances[key] = new Chart(canvas, config);
   }
@@ -691,7 +865,11 @@
     }, 0);
     setText('dist-summary-badge', totalBinned + ' 笔样本');
 
-    if (typeof Chart === 'undefined') return;
+    if (typeof Chart === 'undefined') {
+      showChartsUnavailableFallback();
+      return;
+    }
+    hideChartsUnavailableFallback();
 
     ensureChartDefaults();
 
@@ -709,8 +887,9 @@
 
     const eqCanvas = document.getElementById('chart-equity-curve');
     if (eqCanvas) {
-      const eqLabels = equityCurve.map(p => p.datetime.slice(5, 16));
-      const eqValues = equityCurve.map(p => Number(p.equity));
+      const chartEquityCurve = downsampleEquityCurve(equityCurve, MAX_EQUITY_CHART_POINTS);
+      const eqLabels = chartEquityCurve.map(p => p.datetime.slice(5, 16));
+      const eqValues = chartEquityCurve.map(p => Number(p.equity));
       const hasInitialCapital = isFiniteNumber(summary.initial_capital);
       const datasets = [{
         label: '账户总资产',
@@ -753,7 +932,7 @@
         const baseline = cap + netTransfers;
         datasets.push({
           label: hasTransfers && netTransfers !== 0 ? '净投入基准线' : '本金基准线',
-          data: equityCurve.map(() => baseline),
+          data: chartEquityCurve.map(() => baseline),
           borderColor: '#5c6f89',
           borderDash: [4, 4],
           borderWidth: 1.2,
@@ -979,17 +1158,24 @@
     ) {
       throw new Error('Invalid /api/account payload');
     }
+    const prevAccountData = currentAccountData;
     currentAccountData = accountData;
 
-    const summary = accountData.summary;
-    const positions = accountData.active_positions;
+    try {
+      const summary = accountData.summary;
+      const positions = accountData.active_positions;
+      prepareHistorySearchKeys(accountData.trade_history);
 
-    setText('sync-time-text', accountData.generated_at || '--');
-    updateApiStatusBadge(accountData, false);
-    updateKpis(summary);
-    renderActivePositions(positions);
-    renderHistoryTable();
-    updateCharts(accountData);
+      setText('sync-time-text', accountData.generated_at || '--');
+      updateApiStatusBadge(accountData, false);
+      updateKpis(summary);
+      renderActivePositions(positions);
+      renderHistoryTable();
+      updateCharts(accountData);
+    } catch (err) {
+      currentAccountData = prevAccountData;
+      throw err;
+    }
   }
 
   function triggerHistorySort(th) {
@@ -1002,11 +1188,34 @@
       HISTORY_SORT.column = col;
       HISTORY_SORT.asc = col === 'symbol';
     }
+    historyCurrentPage = 1;
     renderHistoryTable();
     const sortStatus = document.getElementById('history-sort-status');
     if (sortStatus && currentAccountData) {
       const label = th.textContent ? th.textContent.trim() : col;
-      sortStatus.textContent = '历史流水已按 ' + label + (HISTORY_SORT.asc ? ' 升序' : ' 降序') + '排列';
+      const msg = '历史流水已按 ' + label + (HISTORY_SORT.asc ? ' 升序' : ' 降序') + '排列';
+      if (sortStatus.textContent !== msg) {
+        sortStatus.textContent = msg;
+      }
+    }
+  }
+
+  function setRefreshButtonBusy(busy) {
+    const refreshBtn = document.getElementById('btn-manual-refresh');
+    const spinner = document.getElementById('refresh-spinner');
+    if (spinner && spinner.classList) {
+      spinner.classList.toggle('animate-spin', Boolean(busy));
+    }
+    if (refreshBtn) {
+      refreshBtn.disabled = Boolean(busy);
+      if (busy) {
+        refreshBtn.setAttribute('aria-busy', 'true');
+      } else if (typeof refreshBtn.removeAttribute === 'function') {
+        refreshBtn.removeAttribute('aria-busy');
+      }
+      if (refreshBtn.classList) {
+        refreshBtn.classList.toggle('opacity-75', Boolean(busy));
+      }
     }
   }
 
@@ -1018,6 +1227,7 @@
         if (historySearchTimer) clearTimeout(historySearchTimer);
         historySearchTimer = setTimeout(() => {
           historySearchTimer = null;
+          historyCurrentPage = 1;
           renderHistoryTable();
         }, 120);
       });
@@ -1026,7 +1236,10 @@
     const outcomeSelect = document.getElementById('history-outcome-filter');
     if (outcomeSelect && !outcomeSelect.dataset.bound) {
       outcomeSelect.dataset.bound = 'true';
-      outcomeSelect.addEventListener('change', renderHistoryTable);
+      outcomeSelect.addEventListener('change', function() {
+        historyCurrentPage = 1;
+        renderHistoryTable();
+      });
     }
 
     const resetBtn = document.getElementById('btn-reset-history-filter');
@@ -1039,6 +1252,27 @@
         }
         if (searchInput) searchInput.value = '';
         if (outcomeSelect) outcomeSelect.value = '';
+        historyCurrentPage = 1;
+        renderHistoryTable();
+      });
+    }
+
+    const prevPageBtn = document.getElementById('btn-history-prev-page');
+    if (prevPageBtn && !prevPageBtn.dataset.bound) {
+      prevPageBtn.dataset.bound = 'true';
+      prevPageBtn.addEventListener('click', function() {
+        if (historyCurrentPage > 1) {
+          historyCurrentPage -= 1;
+          renderHistoryTable();
+        }
+      });
+    }
+
+    const nextPageBtn = document.getElementById('btn-history-next-page');
+    if (nextPageBtn && !nextPageBtn.dataset.bound) {
+      nextPageBtn.dataset.bound = 'true';
+      nextPageBtn.addEventListener('click', function() {
+        historyCurrentPage += 1;
         renderHistoryTable();
       });
     }
@@ -1068,21 +1302,109 @@
     if (refreshBtn && !refreshBtn.dataset.bound) {
       refreshBtn.dataset.bound = 'true';
       refreshBtn.addEventListener('click', function() {
-        const spinner = document.getElementById('refresh-spinner');
-        if (spinner) spinner.classList.add('animate-spin');
+        if (refreshBtn.disabled) return;
+        setRefreshButtonBusy(true);
+        const myLoadId = activeLoadId + 1;
         tryLoadData().finally(() => {
-          if (spinner) spinner.classList.remove('animate-spin');
+          if (myLoadId !== activeLoadId && accountController !== null) return;
+          setRefreshButtonBusy(false);
+        });
+      });
+    }
+
+    const loadStatusEl = document.getElementById('account-load-status');
+    if (loadStatusEl && !loadStatusEl.dataset.bound) {
+      loadStatusEl.dataset.bound = 'true';
+      loadStatusEl.addEventListener('click', function(e) {
+        const retryBtn = e && e.target && typeof e.target.closest === 'function'
+          ? e.target.closest('#btn-retry-account')
+          : null;
+        if (!retryBtn || retryBtn.disabled) return;
+        retryBtn.disabled = true;
+        retryBtn.setAttribute('aria-busy', 'true');
+        retryBtn.textContent = '正在重试...';
+        const hadFocus = typeof document !== 'undefined' && document.activeElement === retryBtn;
+        tryLoadData().finally(() => {
+          const currentRetryBtn = document.getElementById('btn-retry-account');
+          if (currentRetryBtn && loadStatusEl && !loadStatusEl.hidden) {
+            currentRetryBtn.disabled = false;
+            if (typeof currentRetryBtn.removeAttribute === 'function') {
+              currentRetryBtn.removeAttribute('aria-busy');
+            }
+            currentRetryBtn.textContent = '立即重试';
+            if (hadFocus && typeof currentRetryBtn.focus === 'function') {
+              currentRetryBtn.focus();
+            }
+          }
         });
       });
     }
   }
 
+  function clearPollTimer() {
+    if (pollTimerId !== null) {
+      clearTimeout(pollTimerId);
+      pollTimerId = null;
+    }
+  }
+
+  function scheduleNextPoll() {
+    clearPollTimer();
+    if (document.hidden) return;
+    pollTimerId = setTimeout(() => {
+      pollTimerId = null;
+      if (!document.hidden) {
+        tryLoadData();
+      }
+    }, POLL_INTERVAL_MS);
+    if (pollTimerId && typeof pollTimerId.unref === 'function') {
+      pollTimerId.unref();
+    }
+  }
+
+  function formatLoadErrorMessage(error) {
+    const errMsg = error && error.message ? String(error.message) : '未知错误';
+    const isSchemaError = Boolean(
+      (error && error.name === 'SyntaxError') ||
+      /^Invalid (summary|\/api\/account payload|active|trade_history|equity_curve|daily_pnl|pnl_distribution)/.test(errMsg)
+    );
+    if (isSchemaError) {
+      return latestSnapshot
+        ? ('账户快照摘要字段缺失或格式异常 (' + errMsg + ')，当前展示上次有效快照。')
+        : ('账户快照摘要字段缺失或数据格式不兼容 (' + errMsg + ')，请确认后台分析数据版本后重试。');
+    }
+    return latestSnapshot
+      ? ('账户数据刷新失败 (' + errMsg + ')，当前展示上次快照。')
+      : ('暂时无法加载账户数据 (' + errMsg + ')，请检查后台 API 服务，系统将自动重试。');
+  }
+
+  function showLoadErrorStatus(error) {
+    const status = document.getElementById('account-load-status');
+    if (!status) return;
+    const message = formatLoadErrorMessage(error);
+    const signature = (latestSnapshot ? 'stale' : 'initial') + '|' + message;
+    if (lastLoadStatusSignature === signature && status.hidden === false) {
+      return;
+    }
+    lastLoadStatusSignature = signature;
+    status.hidden = false;
+    status.className = 'ledger-frame px-4 py-3 text-xs bg-[#f25565]/10 border-[#f25565]/30 text-[#f8717e] flex flex-wrap items-center justify-between gap-2 font-sans';
+    status.innerHTML = '<span>' + escapeHtml(message) + '</span>' +
+      '<button id="btn-retry-account" type="button" class="px-2.5 py-1 text-xs font-medium rounded-[4px] bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] border border-[#283446] hover:border-[#3b4d66] transition-colors shrink-0">立即重试</button>';
+  }
+
+  function hideLoadStatus() {
+    const status = document.getElementById('account-load-status');
+    lastLoadStatusSignature = '';
+    if (status) status.hidden = true;
+  }
+
   async function tryLoadData() {
+    clearPollTimer();
     if (accountController) accountController.abort();
     const controller = new AbortController();
     accountController = controller;
     const loadId = ++activeLoadId;
-    const status = document.getElementById('account-load-status');
     const report = document.getElementById('account-report');
     try {
       const headers = {};
@@ -1099,7 +1421,7 @@
       lastSuccessfulLoadAt = Date.now();
       if (notModified) {
         if (currentAccountData) updateApiStatusBadge(currentAccountData, false);
-        if (status) status.hidden = true;
+        hideLoadStatus();
         return;
       }
       if (etag) lastEtag = etag;
@@ -1110,23 +1432,23 @@
       } else if (currentAccountData) {
         updateApiStatusBadge(currentAccountData, false);
       }
-      if (status) status.hidden = true;
+      hideLoadStatus();
     } catch (error) {
       if (error && error.name === 'AbortError') return;
       if (loadId !== activeLoadId) return;
       console.error('Failed to load account snapshot:', error);
       if (report) report.hidden = !latestSnapshot;
       updateApiStatusBadge(currentAccountData, true);
-      if (status) {
-        status.hidden = false;
-        status.className = 'ledger-frame px-4 py-3 text-xs bg-[#f25565]/10 border-[#f25565]/30 text-[#f8717e]';
-        status.textContent = latestSnapshot
-          ? ('账户数据刷新失败 (' + error.message + ')，当前展示上次快照。')
-          : ('暂时无法加载账户数据 (' + error.message + ')，请检查后台 API 服务，系统将自动重试。');
-      }
+      showLoadErrorStatus(error);
     } finally {
       if (accountController === controller) {
         accountController = null;
+      }
+      if (loadId === activeLoadId) {
+        setRefreshButtonBusy(false);
+        if (!document.hidden) {
+          scheduleNextPoll();
+        }
       }
     }
   }
@@ -1143,19 +1465,45 @@
     init();
   }
 
-  setInterval(() => {
-    if (!document.hidden) tryLoadData();
-  }, 30000);
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
+      clearPollTimer();
       if (accountController) {
         accountController.abort();
         accountController = null;
       }
       activeLoadId += 1;
+      setRefreshButtonBusy(false);
       return;
     }
-    if (Date.now() - lastSuccessfulLoadAt < VISIBILITY_COOLDOWN_MS) return;
+    if (Date.now() - lastSuccessfulLoadAt < VISIBILITY_COOLDOWN_MS) {
+      scheduleNextPoll();
+      return;
+    }
     tryLoadData();
   });
+
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('pagehide', () => {
+      clearPollTimer();
+      if (accountController) {
+        accountController.abort();
+        accountController = null;
+      }
+      activeLoadId += 1;
+      setRefreshButtonBusy(false);
+      destroyAllCharts();
+    });
+
+    window.addEventListener('pageshow', (event) => {
+      if (event && event.persisted) {
+        if (currentAccountData) {
+          updateCharts(currentAccountData);
+        }
+        if (!document.hidden) {
+          scheduleNextPoll();
+        }
+      }
+    });
+  }
 })();

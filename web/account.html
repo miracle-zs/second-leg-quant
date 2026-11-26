@@ -32,9 +32,9 @@
             <span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>
             <span>等待账户数据</span>
           </span>
-          <span class="px-2 py-0.5 font-mono tabular-nums text-[#9fb0c5] bg-[#10151d] inline-flex items-center gap-1">
-            <span>快照:</span>
-            <span id="sync-time-text">--</span>
+          <span class="px-2 py-0.5 text-[#9fb0c5] bg-[#10151d] inline-flex items-center gap-1">
+            <span class="font-sans">快照:</span>
+            <span id="sync-time-text" class="font-mono tabular-nums">--</span>
           </span>
         </div>
       </div>
@@ -55,7 +55,7 @@
             </span>
             <span>刷新</span>
           </button>
-          <a data-tv-layout-link data-tv-layout-title="true" href="https://cn.tradingview.com/" target="_blank" rel="noopener noreferrer" class="px-2.5 py-1 text-xs font-medium rounded-[4px] bg-[#3b82f6]/[0.12] hover:bg-[#3b82f6]/[0.22] text-[#8ab8ff] hover:text-white border border-[#3b82f6]/35 inline-flex items-center gap-1 transition-colors" title="打开 TradingView 专属画线布局">
+          <a data-tv-layout-link data-tv-layout-title="true" href="https://cn.tradingview.com/" target="_blank" rel="noopener noreferrer" class="btn-primary-cobalt px-2.5 py-1 text-xs rounded-[4px] inline-flex items-center gap-1 transition-colors" title="打开 TradingView 专属画线布局">
             <span>TV 画线</span>
             <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true">
               <path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -69,7 +69,7 @@
   <div class="w-full max-w-[1680px] mx-auto px-3 sm:px-5 py-3">
 
     <main class="space-y-3">
-      <p id="account-load-status" role="status" class="ledger-frame px-4 py-3 text-xs text-[#9fb0c5]">正在读取账户实盘快照…</p>
+      <div id="account-load-status" role="status" aria-live="polite" class="ledger-frame px-4 py-3 text-xs text-[#9fb0c5] font-sans">正在读取账户实盘快照…</div>
 
       <section id="account-report" class="space-y-3" hidden>
         <!-- Unified Two-Tier Hairline KPI Ledger Matrix -->
@@ -79,28 +79,28 @@
             <div class="ledger-cell px-4 py-3.5 flex flex-col justify-between gap-2">
               <span class="font-medium text-xs text-[#9fb0c5]">账户总资产 (USDT)</span>
               <div id="kpi-total-equity" class="text-2xl md:text-[26px] font-bold font-mono text-[#f1f5f9] tabular-nums tracking-tight leading-none">--</div>
-              <div class="text-[11px] font-mono tabular-nums flex items-center justify-between text-[#9fb0c5] border-t border-[#1c2532] pt-2">
+              <div class="text-[11px] font-sans tabular-nums flex items-center justify-between text-[#9fb0c5] border-t border-[#1c2532] pt-2">
                 <span id="kpi-initial-capital">本金: --</span>
-                <span id="kpi-total-return" class="font-semibold text-[#f1f5f9]">--</span>
+                <span id="kpi-total-return" class="font-mono tabular-nums font-semibold text-[#f1f5f9]">--</span>
               </div>
             </div>
 
             <div class="ledger-cell px-4 py-3.5 flex flex-col justify-between gap-2">
               <div class="flex items-center justify-between gap-2">
                 <span class="font-medium text-xs text-[#9fb0c5]">可用保证金</span>
-                <span id="kpi-margin-badge" class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-mono tabular-nums bg-[#151c27] text-[#9fb0c5] border border-[#283446]">--</span>
+                <span id="kpi-margin-badge" class="px-1.5 py-0.5 rounded-[3px] text-[10px] font-sans tabular-nums bg-[#151c27] text-[#9fb0c5] border border-[#283446]">--</span>
               </div>
               <div id="kpi-available-margin" class="text-2xl md:text-[26px] font-bold font-mono text-[#f1f5f9] tabular-nums tracking-tight leading-none">--</div>
-              <div class="text-[11px] font-mono tabular-nums flex items-center justify-between text-[#9fb0c5] border-t border-[#1c2532] pt-2">
+              <div class="text-[11px] font-sans flex items-center justify-between text-[#9fb0c5] border-t border-[#1c2532] pt-2">
                 <span>持仓占用保证金</span>
-                <span id="kpi-position-margin" class="text-[#f1f5f9]">--</span>
+                <span id="kpi-position-margin" class="font-mono tabular-nums text-[#f1f5f9]">--</span>
               </div>
             </div>
 
             <div class="ledger-cell px-4 py-3.5 flex flex-col justify-between gap-2">
               <span class="font-medium text-xs text-[#9fb0c5]">累计净实现盈亏</span>
               <div id="kpi-net-realized-pnl" class="text-2xl md:text-[26px] font-bold font-mono text-[#f1f5f9] tabular-nums tracking-tight leading-none">--</div>
-              <div class="text-[11px] font-mono tabular-nums flex items-center justify-between text-[#9fb0c5] border-t border-[#1c2532] pt-2 gap-2">
+              <div class="text-[11px] font-sans tabular-nums flex items-center justify-between text-[#9fb0c5] border-t border-[#1c2532] pt-2 gap-2">
                 <span id="kpi-total-fee">手续费: --</span>
                 <span id="kpi-funding-fee">资费: --</span>
               </div>
@@ -109,9 +109,9 @@
             <div class="ledger-cell px-4 py-3.5 flex flex-col justify-between gap-2">
               <span class="font-medium text-xs text-[#9fb0c5]">未结浮动盈亏</span>
               <div id="kpi-unrealized-pnl" class="text-2xl md:text-[26px] font-bold font-mono text-[#f1f5f9] tabular-nums tracking-tight leading-none">--</div>
-              <div class="text-[11px] font-mono tabular-nums flex items-center justify-between text-[#9fb0c5] border-t border-[#1c2532] pt-2">
+              <div class="text-[11px] font-sans flex items-center justify-between text-[#9fb0c5] border-t border-[#1c2532] pt-2">
                 <span>在途敞口</span>
-                <span id="kpi-open-trades" class="text-[#f1f5f9] font-semibold">--</span>
+                <span id="kpi-open-trades" class="font-sans tabular-nums text-[#f1f5f9] font-semibold">--</span>
               </div>
             </div>
           </div>
@@ -121,19 +121,19 @@
             <div class="bg-[#0e131b] px-3.5 py-2.5 flex flex-col justify-between gap-1.5">
               <div class="flex items-center justify-between text-[#9fb0c5]">
                 <span class="font-medium text-[11px]">战法胜率</span>
-                <span id="kpi-total-trades" class="text-[11px] font-mono tabular-nums text-[#9fb0c5]">--</span>
+                <span id="kpi-total-trades" class="text-[11px] font-sans tabular-nums text-[#9fb0c5]">--</span>
               </div>
               <div id="kpi-win-rate" class="text-lg font-bold font-mono text-[#f1f5f9] tabular-nums leading-tight">--</div>
-              <div class="text-[11px] font-mono tabular-nums flex items-center justify-between text-[#7f91a8]">
+              <div class="text-[11px] font-sans flex items-center justify-between text-[#7f91a8]">
                 <span>胜/负/平</span>
-                <span id="kpi-wl-record" class="text-[#9fb0c5]">--</span>
+                <span id="kpi-wl-record" class="font-mono tabular-nums text-[#9fb0c5]">--</span>
               </div>
             </div>
 
             <div class="bg-[#0e131b] px-3.5 py-2.5 flex flex-col justify-between gap-1.5">
               <span class="font-medium text-[11px] text-[#9fb0c5]">盈亏比 (PF)</span>
               <div id="kpi-profit-factor" class="text-lg font-bold font-mono text-[#f1f5f9] tabular-nums leading-tight">--</div>
-              <div class="text-[11px] font-mono tabular-nums flex flex-col sm:flex-row sm:items-center sm:justify-between gap-0.5 sm:gap-1">
+              <div class="tier2-split-row text-[11px] font-sans tabular-nums">
                 <span id="kpi-avg-win" class="text-[#38d99f] whitespace-nowrap">均盈: --</span>
                 <span id="kpi-avg-loss" class="text-[#f8717e] whitespace-nowrap">均亏: --</span>
               </div>
@@ -150,7 +150,7 @@
             <div class="bg-[#0e131b] px-3.5 py-2.5 flex flex-col justify-between gap-1.5">
               <span class="font-medium text-[11px] text-[#9fb0c5]">夏普比率</span>
               <div id="kpi-sharpe" class="text-lg font-bold font-mono text-[#f1f5f9] tabular-nums leading-tight">--</div>
-              <div class="text-[11px] font-mono flex items-center text-[#7f91a8]">
+              <div class="text-[11px] font-sans flex items-center text-[#7f91a8]">
                 <span id="kpi-sharpe-rating" class="text-[#9fb0c5] font-medium">--</span>
               </div>
             </div>
@@ -158,7 +158,7 @@
             <div class="bg-[#0e131b] px-3.5 py-2.5 flex flex-col justify-between gap-1.5">
               <span class="font-medium text-[11px] text-[#9fb0c5]">索提诺比率</span>
               <div id="kpi-sortino" class="text-lg font-bold font-mono text-[#f1f5f9] tabular-nums leading-tight">--</div>
-              <div class="text-[11px] font-mono flex items-center text-[#7f91a8]">
+              <div class="text-[11px] font-sans flex items-center text-[#7f91a8]">
                 <span id="kpi-sortino-rating" class="text-[#9fb0c5] font-medium">--</span>
               </div>
             </div>
@@ -166,9 +166,9 @@
             <div class="bg-[#0e131b] px-3.5 py-2.5 flex flex-col justify-between gap-1.5">
               <span class="font-medium text-[11px] text-[#9fb0c5]">连胜 / 连亏极值</span>
               <div id="kpi-max-streak" class="text-lg font-bold font-mono text-[#f1f5f9] tabular-nums leading-tight">--</div>
-              <div class="text-[11px] font-mono tabular-nums flex items-center justify-between text-[#7f91a8]">
+              <div class="text-[11px] font-sans flex items-center justify-between text-[#7f91a8]">
                 <span>平均持仓</span>
-                <span id="kpi-avg-hold" class="text-[#9fb0c5]">--</span>
+                <span id="kpi-avg-hold" class="font-mono tabular-nums text-[#9fb0c5]">--</span>
               </div>
             </div>
           </div>
@@ -186,7 +186,7 @@
                   <span class="inline-flex items-center gap-1"><span class="w-2.5 h-0 border-t border-dashed border-[#6b7f9a] inline-block"></span>本金线</span>
                 </span>
               </div>
-              <div class="flex items-center gap-1.5 text-[11px] font-mono tabular-nums">
+              <div class="flex items-center gap-1.5 text-[11px] font-sans tabular-nums">
                 <span id="equity-peak-label" class="px-2 py-0.5 rounded-[3px] bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">峰值: --</span>
                 <span id="equity-current-label" class="px-2 py-0.5 rounded-[3px] bg-[#192231] text-[#f1f5f9] border border-[#324055]">当前: --</span>
               </div>
@@ -194,6 +194,7 @@
             <div class="p-3.5">
               <div class="relative w-full h-[250px] sm:h-[280px]">
                 <canvas id="chart-equity-curve" role="img" aria-label="资金净值曲线图"></canvas>
+                <div id="chart-equity-curve-fallback" hidden class="w-full h-full flex items-center justify-center text-center px-4 text-xs text-[#9fb0c5] font-sans bg-[#0b0e13]/80 border border-[#222b38] rounded-[4px]"></div>
               </div>
             </div>
           </div>
@@ -201,11 +202,12 @@
           <div class="ledger-frame overflow-hidden flex flex-col justify-between">
             <div class="flex items-center justify-between gap-2 px-4 py-2.5 bg-[#121822] border-b border-[#222b38]">
               <h2 class="text-xs font-semibold text-[#f1f5f9]">每日净盈亏</h2>
-              <span id="daily-days-badge" class="px-2 py-0.5 rounded-[3px] text-[11px] font-mono tabular-nums bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">--</span>
+              <span id="daily-days-badge" class="px-2 py-0.5 rounded-[3px] text-[11px] font-sans tabular-nums bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">--</span>
             </div>
             <div class="p-3.5">
               <div class="relative w-full h-[250px] sm:h-[280px]">
                 <canvas id="chart-daily-pnl" role="img" aria-label="每日净盈亏柱状图"></canvas>
+                <div id="chart-daily-pnl-fallback" hidden class="w-full h-full flex items-center justify-center text-center px-4 text-xs text-[#9fb0c5] font-sans bg-[#0b0e13]/80 border border-[#222b38] rounded-[4px]"></div>
               </div>
             </div>
           </div>
@@ -213,11 +215,12 @@
           <div class="ledger-frame overflow-hidden flex flex-col justify-between">
             <div class="flex items-center justify-between gap-2 px-4 py-2.5 bg-[#121822] border-b border-[#222b38]">
               <h2 class="text-xs font-semibold text-[#f1f5f9]">胜负笔数结构</h2>
-              <span id="win-loss-summary-badge" class="px-2 py-0.5 rounded-[3px] text-[11px] font-mono tabular-nums bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">--</span>
+              <span id="win-loss-summary-badge" class="px-2 py-0.5 rounded-[3px] text-[11px] font-sans tabular-nums bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">--</span>
             </div>
             <div class="p-3.5">
               <div class="relative w-full h-[230px] sm:h-[260px]">
                 <canvas id="chart-win-loss" role="img" aria-label="胜负结构分布图"></canvas>
+                <div id="chart-win-loss-fallback" hidden class="w-full h-full flex items-center justify-center text-center px-4 text-xs text-[#9fb0c5] font-sans bg-[#0b0e13]/80 border border-[#222b38] rounded-[4px]"></div>
               </div>
             </div>
           </div>
@@ -225,11 +228,12 @@
           <div class="ledger-frame overflow-hidden flex flex-col justify-between">
             <div class="flex items-center justify-between gap-2 px-4 py-2.5 bg-[#121822] border-b border-[#222b38]">
               <h2 class="text-xs font-semibold text-[#f1f5f9]">单笔收益率分布</h2>
-              <span id="dist-summary-badge" class="px-2 py-0.5 rounded-[3px] text-[11px] font-mono tabular-nums bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">--</span>
+              <span id="dist-summary-badge" class="px-2 py-0.5 rounded-[3px] text-[11px] font-sans tabular-nums bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">--</span>
             </div>
             <div class="p-3.5">
               <div class="relative w-full h-[230px] sm:h-[260px]">
                 <canvas id="chart-pnl-dist" role="img" aria-label="单笔收益率分布直方图"></canvas>
+                <div id="chart-pnl-dist-fallback" hidden class="w-full h-full flex items-center justify-center text-center px-4 text-xs text-[#9fb0c5] font-sans bg-[#0b0e13]/80 border border-[#222b38] rounded-[4px]"></div>
               </div>
             </div>
           </div>
@@ -240,7 +244,7 @@
           <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-[#121822]">
             <div class="flex items-center gap-2.5 flex-wrap">
               <h2 id="active-positions-heading" class="text-xs font-semibold text-[#f1f5f9]">在途持仓风控监控</h2>
-              <span id="active-pos-count-badge" class="px-2 py-0.5 rounded-[3px] text-[11px] font-mono tabular-nums bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">--</span>
+              <span id="active-pos-count-badge" class="px-2 py-0.5 rounded-[3px] text-[11px] font-sans tabular-nums bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">--</span>
               <span id="active-positions-empty" class="hidden items-center gap-1.5 text-xs text-[#9fb0c5]">
                 <span class="w-1.5 h-1.5 rounded-full bg-[#22c58b]" aria-hidden="true"></span>
                 <span>当前空仓，无活跃敞口</span>
@@ -253,7 +257,7 @@
             检测到未受自动风控覆盖的仓位：风控守护进程仅对已匹配多头执行 15m 破线止损与移动保本提醒，请手动管理止损。
           </div>
 
-          <div id="active-positions-table-wrap" tabindex="0" role="region" aria-labelledby="active-positions-heading" class="overflow-x-auto custom-scrollbar border-t border-[#222b38]">
+          <div id="active-positions-table-wrap" tabindex="0" role="region" aria-labelledby="active-positions-heading" class="overflow-x-auto max-h-[65vh] custom-scrollbar border-t border-[#222b38]">
             <table class="w-full text-left border-collapse min-w-[920px]">
               <thead class="sticky-header text-[11px] text-[#9fb0c5] border-b border-[#222b38]">
                 <tr>
@@ -279,7 +283,7 @@
           <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 px-4 py-2.5 bg-[#121822] border-b border-[#222b38]">
             <div class="flex items-center gap-2 flex-wrap">
               <h2 id="history-ledger-heading" class="text-xs font-semibold text-[#f1f5f9]">历史开平仓流水账本</h2>
-              <span id="history-count-badge" class="px-2 py-0.5 rounded-[3px] text-[11px] font-mono tabular-nums bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">--</span>
+              <span id="history-count-badge" class="px-2 py-0.5 rounded-[3px] text-[11px] font-sans tabular-nums bg-[#0b0e13] text-[#9fb0c5] border border-[#222b38]">--</span>
             </div>
 
             <div class="flex flex-wrap items-center gap-1.5 text-xs">
@@ -289,21 +293,21 @@
                   <path d="M10.5 10.5L13.5 13.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
                 </svg>
                 <input id="history-search-input" type="search" aria-label="搜索历史交易流水" placeholder="搜索标的 / 关联画线 / 平仓原因..."
-                  class="bg-[#0b0e13] border border-[#283446] rounded-[4px] pl-8 pr-2.5 py-1 text-xs text-[#f1f5f9] placeholder-[#7f91a8] focus:outline-none focus:border-[#3b82f6] w-48 sm:w-60 transition-colors" />
+                  class="bg-[#0b0e13] border border-[#283446] rounded-[4px] pl-8 pr-2.5 py-1 text-xs text-[#f1f5f9] placeholder-[#7f91a8] focus:border-[#3b82f6] w-48 sm:w-60 transition-colors" />
               </div>
               <select id="history-outcome-filter" aria-label="按交易结果筛选"
-                class="ledger-select bg-[#0b0e13] border border-[#283446] rounded-[4px] px-2.5 py-1 text-xs text-[#f1f5f9] focus:outline-none focus:border-[#3b82f6]">
+                class="ledger-select bg-[#0b0e13] border border-[#283446] rounded-[4px] px-2.5 py-1 text-xs text-[#f1f5f9] focus:border-[#3b82f6]">
                 <option value="">全部结果</option>
                 <option value="WIN">盈利</option>
                 <option value="LOSS">亏损</option>
                 <option value="BREAKEVEN">保本</option>
               </select>
               <button id="btn-reset-history-filter" type="button"
-                class="px-2.5 py-1 rounded-[4px] bg-[#151c27] hover:bg-[#1d2736] text-[#9fb0c5] hover:text-[#f1f5f9] border border-[#283446] transition-colors">重置</button>
+                class="px-2.5 py-1 rounded-[4px] bg-[#151c27] hover:bg-[#1d2736] text-[#9fb0c5] hover:text-[#f1f5f9] border border-[#283446] hover:border-[#3b4d66] transition-colors">重置</button>
             </div>
           </div>
 
-          <div tabindex="0" role="region" aria-labelledby="history-ledger-heading" class="overflow-x-auto custom-scrollbar">
+          <div id="history-table-wrap" tabindex="0" role="region" aria-labelledby="history-ledger-heading" class="overflow-x-auto max-h-[65vh] custom-scrollbar">
             <table id="trade-history-table" class="w-full text-left border-collapse min-w-[860px]">
               <thead class="sticky-header text-[11px] text-[#9fb0c5] border-b border-[#222b38]">
                 <tr>
@@ -341,6 +345,14 @@
               </thead>
               <tbody id="history-tbody" class="divide-y divide-[#1c2532]"></tbody>
             </table>
+          </div>
+          <div id="history-pagination-bar" hidden class="flex flex-wrap items-center justify-between gap-2 px-4 py-2 bg-[#0e131b] border-t border-[#222b38] text-[11px] font-sans text-[#9fb0c5]">
+            <span id="history-page-range" class="tabular-nums">--</span>
+            <div class="flex items-center gap-1.5">
+              <button id="btn-history-prev-page" type="button" class="px-2.5 py-1 text-xs font-medium rounded-[4px] bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] border border-[#283446] hover:border-[#3b4d66] transition-colors">上一页</button>
+              <span id="history-page-info" class="px-2 py-0.5 font-mono tabular-nums text-[#9fb0c5]">1 / 1</span>
+              <button id="btn-history-next-page" type="button" class="px-2.5 py-1 text-xs font-medium rounded-[4px] bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] border border-[#283446] hover:border-[#3b4d66] transition-colors">下一页</button>
+            </div>
           </div>
         </section>
       </section>
