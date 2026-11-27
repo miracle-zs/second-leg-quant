@@ -35,6 +35,7 @@ from binance_client import (  # noqa: E402
 from config import (  # noqa: E402
     BEIJING_TZ,
     DEFAULT_DB_PATH,
+    HIGH_TURNOVER_THRESHOLD,
     get_env_setting,
     resolve_database_path,
 )
@@ -494,7 +495,7 @@ def scan_pool(database: Optional[Path] = None) -> list[_CandidateRecord]:
         fr_4h_pct = base_c["funding_rate_4h_pct"]
         turnover_ratio = base_c["turnover_ratio"]
         is_neg_fr = fr_4h_pct < 0
-        is_high_tr = turnover_ratio >= 1.5
+        is_high_tr = turnover_ratio >= HIGH_TURNOVER_THRESHOLD
         is_resonance = is_ema_bull and is_high_tr
 
         if is_resonance:

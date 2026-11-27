@@ -6,10 +6,8 @@ Automated Test Suite for 4-Feature Trading Alert & Risk Management System
 
 import io
 import json
-import logging
 import os
 import shutil
-import sqlite3
 import sys
 import tempfile
 import time
@@ -103,11 +101,11 @@ class TestTVCloudAndFallback(unittest.TestCase):
             runs_dir = Path(directory)
             cache_file = runs_dir / f"tradingview_drawings_{layout_id}.json"
             cache_file.write_text(json.dumps({"drawings_by_symbol": cached_drawings}), encoding="utf-8")
-            with patch.object(arc, "RUNS_DIR", runs_dir), patch.object(
-                arc, "_DRAWINGS_CACHE", {"data": None, "layout_id": "", "ts": 0.0}
-            ), patch.object(tve, "get_layout_drawings", side_effect=AssertionError("unexpected request")) as fetch_fn:
-                self.assertEqual(arc.fetch_layout_drawings(layout_id), cached_drawings)
-                fetch_fn.assert_not_called()
+            with patch.object(tve, "RUNS_DIR", runs_dir), patch.object(
+                tve, "_DRAWINGS_CACHE", {}
+            ), patch.object(tve, "get_chart_token", side_effect=AssertionError("unexpected request")) as tok_fn:
+                self.assertEqual(tve.get_layout_drawings(layout_id, cache_ttl_sec=60.0), cached_drawings)
+                tok_fn.assert_not_called()
 
     def test_binance_candle_close_confirmation_and_unclosed_guard(self):
         klines = [
@@ -230,10 +228,19 @@ class TestTVCloudAndFallback(unittest.TestCase):
             self.assertEqual(drawings_after, {})
             self.assertEqual(json.loads(cache_file.read_text(encoding="utf-8"))["drawings_by_symbol"], {})
 
-    def test_fetch_layout_drawings_uses_disk_mtime_and_respects_ttl(self):
+    def test_get_layout_drawings_uses_disk_mtime_and_respects_ttl(self):
         layout_id = "ttl-layout"
         stale_drawings = {"YBUSDT": [{"id": "OLD", "interval": "15", "p1": 1.2, "t1": 100, "p2": 1.0, "t2": 200}]}
-        fresh_drawings = {"YBUSDT": [{"id": "NEW", "interval": "15", "p1": 1.3, "t1": 100, "p2": 1.1, "t2": 200}]}
+        fresh_sources = {
+            "NEW": {
+                "symbol": "BINANCE:YBUSDT.P",
+                "state": {
+                    "type": "LineToolTrendLine",
+                    "points": [{"time_t": 100, "price": 1.3}, {"time_t": 200, "price": 1.1}],
+                    "state": {"interval": "15"},
+                },
+            }
+        }
         with tempfile.TemporaryDirectory() as directory:
             runs_dir = Path(directory)
             cache_file = runs_dir / f"tradingview_drawings_{layout_id}.json"
@@ -242,20 +249,22 @@ class TestTVCloudAndFallback(unittest.TestCase):
             file_mtime = base_now - 50.0  # 50s old (< 60s ttl)
             os.utime(cache_file, (file_mtime, file_mtime))
 
-            with patch.object(arc, "RUNS_DIR", runs_dir), patch.object(
-                arc, "_DRAWINGS_CACHE", {"data": None, "layout_id": "", "ts": 0.0}
-            ), patch.object(tve, "get_layout_drawings", return_value=fresh_drawings) as fetch_fn:
+            with patch.object(tve, "RUNS_DIR", runs_dir), patch.object(
+                tve, "_DRAWINGS_CACHE", {}
+            ), patch.object(tve, "get_chart_token", return_value="tok") as tok_fn, patch.object(
+                tve, "get_layout_chart_ids", return_value=["_shared"]
+            ), patch.object(tve, "_fetch_all_chart_sources", return_value=fresh_sources):
                 with patch("time.time", return_value=base_now):
-                    res1 = arc.fetch_layout_drawings(layout_id, ttl_sec=60)
+                    res1 = tve.get_layout_drawings(layout_id, cache_ttl_sec=60.0)
                     self.assertEqual(res1, stale_drawings)
-                    self.assertAlmostEqual(arc._DRAWINGS_CACHE["ts"], file_mtime, places=3)
-                    fetch_fn.assert_not_called()
+                    self.assertAlmostEqual(tve._DRAWINGS_CACHE[str(cache_file)][0], file_mtime, places=3)
+                    tok_fn.assert_not_called()
 
                 # 15s later -> total age from file_mtime is 65s >= 60s -> must refresh
                 with patch("time.time", return_value=base_now + 15.0):
-                    res2 = arc.fetch_layout_drawings(layout_id, ttl_sec=60)
-                    self.assertEqual(res2, fresh_drawings)
-                    fetch_fn.assert_called_once_with(layout_id)
+                    res2 = tve.get_layout_drawings(layout_id, cache_ttl_sec=60.0)
+                    self.assertEqual([d["id"] for d in res2["YBUSDT"]], ["NEW"])
+                    tok_fn.assert_called_once_with(layout_id=layout_id, force_refresh=False)
 
 
 class TestSharedCandidateSnapshot(unittest.TestCase):
@@ -664,7 +673,7 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         self.assertTrue(eval_result["is_crossover"])
         self.assertAlmostEqual(eval_result["res_price"], 0.049892, places=5)
 
-        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
+        with patch.object(tve, "get_layout_drawings", return_value={"YBUSDT": [trendline]}):
             with patch.object(arc, "get_closed_15m_candle", return_value=candle_1215):
                 alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
                 self.assertEqual(len(alerts), 1)
@@ -693,7 +702,7 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
                 "close_time": 1795234499,
             },
         }
-        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
+        with patch.object(tve, "get_layout_drawings", return_value={"YBUSDT": [trendline]}):
             with patch.object(arc, "get_closed_15m_candle", return_value=candle_already_above):
                 alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
                 self.assertEqual(len(alerts), 0)
@@ -725,7 +734,7 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         self.assertTrue(eval_result["is_crossover"])
         self.assertTrue(eval_result["is_breakout"])
 
-        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
+        with patch.object(tve, "get_layout_drawings", return_value={"YBUSDT": [trendline]}):
             with patch.object(arc, "get_closed_15m_candle", return_value=candle_cross):
                 alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
                 self.assertEqual(len(alerts), 1)
@@ -758,7 +767,7 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
             "candle_time": "2026-11-21 12:30",
             "prev_candle": {"close": 0.04960, "open_time": 1795234500, "close_time": 1795235399},
         }
-        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
+        with patch.object(tve, "get_layout_drawings", return_value={"YBUSDT": [trendline]}):
             with patch.object(arc, "get_closed_15m_candle", return_value=candle_1):
                 self.assertEqual(len(tad.check_feature_2_breakout(self.notifier, self.state_store)), 1)
             with patch.object(arc, "get_closed_15m_candle", return_value=candle_2):
@@ -781,7 +790,7 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
             "close_time": 1795235399,
             "prev_candle": {"close": 0.04910, "open_time": 1795233600, "close_time": 1795234499},
         }
-        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}):
+        with patch.object(tve, "get_layout_drawings", return_value={"YBUSDT": [trendline]}):
             with patch.object(arc, "get_closed_15m_candle", return_value=candle_below):
                 self.assertEqual(len(tad.check_feature_2_breakout(self.notifier, self.state_store)), 0)
 
@@ -822,7 +831,7 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         self.assertTrue(eval_runaway["is_runaway"])
         self.assertFalse(eval_runaway["is_breakout"])
 
-        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [line_240m, line_d, line_ancient, runaway_line]}):
+        with patch.object(tve, "get_layout_drawings", return_value={"YBUSDT": [line_240m, line_d, line_ancient, runaway_line]}):
             with patch.object(arc, "get_closed_15m_candle", return_value=candle_runaway):
                 alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
                 self.assertEqual(len(alerts), 0)
@@ -849,7 +858,7 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
             "candle_time": "2026-11-21 12:15",
             "prev_candle": {"close": 0.04975, "open_time": 1795233600, "close_time": 1795234499},
         }
-        with patch.object(arc, "fetch_layout_drawings", return_value={"AAAUSDT": [bad_line], "YBUSDT": [good_line]}), patch.object(
+        with patch.object(tve, "get_layout_drawings", return_value={"AAAUSDT": [bad_line], "YBUSDT": [good_line]}), patch.object(
             arc, "get_closed_15m_candle", side_effect=lambda sym: candle_aaa if sym == "AAAUSDT" else candle_yb
         ):
             alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
@@ -869,7 +878,7 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
         }
         status = {}
         candle_cache = {}
-        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [trendline]}), patch.object(
+        with patch.object(tve, "get_layout_drawings", return_value={"YBUSDT": [trendline]}), patch.object(
             arc, "get_closed_15m_candle", return_value=stale_candle
         ):
             alerts = tad.check_feature_2_breakout(
@@ -892,7 +901,7 @@ class TestFeature2BreakoutDetection(unittest.TestCase):
             "candle_time": "2026-11-21 12:15",
             "prev_candle": {"close": 0.04975, "open_time": now - 900, "close_time": now - 1},
         }
-        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [rtl_asc, rtl_desc]}), patch.object(
+        with patch.object(tve, "get_layout_drawings", return_value={"YBUSDT": [rtl_asc, rtl_desc]}), patch.object(
             arc, "get_closed_15m_candle", return_value=candle
         ):
             alerts = tad.check_feature_2_breakout(self.notifier, self.state_store)
@@ -926,7 +935,7 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
         }
         store.save()
         with patch.object(self.notifier, "send_alert", side_effect=[False, True]) as send, patch.object(
-            arc, "fetch_layout_drawings", return_value={}
+            tve, "get_layout_drawings", return_value={}
         ):
             tad.check_feature_2_breakout(self.notifier, store)
             store = tad.ResonanceStateStore(self.db_path)
@@ -999,7 +1008,7 @@ class TestFeature3PositionStopLoss(unittest.TestCase):
         self.pos_store.add_position("TESTUSDT", 9.0, amount=1.0, trendline=None)
         matched_line = {"id": "AUTO_TL", "interval": "15", "p1": 10.0, "t1": now - 3600, "p2": 8.0, "t2": now - 600}
         candle = {"open_time": now - 600, "close_time": now - 1, "close": 9.5}
-        with patch.object(arc, "fetch_layout_drawings", return_value={"TESTUSDT": [matched_line]}), patch.object(
+        with patch.object(tve, "get_layout_drawings", return_value={"TESTUSDT": [matched_line]}), patch.object(
             arc, "get_closed_15m_candle", return_value=candle
         ):
             alerts = tad.check_feature_3_stop_loss(self.notifier, self.pos_store)
@@ -1084,7 +1093,7 @@ class TestFeature4TrailingStopProtection(unittest.TestCase):
             self.assertIn("$1.0090", send.call_args.args[1])
 
     def test_zero_entry_price_guarded_without_crash(self):
-        db_store.upsert_open_position(self.db_path, {"symbol": "BADUSDT", "entry_price": 0.0, "status": "OPEN"})
+        db_store.save_open_positions(self.db_path, [{"symbol": "BADUSDT", "entry_price": 0.0, "status": "OPEN"}])
         with patch.object(arc, "fetch_ticker_prices", return_value={"BADUSDT": 1.5}):
             events = tad.check_feature_4_trailing_stops(self.notifier, self.pos_store)
         self.assertEqual(events, [])
@@ -1297,7 +1306,7 @@ class TestDaemonLoggingConfigAndCLI(unittest.TestCase):
         ), patch.object(tad, "fetch_ticker_prices", return_value={"YBUSDT": 0.055}), patch.object(
             arc, "fetch_ticker_prices", return_value={"YBUSDT": 0.055}
         ), patch.object(
-            arc, "fetch_layout_drawings", return_value={}
+            tve, "get_layout_drawings", return_value={}
         ):
             buf = io.StringIO()
             with redirect_stdout(buf):

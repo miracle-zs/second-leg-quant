@@ -8,79 +8,14 @@
     getTvUrl,
     ensureConfig,
     fetchJsonWithTimeout,
+    toBeijingDate,
   } = Common;
 
-  const toBeijingDate = typeof Common.toBeijingDate === 'function'
-    ? Common.toBeijingDate
-    : function fallbackToBeijingDate(tsMs) {
-        return new Date(tsMs + 8 * 3600 * 1000);
-      };
-
+  const debounce = Common.debounce;
+  const bindSortButtons = Common.bindSortButtons;
   const EXT_ARROW_SVG = typeof Common.getExtArrowSvg === 'function'
     ? Common.getExtArrowSvg('text-[#7f91a8]')
-    : (Common.EXT_ARROW_SVG || '<svg class="w-2.5 h-2.5 text-[#7f91a8] shrink-0" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>');
-
-  const debounce = typeof Common.debounce === 'function'
-    ? Common.debounce
-    : function fallbackDebounce(fn, delayMs) {
-        let timerId = null;
-        function debounced(...args) {
-          if (timerId !== null) clearTimeout(timerId);
-          timerId = setTimeout(() => {
-            timerId = null;
-            fn.apply(this, args);
-          }, delayMs);
-        }
-        debounced.cancel = function cancel() {
-          if (timerId !== null) {
-            clearTimeout(timerId);
-            timerId = null;
-          }
-        };
-        return debounced;
-      };
-
-  const bindSortButtons = typeof Common.bindSortButtons === 'function'
-    ? Common.bindSortButtons
-    : function fallbackBindSortButtons(rootEl, onSort) {
-        if (!rootEl || typeof onSort !== 'function') {
-          return { syncAria: function() {} };
-        }
-        const supportsInvokerCommands = typeof HTMLButtonElement !== 'undefined' && 'commandForElement' in HTMLButtonElement.prototype;
-        if (supportsInvokerCommands) {
-          if (!rootEl.dataset || !rootEl.dataset.sortBound) {
-            if (rootEl.dataset) rootEl.dataset.sortBound = 'true';
-            rootEl.addEventListener('command', function(e) {
-              if (e.command === '--sort' && e.source && typeof e.source.closest === 'function') {
-                onSort(e.source.closest('th.sortable'));
-              }
-            });
-          }
-        } else {
-          const headers = typeof rootEl.querySelectorAll === 'function' ? rootEl.querySelectorAll('th.sortable') : [];
-          headers.forEach(th => {
-            if (th.dataset && th.dataset.sortBound) return;
-            if (th.dataset) th.dataset.sortBound = 'true';
-            const btn = th.querySelector ? th.querySelector('button[command="--sort"]') : null;
-            const target = btn || th;
-            target.addEventListener('click', function() {
-              onSort(th);
-            });
-          });
-        }
-        return {
-          syncAria: function(activeColumn, sortAsc) {
-            const headers = typeof rootEl.querySelectorAll === 'function' ? rootEl.querySelectorAll('th.sortable') : [];
-            headers.forEach(th => {
-              if (th.dataset && th.dataset.sort === activeColumn) {
-                th.setAttribute('aria-sort', sortAsc ? 'ascending' : 'descending');
-              } else if (typeof th.removeAttribute === 'function') {
-                th.removeAttribute('aria-sort');
-              }
-            });
-          }
-        };
-      };
+    : Common.EXT_ARROW_SVG;
 
   const symbolCollator = typeof Intl !== 'undefined' && typeof Intl.Collator === 'function'
     ? new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
@@ -571,22 +506,9 @@
   }
 
   function updateSortIndicators() {
-    const histTable = document.getElementById('trade-history-table');
-    if (typeof Common.syncAriaSort === 'function' && histTable && typeof histTable.querySelectorAll === 'function') {
-      Common.syncAriaSort(histTable, HISTORY_SORT.column, HISTORY_SORT.asc);
-      return;
-    }
-    if (historySortBinding && typeof historySortBinding.syncAria === 'function') {
+    if (historySortBinding) {
       historySortBinding.syncAria(HISTORY_SORT.column, HISTORY_SORT.asc);
-      return;
     }
-    document.querySelectorAll('#trade-history-table th.sortable').forEach(th => {
-      if (th.dataset.sort === HISTORY_SORT.column) {
-        th.setAttribute('aria-sort', HISTORY_SORT.asc ? 'ascending' : 'descending');
-      } else if (typeof th.removeAttribute === 'function') {
-        th.removeAttribute('aria-sort');
-      }
-    });
   }
 
   function renderCloseReasonBadge(reason) {
@@ -1415,19 +1337,7 @@
     }
 
     const histTable = document.getElementById('trade-history-table');
-    if (histTable && typeof histTable.querySelectorAll === 'function') {
-      historySortBinding = bindSortButtons(histTable, triggerHistorySort);
-    } else {
-      document.querySelectorAll('#trade-history-table th.sortable').forEach(th => {
-        if (th.dataset && th.dataset.sortBound) return;
-        if (th.dataset) th.dataset.sortBound = 'true';
-        const btn = th.querySelector ? th.querySelector('button[command="--sort"]') : null;
-        const target = btn || th;
-        target.addEventListener('click', function() {
-          triggerHistorySort(th);
-        });
-      });
-    }
+    historySortBinding = bindSortButtons(histTable, triggerHistorySort);
 
     const refreshBtn = document.getElementById('btn-manual-refresh');
     if (refreshBtn && !refreshBtn.dataset.bound) {

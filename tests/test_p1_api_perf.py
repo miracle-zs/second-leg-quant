@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import hashlib
-import http.client
 import io
 import json
 import re
@@ -29,6 +28,7 @@ import account_dashboard_api as api  # noqa: E402
 import db_store  # noqa: E402
 import http_client  # noqa: E402
 import quant_metrics as qm  # noqa: E402
+import scan_second_leg_pool as ssp  # noqa: E402
 
 
 class TestAPIPerfAndContractsP1(unittest.TestCase):
@@ -328,7 +328,8 @@ class TestAPIPerfAndContractsP1(unittest.TestCase):
     def test_api_config_exposes_high_turnover_threshold_and_chinese_tv_map(self):
         common_js = (ROOT_DIR / "web" / "common.js").read_text(encoding="utf-8")
         scanner_py = (ROOT_DIR / "scripts" / "scan_second_leg_pool.py").read_text(encoding="utf-8")
-        self.assertIn("turnover_ratio >= 1.5", scanner_py)
+        self.assertIn("turnover_ratio >= HIGH_TURNOVER_THRESHOLD", scanner_py)
+        self.assertEqual(ssp.HIGH_TURNOVER_THRESHOLD, api.HIGH_TURNOVER_THRESHOLD)
 
         # Parse CHINESE_TV_MAP from web/common.js to guarantee 1:1 parity
         map_match = re.search(r"const\s+CHINESE_TV_MAP\s*=\s*Object\.freeze\(\{([\s\S]*?)\}\);", common_js)

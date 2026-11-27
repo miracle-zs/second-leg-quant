@@ -2,12 +2,16 @@
   const Common = window.SecondLegCommon;
   const KlineModal = window.SecondLegKlineModal;
   const {
+    EXT_ARROW_SVG,
+    debounce,
+    bindSortButtons,
     escapeHtml,
     isFiniteNum,
     formatCryptoPrice,
     formatSignedPct,
     getTvSymbol,
     getTvUrl,
+    getConfig,
     ensureConfig,
     fetchJsonWithTimeout,
     toBeijingDate,
@@ -29,31 +33,7 @@
   const VERSION_CHECK_INTERVAL_MS = 30000;
   const VISIBILITY_COOLDOWN_MS = 5000;
 
-  const EXT_ARROW_SVG = Common.EXT_ARROW_SVG || '<svg class="w-2.5 h-2.5 shrink-0" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   const CHECK_SVG = '<svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 6.2L5 8.7L9.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-  const debounce = typeof Common.debounce === 'function'
-    ? Common.debounce
-    : function fallbackDebounce(fn, delayMs) {
-        if (typeof fn !== 'function') {
-          throw new TypeError('debounce requires a function');
-        }
-        let timerId = null;
-        const debounced = function (...args) {
-          const ctx = this;
-          if (timerId !== null) clearTimeout(timerId);
-          timerId = setTimeout(() => {
-            timerId = null;
-            fn.apply(ctx, args);
-          }, delayMs);
-        };
-        debounced.cancel = () => {
-          if (timerId !== null) {
-            clearTimeout(timerId);
-            timerId = null;
-          }
-        };
-        return debounced;
-      };
 
   let candidatesState = [];
   const rowRefsBySym = new Map();
@@ -199,19 +179,11 @@
     allBar: document.getElementById('kpi-all-bar'),
   };
 
-  function resolveHighTurnoverThreshold(configResult) {
-    const candidates = [
-      configResult && typeof configResult === 'object' ? configResult.high_turnover_threshold : undefined,
-      typeof Common.getConfig === 'function' ? (Common.getConfig() || {}).high_turnover_threshold : undefined,
-      typeof Common.getHighTurnoverThreshold === 'function' ? Common.getHighTurnoverThreshold() : undefined,
-    ];
-    for (const val of candidates) {
-      if (isFiniteNum(val) && Number(val) > 0) {
-        highTurnoverThreshold = Number(val);
-        return highTurnoverThreshold;
-      }
-    }
-    highTurnoverThreshold = DEFAULT_HIGH_TURNOVER_THRESHOLD;
+  function resolveHighTurnoverThreshold() {
+    const val = (getConfig() || {}).high_turnover_threshold;
+    highTurnoverThreshold = (isFiniteNum(val) && Number(val) > 0)
+      ? Number(val)
+      : DEFAULT_HIGH_TURNOVER_THRESHOLD;
     return highTurnoverThreshold;
   }
 
@@ -404,59 +376,10 @@
 
   let sortBinding = null;
 
-  function bindSortButtonsFallback(rootEl, onSort) {
-    const headers = rootEl && typeof rootEl.querySelectorAll === 'function'
-      ? rootEl.querySelectorAll('th.sortable')
-      : sortHeaders;
-    const supportsInvokerCommands = typeof HTMLButtonElement !== 'undefined' && 'commandForElement' in HTMLButtonElement.prototype;
-    if (rootEl && supportsInvokerCommands && typeof rootEl.addEventListener === 'function' && (!rootEl.dataset || !rootEl.dataset.sortBound)) {
-      if (rootEl.dataset) rootEl.dataset.sortBound = 'true';
-      rootEl.addEventListener('command', (e) => {
-        if (e.command === '--sort' && e.source && typeof e.source.closest === 'function') {
-          onSort(e.source.closest('th.sortable'));
-        }
-      });
-    } else {
-      (headers && headers.length ? headers : sortHeaders).forEach((th) => {
-        if (th.dataset && th.dataset.sortBound) return;
-        if (th.dataset) th.dataset.sortBound = 'true';
-        const btn = typeof th.querySelector === 'function' ? th.querySelector('button[command="--sort"]') : null;
-        const target = btn || th;
-        target.addEventListener('click', () => onSort(th));
-      });
-    }
-    return {
-      syncAria(activeColumn, isAsc) {
-        const list = rootEl && typeof rootEl.querySelectorAll === 'function'
-          ? rootEl.querySelectorAll('th.sortable')
-          : sortHeaders;
-        (list && list.length ? list : sortHeaders).forEach((h) => {
-          if (activeColumn && h.getAttribute('data-sort') === activeColumn) {
-            h.setAttribute('aria-sort', isAsc ? 'ascending' : 'descending');
-          } else {
-            h.removeAttribute('aria-sort');
-          }
-        });
-      },
-    };
-  }
-
   function syncSortAria() {
-    if (sortBinding && typeof sortBinding.syncAria === 'function') {
+    if (sortBinding) {
       sortBinding.syncAria(sortColumn, sortAsc);
-      return;
     }
-    if (typeof Common.syncAriaSort === 'function') {
-      Common.syncAriaSort(sortHeaders, sortColumn, sortAsc);
-      return;
-    }
-    sortHeaders.forEach((h) => {
-      if (sortColumn && h.getAttribute('data-sort') === sortColumn) {
-        h.setAttribute('aria-sort', sortAsc ? 'ascending' : 'descending');
-      } else {
-        h.removeAttribute('aria-sort');
-      }
-    });
   }
 
   function showToast(msg) {
@@ -1328,7 +1251,7 @@
     let handedOffToSync = false;
 
     try {
-      const [configRes, { notModified, etag, data: payload }] = await Promise.all([
+      const [, { notModified, etag, data: payload }] = await Promise.all([
         ensureConfig(),
         fetchJsonWithTimeout(
           'api/candidates',
@@ -1337,7 +1260,7 @@
         ),
       ]);
       if (fetchId !== activeSnapshotFetchId) return false;
-      resolveHighTurnoverThreshold(configRes);
+      resolveHighTurnoverThreshold();
       if (notModified) return false;
       if (etag) lastEtag = etag;
       if (!payload || !Array.isArray(payload.candidates) || typeof payload.updated_at !== 'string' || !payload.updated_at.trim()) {
@@ -1606,9 +1529,7 @@
   )
     ? candidatesTable
     : document;
-  sortBinding = typeof Common.bindSortButtons === 'function'
-    ? Common.bindSortButtons(sortRoot, triggerHeaderSort)
-    : bindSortButtonsFallback(sortRoot, triggerHeaderSort);
+  sortBinding = bindSortButtons(sortRoot, triggerHeaderSort);
 
   function openCandidateChartModal(sym, tvSym, triggerEl) {
     if (!KlineModal) return;

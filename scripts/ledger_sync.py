@@ -105,7 +105,6 @@ def sync_db_ledger(
     without holding a SQLite write lock across network I/O.
     """
     recording: Optional[Dict[str, Any]] = db_store.load_recording(database)
-    previous_report: Optional[Dict[str, Any]] = None
 
     try:
         end_ms = int(client.get_server_time())
@@ -149,11 +148,9 @@ def sync_db_ledger(
     existing_income: List[dict] = list(bundle["income"])
     existing_fills: List[dict] = list(bundle["fills"])
     raw_existing_obs = bundle["observations"]
-    if raw_existing_obs:
-        if previous_report is None:
-            previous_report = {"equity_curve": list(raw_existing_obs)}
-        else:
-            previous_report["equity_curve"] = list(raw_existing_obs)
+    previous_report: Optional[Dict[str, Any]] = (
+        {"equity_curve": list(raw_existing_obs)} if raw_existing_obs else None
+    )
 
     income_by_id = {
         (item["incomeType"], str(item["tranId"])): item

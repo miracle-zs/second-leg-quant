@@ -35,17 +35,26 @@ second-leg-quant/
 │   ├── styles.css                             # 三端共享暗色 HUD 与粘性/对话框样式
 │   ├── vendor/chart.js                        # 本地固化 Chart.js v4.4.7 UMD 构建
 │   ├── common.js                              # 前端公共常量、格式化、TV 链接与超时请求工具
-│   ├── candidates.js                          # 候选池看板渲染、轮询与 K 线弹窗逻辑
+│   ├── kline-modal.js                         # 原生 <dialog> 双引擎 K 线弹窗 (Canvas + TV 内嵌)
+│   ├── candidates.js                          # 候选池看板渲染、轮询与分区筛选逻辑
 │   └── account.js                             # 账户看板渲染、Chart.js 图表与流水筛选排序
 │
 ├── scripts/                                   # 核心流水线与服务端脚本
 │   ├── config.py                              # 路径、.env 缓存、SQLite (WAL) 连接、原子写入与文件锁中心
+│   ├── http_client.py                         # 共享 HTTP/1.1 Keep-Alive 连接池与指数退避重试客户端
+│   ├── db_store.py                            # SQLite 统一持久化层 (账户/候选池/持仓/共振状态)
 │   ├── binance_client.py                      # 币安合约统一 HTTP/签名/重试客户端
 │   ├── binance_position_client.py             # 币安合约实盘持仓同步与 15m 趋势线匹配
 │   ├── tv_trendline_engine.py                 # TV 云端画线解析器与对数趋势线解算引擎
 │   ├── scan_second_leg_pool.py                # 币安 + CMC Pro 全池核验与 1h 趋势/共振扫描
+│   ├── ledger_sync.py                         # 币安资金流水与成交记录增量分页同步
+│   ├── trade_enrichment.py                    # 平仓记录与活跃持仓标准化及时间/周期格式化
+│   ├── trade_reconstructor.py                 # FIFO 成交批次与流水簇交易重建状态机
+│   ├── quant_metrics.py                       # 量化风控指标、资金净值曲线与逐日盈亏计算
 │   ├── account_analytics_engine.py            # 币安账户/流水/FIFO 成交重建与量化风控指标引擎
 │   ├── account_dashboard_api.py               # SQLite WAL 读写与多线程 HTTP 看板/API 服务
+│   ├── alert_notifier.py                      # Server酱通知客户端与预警消息格式化
+│   ├── alert_risk_checks.py                   # 四重风控检查 (新共振/15m突破/破线止损/移动保本)
 │   ├── trade_alert_daemon.py                  # 交易风控与四重预警守护进程 (Server酱 + 持仓同步)
 │   └── sync_all.py                            # 一键串联“扫描 → 账户分析 → 风控评测”
 │
@@ -99,7 +108,7 @@ python3 -m unittest discover -s tests -p "test_*.py"
 
 ## Linux 服务器部署
 
-服务器使用单一 SQLite 文件（默认 `runs/account.sqlite3`，通过 `WAL` 模式支持并发读写）保存账户报表、资金流水、成交明细与候选池快照。首次部署时可保留已有 `runs/account.sqlite3`、`runs/trade_positions.json` 和 `runs/resonance_state.json`。
+服务器使用单一 SQLite 文件（默认 `runs/account.sqlite3`，通过 `WAL` 模式支持并发读写）保存账户报表、资金流水、成交明细、候选池快照、在途持仓与共振状态。首次部署时可保留已有 `runs/account.sqlite3`。
 
 - `deploy/systemd/` 包含常驻风控守护进程（`ai-coin-selector.service`）、看板 HTTP 服务（`ai-coin-selector-account-api.service`，仅监听 `127.0.0.1:18083`）、每 5 分钟账户同步定时器（`ai-coin-selector-account-sync.{service,timer}`）和每小时候选池刷新定时器（`ai-coin-selector-refresh.{service,timer}`）。
 - `deploy/nginx/ai-coin-selector.locations.conf` 将 `/ai-coin-selector/` 统一反向代理至 `http://127.0.0.1:18083/`，由看板服务统一提供静态页面壳、`static/*` 资源与 `/api/*` JSON 接口，无需再向 Nginx 目录手动同步静态 HTML 文件。

@@ -29,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from binance_client import BINANCE_FUTURES_BASE_URL  # noqa: E402
-from config import DEFAULT_TV_LAYOUT_ID, get_env_setting  # noqa: E402
+from config import DEFAULT_TV_LAYOUT_ID, HIGH_TURNOVER_THRESHOLD, get_env_setting  # noqa: E402
 import db_store  # noqa: E402
 import http_client  # noqa: E402
 
@@ -43,7 +43,6 @@ _STATIC_CACHE_MAX_ENTRIES = 64
 _BINANCE_PROXY_TIMEOUT_SEC = 10.0
 _BINANCE_SINGLEFLIGHT_WAIT_TIMEOUT_SEC = 25.0
 _STATIC_IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
-HIGH_TURNOVER_THRESHOLD = 1.5
 CHINESE_TV_MAP: dict[str, str] = {
     "龙虾USDT": "BINANCE:LONGXIAUSDT.P",
     "哈基米USDT": "BINANCE:HAJIMIUSDT.P",

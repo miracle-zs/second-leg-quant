@@ -6,8 +6,6 @@ Automated Test Suite for Binance USDⓈ-M Futures Client & Position Auto-Sync
 
 import hashlib
 import hmac
-import io
-import json
 import os
 import shutil
 import sys
@@ -30,6 +28,7 @@ import binance_position_client as bpc
 import db_store
 import http_client
 import trade_alert_daemon as tad
+import tv_trendline_engine as tve
 
 
 class TestBinanceFuturesClient(unittest.TestCase):
@@ -517,7 +516,7 @@ class TestCLIAndDaemonIntegration(unittest.TestCase):
         self.assertEqual(reloaded.get_history(), [])
 
     @patch.dict(os.environ, clear=True)
-    @patch.object(arc, "fetch_layout_drawings", return_value={})
+    @patch.object(tve, "get_layout_drawings", return_value={})
     @patch.object(arc, "fetch_ticker_prices", return_value={})
     @patch.object(arc, "get_closed_15m_candle", side_effect=bc.BinanceAPIError("skip"))
     def test_run_evaluation_cycle_includes_binance_sync(self, _candle, _tickers, _drawings):

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import base64
-import datetime
 import http.client
 import io
 import json
@@ -16,7 +15,7 @@ import threading
 import time
 import unittest
 import urllib.parse
-from contextlib import closing, redirect_stdout
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 

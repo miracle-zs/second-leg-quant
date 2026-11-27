@@ -24,15 +24,13 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from config import clean_symbol, get_beijing_time_str  # noqa: E402
-from trade_enrichment import (  # noqa: F401,E402
+from trade_enrichment import (  # noqa: E402
     _extract_trendline_meta,
     _resolve_close_reason,
     build_trade_record,
     classify_outcome,
-    enrich_active_position,
     enrich_trade_record,
     format_duration,
-    merge_active_positions,
     parse_to_timestamp,
 )
 

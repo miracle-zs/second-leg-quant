@@ -335,14 +335,6 @@ def load_raw_report(database: Path) -> Optional[str]:
     return str(row[0])
 
 
-def load_report(database: Path) -> Optional[dict[str, object]]:
-    """Load the latest persisted account report from SQLite if available."""
-    raw = load_raw_report(database)
-    if raw is None:
-        return None
-    return _loads_dict(raw, context="account_snapshot")
-
-
 def load_recording(database: Path) -> Optional[dict[str, object]]:
     """Load persisted account recording metadata from `account_recording` if available."""
     with _read_conn(database, None) as conn:
@@ -537,29 +529,6 @@ def save_open_positions(
 
     with _write_conn(database, conn) as w_conn:
         _sync_kv_table(w_conn, "open_positions", "symbol", desired)
-
-
-def upsert_open_position(
-    database: Path,
-    position: Mapping[str, object],
-    *,
-    conn: Optional[sqlite3.Connection] = None,
-) -> None:
-    """Insert or update a single open position by normalized symbol."""
-    sym = clean_symbol(str(position["symbol"]))
-    if not sym:
-        raise ValueError(f"Position missing valid symbol: {position!r}")
-    record = dict(position)
-    record["symbol"] = sym
-    payload = _dumps_json(record)
-    with _write_conn(database, conn) as w_conn:
-        w_conn.execute(
-            """
-            INSERT INTO open_positions (symbol, payload) VALUES (?, ?)
-            ON CONFLICT(symbol) DO UPDATE SET payload = excluded.payload
-            """,
-            (sym, payload),
-        )
 
 
 def load_position_history(

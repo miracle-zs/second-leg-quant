@@ -24,12 +24,12 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 from config import get_beijing_time_str  # noqa: E402
-from trade_reconstructor import (  # noqa: E402
+from trade_enrichment import (  # noqa: E402
     classify_outcome,
     format_duration,
-    income_asset,
     parse_to_timestamp,
 )
+from trade_reconstructor import income_asset  # noqa: E402
 
 EQUITY_COMPACTION_BUCKET_MS = 300_000  # 5 分钟滚动窗口去重
 

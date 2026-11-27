@@ -30,7 +30,6 @@ from binance_client import (  # noqa: E402
 import binance_position_client as bpc  # noqa: E402
 from config import (  # noqa: E402
     DEFAULT_TV_LAYOUT_ID,
-    RUNS_DIR,
     clean_symbol,
     get_beijing_time_str,
     normalize_futures_symbol,
@@ -46,8 +45,6 @@ if TYPE_CHECKING:
     from trade_alert_daemon import PositionStore, ResonanceStateStore
 
 logger = logging.getLogger("trade_alert_daemon")
-
-_DRAWINGS_CACHE: dict[str, Any] = {"data": None, "ts": 0.0, "layout_id": ""}
 
 _EXECUTOR_LOCK = threading.Lock()
 _CANDLE_EXECUTOR: Optional[ThreadPoolExecutor] = None
@@ -94,45 +91,6 @@ def _load_candidate_pool(database: Path) -> Optional[list[dict[str, Any]]]:
     if not isinstance(payload, list):
         raise ValueError(f"Invalid candidate_snapshot payload type: {type(payload).__name__}")
     return payload
-
-
-def fetch_layout_drawings(
-    layout_id: str = DEFAULT_TV_LAYOUT_ID,
-    ttl_sec: int = 60,
-) -> Dict[str, Any]:
-    """
-    从 tv_trendline_engine 获取 TradingView 布局中的画线数据 (支持内存与近期快照缓存)。
-    在线拉取失败时显式抛出异常，避免覆盖有效状态或误判 15m 窗口完成。
-    """
-    now = time.time()
-    raw_drawings: Optional[dict[str, Any]] = None
-
-    if (
-        _DRAWINGS_CACHE["data"] is not None
-        and _DRAWINGS_CACHE["layout_id"] == layout_id
-        and (now - float(_DRAWINGS_CACHE["ts"])) < ttl_sec
-    ):
-        raw_drawings = _DRAWINGS_CACHE["data"]
-    else:
-        local_cache_file = Path(RUNS_DIR) / f"tradingview_drawings_{layout_id}.json"
-        if local_cache_file.exists():
-            mtime = local_cache_file.stat().st_mtime
-            if (now - mtime) < ttl_sec:
-                with open(local_cache_file, "r", encoding="utf-8") as f:
-                    cdata = json.load(f)
-                drawings = cdata.get("drawings_by_symbol") if isinstance(cdata, dict) else None
-                if isinstance(drawings, dict):
-                    _DRAWINGS_CACHE.update({"data": drawings, "ts": mtime, "layout_id": layout_id})
-                    raw_drawings = drawings
-
-        if raw_drawings is None:
-            drawings = tve.get_layout_drawings(layout_id)
-            if not isinstance(drawings, dict):
-                raise RuntimeError(f"Unexpected drawings payload for {layout_id}: {type(drawings).__name__}")
-            _DRAWINGS_CACHE.update({"data": drawings, "ts": now, "layout_id": layout_id})
-            raw_drawings = drawings
-
-    return raw_drawings
 
 
 def check_feature_1_resonance(
@@ -520,7 +478,7 @@ def check_feature_2_breakout(
         return []
 
     try:
-        drawings_map = fetch_layout_drawings(layout_id)
+        drawings_map = tve.get_layout_drawings(layout_id, cache_ttl_sec=60.0)
     except (BinanceAPIError, tve.TradingViewError, TimeoutError, OSError) as e:
         logger.warning(f"获取 TV 布局画线异常，跳过本轮突破扫描: {e}")
         _flush_retried_breakouts(state_store, retried_succeeded)
@@ -725,7 +683,7 @@ def check_feature_3_stop_loss(
     if not retry_only:
         if any(p.get("pending_stop_loss_candle") is None and not p.get("trendline") for p in eligible):
             try:
-                drawings_map = fetch_layout_drawings(layout_id)
+                drawings_map = tve.get_layout_drawings(layout_id, cache_ttl_sec=60.0)
             except (BinanceAPIError, tve.TradingViewError, TimeoutError, OSError) as e:
                 logger.warning(f"获取 TV 画线失败，仅校验已缓存趋势线的持仓: {e}")
                 if status is not None:

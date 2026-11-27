@@ -43,7 +43,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from alert_notifier import ServerChanNotifier, format_alert_price  # noqa: E402
-import alert_risk_checks as arc  # noqa: E402
 from alert_risk_checks import (  # noqa: E402
     check_feature_1_resonance,
     check_feature_2_breakout,
@@ -451,9 +450,7 @@ def run_evaluation_cycle(
         cfg.get("binance_api_secret", ""),
     )
     if b_client.is_configured():
-        binance_sync_info = bpc.sync_binance_positions(
-            b_client, pos_store, layout_id, load_drawings=arc.fetch_layout_drawings
-        )
+        binance_sync_info = bpc.sync_binance_positions(b_client, pos_store, layout_id)
 
     current_bucket = int(time.time() // 900) * 900
     candle_cache: dict[str, dict] = {}
@@ -607,12 +604,7 @@ class TradeAlertDaemon:
 
         if self.binance_client.is_configured():
             try:
-                bpc.sync_binance_positions(
-                    self.binance_client,
-                    self.pos_store,
-                    layout_id,
-                    load_drawings=arc.fetch_layout_drawings,
-                )
+                bpc.sync_binance_positions(self.binance_client, self.pos_store, layout_id)
             except (BinanceAPIError, HttpError, TimeoutError, OSError) as e:
                 logger.warning(f"后台自动同步币安持仓异常: {e}")
 
@@ -863,7 +855,6 @@ def main() -> None:
                 b_client,
                 store,
                 cfg.get("tradingview_layout_id", DEFAULT_TV_LAYOUT_ID),
-                load_drawings=arc.fetch_layout_drawings,
             )
             print("\n========================= 币安实盘持仓同步结果 =========================")
             print(f"• 同步状态: {'成功' if res['synced'] else '失败'} ({res['reason']})")

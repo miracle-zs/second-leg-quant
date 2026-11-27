@@ -17,7 +17,6 @@ Covers:
    - Interleaved-symbol income-only reconstruction
 4. Binance Live Futures API Integration & DB Recording:
    - Graceful degradation on BinanceAPIError (451/network) without swallowing logic bugs
-   - Corrupt trade_positions.json failing loudly
    - SQLite WAL sync, compaction, and post-DB consistency
 5. Static Account HTML Shell Integrity:
    - Pure static shell verification (static/styles.css, static/account.js, no inline CSS/JS/data)
@@ -500,8 +499,9 @@ class TestBinanceAPIIntegrationAndFallback(unittest.TestCase):
                     engine.run(database=db_path)
 
             # Previous valid snapshot in SQLite must remain intact after partial failure
-            persisted = db_store.load_report(db_path)
-            self.assertIsNotNone(persisted)
+            raw_persisted = db_store.load_raw_report(db_path)
+            self.assertIsNotNone(raw_persisted)
+            persisted = json.loads(raw_persisted)
             self.assertEqual(persisted["positions_source"], "BINANCE_API")
 
     def test_full_income_page_bisects_and_uses_recording_principal(self):
@@ -916,8 +916,9 @@ class TestFullEngineExecution(unittest.TestCase):
             engine = aae.AccountAnalyticsEngine(offline_mode=True, initial_capital=10000.0)
             engine.run(database=db_path)
 
-            saved_data = db_store.load_report(db_path)
-            self.assertIsNotNone(saved_data)
+            raw_saved = db_store.load_raw_report(db_path)
+            self.assertIsNotNone(raw_saved)
+            saved_data = json.loads(raw_saved)
             self.assertEqual(saved_data["version"], 1)
             for key in ("summary", "equity_curve", "daily_pnl", "trade_history", "active_positions", "income_breakdown"):
                 self.assertIn(key, saved_data)
@@ -965,8 +966,9 @@ class TestFullEngineExecution(unittest.TestCase):
                 ["account_analytics_engine.py", "--database", str(db_path), "--offline", "--initial-capital", "10000"],
             ):
                 aae.main()
-            persisted = db_store.load_report(db_path)
-            self.assertIsNotNone(persisted)
+            raw_persisted = db_store.load_raw_report(db_path)
+            self.assertIsNotNone(raw_persisted)
+            persisted = json.loads(raw_persisted)
             self.assertEqual(persisted["data_source"], "LOCAL_OFFLINE_FALLBACK")
 
 

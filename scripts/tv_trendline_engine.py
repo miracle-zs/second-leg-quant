@@ -60,6 +60,8 @@ USER_AGENT = (
 _TOKEN_LOCK = threading.Lock()
 _TOKEN_CACHE: dict[str, dict[str, Any]] = {}
 _TOKEN_FETCH_LOCKS: dict[str, threading.Lock] = {}
+_DRAWINGS_LOCK = threading.Lock()
+_DRAWINGS_CACHE: dict[str, tuple[float, dict[str, list[dict[str, Any]]]]] = {}
 
 
 def _extract_jwt_exp(token: str) -> int:
@@ -178,15 +180,12 @@ def get_layout_chart_ids(layout_id: str = DEFAULT_TV_LAYOUT_ID) -> list[str]:
 def _fetch_chart_sources(layout_id: str, chart_id: str, token: str) -> dict[str, Any]:
     query = urllib.parse.urlencode({"chart_id": chart_id, "jwt": token})
     url = f"{TV_SOURCES_URL.format(layout_id=layout_id)}?{query}"
-    try:
-        data = request_json(
-            url,
-            headers={"User-Agent": USER_AGENT},
-            timeout=15.0,
-            max_retries=2,
-        )
-    except HttpError:
-        raise
+    data = request_json(
+        url,
+        headers={"User-Agent": USER_AGENT},
+        timeout=15.0,
+        max_retries=2,
+    )
     if not isinstance(data, dict):
         raise TradingViewError(f"Unexpected sources payload for chart_id '{chart_id}': {type(data).__name__}")
     payload = data.get("payload")
@@ -198,10 +197,14 @@ def _fetch_chart_sources(layout_id: str, chart_id: str, token: str) -> dict[str,
     return sources
 
 
-def _read_cached_drawings(cache_path: Path, max_age_sec: float) -> Optional[dict[str, list[dict[str, Any]]]]:
+def _read_cached_drawings(
+    cache_path: Path,
+    max_age_sec: float,
+) -> Optional[tuple[dict[str, list[dict[str, Any]]], float]]:
     if not cache_path.exists():
         return None
-    if (time.time() - cache_path.stat().st_mtime) >= max_age_sec:
+    mtime = cache_path.stat().st_mtime
+    if (time.time() - mtime) >= max_age_sec:
         return None
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
@@ -211,7 +214,7 @@ def _read_cached_drawings(cache_path: Path, max_age_sec: float) -> Optional[dict
         return None
     drawings = payload.get("drawings_by_symbol") if isinstance(payload, dict) else None
     if isinstance(drawings, dict):
-        return drawings
+        return drawings, mtime
     return None
 
 
@@ -368,9 +371,18 @@ def get_layout_drawings(
     Fails closed if fetching any chart source fails or all trendlines fail parsing.
     """
     cache_path = RUNS_DIR / f"tradingview_drawings_{layout_id}.json"
+    cache_key = str(cache_path)
     if not force_refresh and cache_ttl_sec is not None and cache_ttl_sec > 0:
-        cached_drawings = _read_cached_drawings(cache_path, cache_ttl_sec)
-        if cached_drawings is not None:
+        now = time.time()
+        with _DRAWINGS_LOCK:
+            mem_hit = _DRAWINGS_CACHE.get(cache_key)
+            if mem_hit is not None and (now - mem_hit[0]) < cache_ttl_sec:
+                return mem_hit[1]
+        disk_hit = _read_cached_drawings(cache_path, cache_ttl_sec)
+        if disk_hit is not None:
+            cached_drawings, mtime = disk_hit
+            with _DRAWINGS_LOCK:
+                _DRAWINGS_CACHE[cache_key] = (mtime, cached_drawings)
             return cached_drawings
 
     token = get_chart_token(layout_id=layout_id, force_refresh=force_refresh)
@@ -418,6 +430,9 @@ def get_layout_drawings(
         with file_lock(cache_path):
             atomic_write_json(cache_path, cache_payload)
         logger.info("Saved %d symbol drawing groups to cache: %s", len(symbol_to_trendlines), cache_path)
+
+    with _DRAWINGS_LOCK:
+        _DRAWINGS_CACHE[cache_key] = (time.time(), symbol_to_trendlines)
 
     return symbol_to_trendlines
 

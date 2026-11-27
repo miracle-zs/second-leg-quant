@@ -159,7 +159,7 @@ class TestTradeReconstructorP0Fixes(unittest.TestCase):
             "closed_at": "2026-11-25 10:00:00+08:00",
             "status": "MANUAL_CLOSE",
         }]
-        t_ms = int(tr.parse_to_timestamp("2026-11-25 10:00:00+08:00") * 1000)
+        t_ms = int(te.parse_to_timestamp("2026-11-25 10:00:00+08:00") * 1000)
         inc_only = [
             {"symbol": "SOLUSDT", "incomeType": "REALIZED_PNL", "tranId": 1, "tradeId": "9", "time": t_ms, "income": "100", "asset": "USDT"},
             {"symbol": "SOLUSDT", "incomeType": "COMMISSION", "tranId": 2, "tradeId": "9", "time": t_ms, "income": "-10", "asset": "USDT"},
@@ -189,7 +189,7 @@ class TestTradeReconstructorP0Fixes(unittest.TestCase):
             "trendline": {"id": "TL_BTC"},
             "highest_price": 93000.0,
         }]
-        merged = tr.merge_active_positions(normalized_binance, local_pos, positions_available=True)
+        merged = te.merge_active_positions(normalized_binance, local_pos, positions_available=True)
         self.assertEqual(len(merged), 1)
         self.assertEqual(merged[0]["source"], "BINANCE_SYNC")
         self.assertEqual(merged[0]["trendline_id"], "TL_BTC")
@@ -246,7 +246,7 @@ class TestDbStoreAndLedgerSyncP0Fixes(unittest.TestCase):
             with db_store.transaction(db_path) as conn:
                 conn.execute("DELETE FROM account_snapshot")
 
-            self.assertIsNone(db_store.load_report(db_path))
+            self.assertIsNone(db_store.load_raw_report(db_path))
             self.assertIsNotNone(db_store.load_recording(db_path))
 
             status = {"connected": True, "mode": "BINANCE_SNAPSHOT_PENDING_INCOME", "positions_available": True, "income_available": False}
@@ -397,7 +397,7 @@ class TestDashboardAPIP0Fixes(unittest.TestCase):
                 db_path,
                 {"summary": {"total_equity": 888.0}, "active_positions": [], "trade_history": [], "equity_curve": [], "daily_pnl": []},
             )
-            with patch.object(db_store, "load_report", side_effect=AssertionError("must not parse full report")):
+            with patch.object(json, "loads", side_effect=AssertionError("must not parse full report")):
                 c1, h1, b1 = self._invoke(handler_cls, "GET", "/api/account")
                 c2, _, b2 = self._invoke(handler_cls, "GET", "/api/account", headers={"If-None-Match": h1["etag"]})
             self.assertEqual(c1, 200)
@@ -739,13 +739,13 @@ class TestAccountFailFastRegressionFixes(unittest.TestCase):
 
         # enrich_trade_record requires entry_price & amount, does not fabricate leverage=5
         with self.assertRaises(KeyError):
-            tr.enrich_trade_record({"symbol": "BTCUSDT", "amount": 1.0}, 0)
+            te.enrich_trade_record({"symbol": "BTCUSDT", "amount": 1.0}, 0)
         with self.assertRaises(KeyError):
-            tr.enrich_trade_record({"symbol": "BTCUSDT", "entry_price": 100.0}, 0)
+            te.enrich_trade_record({"symbol": "BTCUSDT", "entry_price": 100.0}, 0)
         with self.assertRaises(ValueError):
-            tr.enrich_trade_record({"symbol": "BTCUSDT", "entry_price": 0.0, "amount": 1.0}, 0)
+            te.enrich_trade_record({"symbol": "BTCUSDT", "entry_price": 0.0, "amount": 1.0}, 0)
 
-        no_lev_trade = tr.enrich_trade_record(
+        no_lev_trade = te.enrich_trade_record(
             {"symbol": "BTCUSDT", "entry_price": 100.0, "exit_price": 110.0, "amount": 1.0},
             0,
         )
@@ -754,15 +754,15 @@ class TestAccountFailFastRegressionFixes(unittest.TestCase):
 
         # enrich_active_position requires entry_price, amount, and mark_price; no magic leverage=5
         with self.assertRaises(ValueError):
-            tr.enrich_active_position({"symbol": "BTCUSDT", "amount": 1.0, "mark_price": 100.0}, 0)
+            te.enrich_active_position({"symbol": "BTCUSDT", "amount": 1.0, "mark_price": 100.0}, 0)
         with self.assertRaises(ValueError):
-            tr.enrich_active_position({"symbol": "BTCUSDT", "entry_price": 100.0, "mark_price": 100.0}, 0)
+            te.enrich_active_position({"symbol": "BTCUSDT", "entry_price": 100.0, "mark_price": 100.0}, 0)
         with self.assertRaises(ValueError):
-            tr.enrich_active_position({"symbol": "BTCUSDT", "entry_price": 100.0, "amount": 1.0}, 0)
+            te.enrich_active_position({"symbol": "BTCUSDT", "entry_price": 100.0, "amount": 1.0}, 0)
         with self.assertRaises(ValueError):
-            tr.enrich_active_position({"symbol": "BTCUSDT", "entry_price": 100.0, "amount": 1.0, "mark_price": 0.0}, 0)
+            te.enrich_active_position({"symbol": "BTCUSDT", "entry_price": 100.0, "amount": 1.0, "mark_price": 0.0}, 0)
 
-        no_lev_pos = tr.enrich_active_position(
+        no_lev_pos = te.enrich_active_position(
             {"symbol": "BTCUSDT", "entry_price": 100.0, "amount": 2.0, "mark_price": 105.0},
             0,
         )

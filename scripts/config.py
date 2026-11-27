@@ -29,6 +29,7 @@ WEB_DIR = PROJECT_ROOT / "web"
 DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_DB_PATH = RUNS_DIR / "account.sqlite3"
 DEFAULT_TV_LAYOUT_ID = "ig0LuDL8"
+HIGH_TURNOVER_THRESHOLD = 1.5
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 

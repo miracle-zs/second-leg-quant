@@ -4,14 +4,11 @@
 
 import io
 import json
-import logging
-import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
-import time
 import unittest
 from contextlib import redirect_stdout
 from logging.handlers import RotatingFileHandler
@@ -108,7 +105,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             "prev_candle": {"close": 0.04975, "open_time": now - 900, "close_time": now - 1},
         }
 
-        def fake_drawings(_layout):
+        def fake_drawings(_layout, **_kwargs):
             self._assert_sqlite_unlocked()
             self.assertIsNone(store._tx_conn)
             return {"ETHUSDT": [eth_line], "YBUSDT": [line1, line2]}
@@ -126,7 +123,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             send_calls.append(title)
             return "YBUSDT" not in title
 
-        with patch.object(arc, "fetch_layout_drawings", side_effect=fake_drawings), patch.object(
+        with patch.object(tve, "get_layout_drawings", side_effect=fake_drawings), patch.object(
             arc, "get_closed_15m_candle", side_effect=fake_candle
         ), patch.object(self.notifier, "send_alert", side_effect=fake_send):
             alerts = tad.check_feature_2_breakout(self.notifier, store)
@@ -157,7 +154,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             "prev_candle": {"close": 0.04975, "open_time": now - 900, "close_time": now - 1},
         }
 
-        with patch.object(arc, "fetch_layout_drawings", return_value={"YBUSDT": [line1, line2]}), patch.object(
+        with patch.object(tve, "get_layout_drawings", return_value={"YBUSDT": [line1, line2]}), patch.object(
             arc, "get_closed_15m_candle", return_value=candle
         ), patch.object(self.notifier, "send_alert", side_effect=[False, False, True]) as send_mock:
             # Cycle 1: L1 fails -> only YBUSDT_L1 queued, L2 not queued or notified
@@ -197,7 +194,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             }
         ]
         with patch.object(daemon.binance_client, "get_active_positions", return_value=active_longs), patch.object(
-            arc, "fetch_layout_drawings", return_value={}
+            tve, "get_layout_drawings", return_value={}
         ), patch.object(arc, "fetch_ticker_prices", return_value={"ILLIQUSDT": 1.08}) as mock_tickers, patch.object(
             daemon.notifier, "send_alert", return_value=True
         ) as mock_send:
@@ -252,7 +249,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         # Daemon intra-bucket retry must pass retry_only=True so SAFE2USDT does NOT hit Binance/TV every 10s
         daemon = tad.TradeAlertDaemon({"database_path": str(self.db_path)}, dry_run=True)
         with patch.object(arc, "get_closed_15m_candle", side_effect=AssertionError("must not fetch klines on retry_only")), patch.object(
-            arc, "fetch_layout_drawings", side_effect=AssertionError("must not fetch drawings on retry_only")
+            tve, "get_layout_drawings", side_effect=AssertionError("must not fetch drawings on retry_only")
         ), patch.object(daemon.notifier, "send_alert", return_value=True) as mock_send, patch.object(
             tad, "check_feature_4_trailing_stops", return_value=[]
         ):
@@ -261,17 +258,19 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         self.assertTrue(tad.PositionStore(self.db_path).get_open_positions()[0]["stop_loss_notified"])
 
     def test_feature_4_releases_db_lock_handles_none_highest_and_micro_price(self):
-        db_store.upsert_open_position(
+        db_store.save_open_positions(
             self.db_path,
-            {
-                "symbol": "PEPEUSDT",
-                "entry_price": 0.00004000,
-                "amount": 100000.0,
-                "highest_price": None,
-                "trailing_stop_triggered": False,
-                "profit_lock_notified": False,
-                "status": "OPEN",
-            },
+            [
+                {
+                    "symbol": "PEPEUSDT",
+                    "entry_price": 0.00004000,
+                    "amount": 100000.0,
+                    "highest_price": None,
+                    "trailing_stop_triggered": False,
+                    "profit_lock_notified": False,
+                    "status": "OPEN",
+                }
+            ],
         )
         pos_store = tad.PositionStore(self.db_path)
 
@@ -413,9 +412,9 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         self.assertIsNone(daemon._shared_ro_conn)
 
     def test_feature_4_skips_transaction_when_no_prices_and_no_pending_alerts(self):
-        db_store.upsert_open_position(
+        db_store.save_open_positions(
             self.db_path,
-            {"symbol": "PEPEUSDT", "entry_price": 0.00004, "amount": 100.0, "status": "OPEN"},
+            [{"symbol": "PEPEUSDT", "entry_price": 0.00004, "amount": 100.0, "status": "OPEN"}],
         )
         pos_store = tad.PositionStore(self.db_path)
         with patch.object(arc, "fetch_ticker_prices", side_effect=bc.BinanceAPIError("down")), patch.object(
@@ -431,10 +430,10 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             runs_dir = Path(directory)
             cache_file = runs_dir / f"tradingview_drawings_{layout_id}.json"
             cache_file.write_text(json.dumps({"drawings_by_symbol": {}}), encoding="utf-8")
-            with patch.object(arc, "RUNS_DIR", runs_dir), patch.object(
-                arc, "_DRAWINGS_CACHE", {"data": None, "layout_id": "", "ts": 0.0}
-            ), patch.object(tve, "get_layout_drawings", side_effect=AssertionError("should honor empty cache")):
-                self.assertEqual(arc.fetch_layout_drawings(layout_id, ttl_sec=60), {})
+            with patch.object(tve, "RUNS_DIR", runs_dir), patch.object(
+                tve, "_DRAWINGS_CACHE", {}
+            ), patch.object(tve, "get_chart_token", side_effect=AssertionError("should honor empty cache")):
+                self.assertEqual(tve.get_layout_drawings(layout_id, cache_ttl_sec=60), {})
 
         pos_store = tad.PositionStore(self.db_path)
         pos_store.add_position("YBUSDT", 0.05, amount=10.0)
@@ -496,7 +495,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_position_store_requires_status_field(self):
-        db_store.upsert_open_position(self.db_path, {"symbol": "NOSTATUSUSDT", "entry_price": 1.0})
+        db_store.save_open_positions(self.db_path, [{"symbol": "NOSTATUSUSDT", "entry_price": 1.0}])
         store = tad.PositionStore(self.db_path)
         with self.assertRaises(KeyError):
             store.get_open_positions()
@@ -533,16 +532,18 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
 
     def test_feature_3_requires_amount_and_does_not_mask_corrupt_pending_candle(self):
         tl = {"id": "SL1", "interval": "15", "p1": 2.0, "t1": 0, "p2": 1.5, "t2": 100}
-        db_store.upsert_open_position(
+        db_store.save_open_positions(
             self.db_path,
-            {
-                "symbol": "CORRUPTPENDINGUSDT",
-                "entry_price": 1.8,
-                "amount": 10.0,
-                "status": "OPEN",
-                "trendline": tl,
-                "pending_stop_loss_candle": {},
-            },
+            [
+                {
+                    "symbol": "CORRUPTPENDINGUSDT",
+                    "entry_price": 1.8,
+                    "amount": 10.0,
+                    "status": "OPEN",
+                    "trendline": tl,
+                    "pending_stop_loss_candle": {},
+                }
+            ],
         )
         pos_store = tad.PositionStore(self.db_path)
         st = {}
@@ -572,17 +573,19 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
                 tad.check_feature_3_stop_loss(self.notifier, pos_store2)
 
     def test_feature_4_fails_fast_on_corrupt_trailing_stop_or_ticker(self):
-        db_store.upsert_open_position(
+        db_store.save_open_positions(
             self.db_path,
-            {
-                "symbol": "BADLOCKUSDT",
-                "entry_price": 1.0,
-                "amount": 10.0,
-                "status": "OPEN",
-                "trailing_stop_triggered": True,
-                "trailing_stop_price": None,
-                "profit_lock_notified": False,
-            },
+            [
+                {
+                    "symbol": "BADLOCKUSDT",
+                    "entry_price": 1.0,
+                    "amount": 10.0,
+                    "status": "OPEN",
+                    "trailing_stop_triggered": True,
+                    "trailing_stop_price": None,
+                    "profit_lock_notified": False,
+                }
+            ],
         )
         pos_store = tad.PositionStore(self.db_path)
         with patch.object(arc, "fetch_ticker_prices", return_value={"BADLOCKUSDT": 1.05}):

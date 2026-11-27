@@ -119,7 +119,7 @@
     }
   }
 
-  // SMA-seeded EMA matching scripts/scan_second_leg_pool.py calc_ema_series
+  // SMA-seeded EMA matching scripts/scan_second_leg_pool.py calc_ema
   function calcEMAArray(candlesList, period) {
     const n = candlesList.length;
     const res = new Array(n).fill(null);
