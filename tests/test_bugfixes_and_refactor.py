@@ -170,7 +170,11 @@ class TestAccountAnalyticsFixes(unittest.TestCase):
         self.assertNotIn('<script id="account-data"', html_out)
         self.assertIn("short-position-warning", html_out)
         self.assertIn("仅多头仓位纳入 15m 破线止损与移动保本风控", html_out)
-        account_js = (ROOT_DIR / "web" / "account.js").read_text(encoding="utf-8")
+        account_js = (
+            (ROOT_DIR / "web" / "account-tables.js").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "web" / "account.js").read_text(encoding="utf-8")
+        )
         self.assertIn("未受风控监控", account_js)
         self.assertIn("未纳入风控", account_js)
 

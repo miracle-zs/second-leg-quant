@@ -417,6 +417,131 @@
     return new Date(tsMs + 8 * 3600 * 1000);
   }
 
+  function pad2(n) {
+    return String(n).padStart(2, '0');
+  }
+
+  function formatBeijingTime(rawVal, opts) {
+    if (rawVal === null || rawVal === undefined) return '--';
+    let tsMs;
+    if (typeof rawVal === 'number') {
+      if (!Number.isFinite(rawVal)) return '--';
+      tsMs = rawVal;
+    } else {
+      const trimmed = String(rawVal).trim();
+      if (!trimmed || trimmed === '--') return '--';
+      const parseTarget = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)
+        ? trimmed.replace(' ', 'T') + '+08:00'
+        : trimmed;
+      const parsed = new Date(parseTarget);
+      if (Number.isNaN(parsed.getTime())) return trimmed;
+      tsMs = parsed.getTime();
+    }
+    const bj = toBeijingDate(tsMs);
+    const options = opts || {};
+    const fmt = options.format || 'datetime';
+    const yyyy = bj.getUTCFullYear();
+    const mm = pad2(bj.getUTCMonth() + 1);
+    const dd = pad2(bj.getUTCDate());
+    const hh = pad2(bj.getUTCHours());
+    const mi = pad2(bj.getUTCMinutes());
+    const ss = pad2(bj.getUTCSeconds());
+    let base;
+    if (fmt === 'time') {
+      base = `${hh}:${mi}:${ss}`;
+    } else if (fmt === 'mdhm') {
+      base = `${mm}/${dd} ${hh}:${mi}`;
+    } else if (fmt === 'md') {
+      base = `${mm}/${dd}`;
+    } else {
+      base = `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+    }
+    return options.suffix ? base + options.suffix : base;
+  }
+
+  function setIfChanged(el, prop, nextVal) {
+    if (el && el[prop] !== nextVal) {
+      el[prop] = nextVal;
+    }
+  }
+
+  function focusSafely(el) {
+    if (!el || typeof el.focus !== 'function' || el.isConnected === false) return;
+    try {
+      el.focus({ preventScroll: true });
+    } catch (_err) {
+      el.focus();
+    }
+  }
+
+  function setButtonBusy(btn, busy, spinnerEl) {
+    const isBusy = Boolean(busy);
+    const iconEl = spinnerEl || (btn && typeof btn.querySelector === 'function' ? btn.querySelector('svg') : null);
+    if (iconEl && iconEl.classList) {
+      iconEl.classList.toggle('animate-spin', isBusy);
+    }
+    if (!btn) return;
+    btn.disabled = isBusy;
+    if (isBusy) {
+      if (typeof btn.setAttribute === 'function') btn.setAttribute('aria-busy', 'true');
+    } else if (typeof btn.removeAttribute === 'function') {
+      btn.removeAttribute('aria-busy');
+    }
+    if (btn.classList) {
+      btn.classList.toggle('opacity-75', isBusy);
+    }
+  }
+
+  function updateStatusBadge(badgeEl, cache, nextState) {
+    if (!badgeEl || !nextState) return false;
+    const nextClass = nextState.className || '';
+    const nextHtml = `<span class="w-1.5 h-1.5 rounded-full ${nextState.dotClass}" aria-hidden="true"></span><span>${escapeHtml(nextState.label)}</span>`;
+    const hasTitle = Object.prototype.hasOwnProperty.call(nextState, 'title');
+    if (hasTitle && badgeEl.title !== nextState.title) {
+      badgeEl.title = nextState.title;
+    }
+    if (cache && cache.className === nextClass && cache.html === nextHtml) {
+      return false;
+    }
+    if (cache) {
+      cache.className = nextClass;
+      cache.html = nextHtml;
+    }
+    badgeEl.className = nextClass;
+    badgeEl.innerHTML = nextHtml;
+    return true;
+  }
+
+  function createPollScheduler(callback, intervalMs) {
+    if (typeof callback !== 'function') {
+      throw new TypeError('createPollScheduler requires a callback function');
+    }
+    let timerId = null;
+    function clear() {
+      if (timerId !== null) {
+        clearTimeout(timerId);
+        timerId = null;
+      }
+    }
+    function schedule() {
+      clear();
+      if (typeof global.document !== 'undefined' && global.document.hidden) return;
+      timerId = setTimeout(() => {
+        timerId = null;
+        if (typeof global.document === 'undefined' || !global.document.hidden) {
+          callback();
+        }
+      }, intervalMs);
+      if (timerId && typeof timerId.unref === 'function') {
+        timerId.unref();
+      }
+    }
+    function isScheduled() {
+      return timerId !== null;
+    }
+    return { schedule, clear, isScheduled };
+  }
+
   if (typeof global.document !== 'undefined' && typeof global.document.querySelector === 'function') {
     const syncLinks = () => {
       ensureConfig().catch((err) => console.error('Failed to load /api/config:', err));
@@ -449,5 +574,11 @@
     getTvUrl,
     fetchJsonWithTimeout,
     toBeijingDate,
+    formatBeijingTime,
+    setIfChanged,
+    focusSafely,
+    setButtonBusy,
+    updateStatusBadge,
+    createPollScheduler,
   });
 })(window);

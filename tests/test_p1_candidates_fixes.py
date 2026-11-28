@@ -16,7 +16,11 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 class TestCandidatesAndModalP1Fixes(unittest.TestCase):
     def test_static_html_and_js_p1_contracts(self):
         index_html = (ROOT_DIR / "web/index.html").read_text(encoding="utf-8")
-        cand_js = (ROOT_DIR / "web/candidates.js").read_text(encoding="utf-8")
+        cand_js = (
+            (ROOT_DIR / "web/candidates-render.js").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "web/candidates.js").read_text(encoding="utf-8")
+        )
         modal_js = (ROOT_DIR / "web/kline-modal.js").read_text(encoding="utf-8")
 
         # #18: Remove focus:outline-none from search input
@@ -95,6 +99,7 @@ class TestCandidatesAndModalP1Fixes(unittest.TestCase):
             const root = process.cwd();
             const commonCode = fs.readFileSync(path.join(root, 'web/common.js'), 'utf8');
             const klineModalCode = fs.readFileSync(path.join(root, 'web/kline-modal.js'), 'utf8');
+            const candRenderCode = fs.readFileSync(path.join(root, 'web/candidates-render.js'), 'utf8');
             const candCode = fs.readFileSync(path.join(root, 'web/candidates.js'), 'utf8');
 
             function makeClassList(initial = []) {
@@ -649,6 +654,7 @@ class TestCandidatesAndModalP1Fixes(unittest.TestCase):
                   });
                 }
                 vm.runInNewContext(klineModalCode, win);
+                vm.runInNewContext(candRenderCode, win);
                 const instrumentedCand = candCode.replace(
                   /\\}\\)\\(\\);\\s*$/,
                   'window.__candTest = { checkSnapshotVersion, loadCandidateSnapshot, syncBinancePool, applySortOrder, applyFilter, resetFiltersToDefault, getState: () => candidatesState };})();'

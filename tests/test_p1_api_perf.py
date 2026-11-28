@@ -479,6 +479,8 @@ class TestAPIPerfAndContractsP1(unittest.TestCase):
 
             const root = process.cwd();
             const commonCode = fs.readFileSync(path.join(root, 'web/common.js'), 'utf8');
+            const acctTablesCode = fs.readFileSync(path.join(root, 'web/account-tables.js'), 'utf8');
+            const acctChartsCode = fs.readFileSync(path.join(root, 'web/account-charts.js'), 'utf8');
             const accountCode = fs.readFileSync(path.join(root, 'web/account.js'), 'utf8');
             const accountJson = process.env.ACCOUNT_PAYLOAD_JSON;
 
@@ -532,6 +534,8 @@ class TestAPIPerfAndContractsP1(unittest.TestCase):
 
             (async () => {
               vm.runInNewContext(commonCode, win);
+              vm.runInNewContext(acctTablesCode, win);
+              vm.runInNewContext(acctChartsCode, win);
               vm.runInNewContext(accountCode, win);
               await new Promise((r) => setTimeout(r, 30));
               assert.strictEqual(els['kpi-wl-record'].textContent, '1W / 1L / 0BE');

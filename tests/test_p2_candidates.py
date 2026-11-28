@@ -16,7 +16,11 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 class TestCandidatesAndModalP2Fixes(unittest.TestCase):
     def test_static_html_js_and_design_doc_p2_contracts(self):
         index_html = (ROOT_DIR / "web/index.html").read_text(encoding="utf-8")
-        cand_js = (ROOT_DIR / "web/candidates.js").read_text(encoding="utf-8")
+        cand_js = (
+            (ROOT_DIR / "web/candidates-render.js").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "web/candidates.js").read_text(encoding="utf-8")
+        )
         modal_js = (ROOT_DIR / "web/kline-modal.js").read_text(encoding="utf-8")
         design_md = (ROOT_DIR / "DESIGN.md").read_text(encoding="utf-8")
         tailwind_css = (ROOT_DIR / "web/tailwind.css").read_text(encoding="utf-8")
@@ -137,6 +141,7 @@ class TestCandidatesAndModalP2Fixes(unittest.TestCase):
             const root = process.cwd();
             const commonCode = fs.readFileSync(path.join(root, 'web/common.js'), 'utf8');
             const modalCode = fs.readFileSync(path.join(root, 'web/kline-modal.js'), 'utf8');
+            const candRenderCode = fs.readFileSync(path.join(root, 'web/candidates-render.js'), 'utf8');
             const candCode = fs.readFileSync(path.join(root, 'web/candidates.js'), 'utf8');
 
             function makeClassList(initial = []) {
@@ -542,6 +547,7 @@ class TestCandidatesAndModalP2Fixes(unittest.TestCase):
                   },
                 });
 
+                vm.runInNewContext(candRenderCode, win);
                 vm.runInNewContext(candCode, win);
                 await new Promise((r) => setTimeout(r, 30));
 

@@ -8,7 +8,8 @@
     formatCryptoPrice,
     getTvUrl,
     fetchJsonWithTimeout,
-    toBeijingDate,
+    formatBeijingTime,
+    focusSafely,
   } = Common;
 
   const VALID_BAR_COUNTS = new Set([60, 120, 168]);
@@ -148,13 +149,7 @@
   }
 
   function formatAxisTime(tsMs, interval) {
-    const bj = toBeijingDate(tsMs);
-    const mm = String(bj.getUTCMonth() + 1).padStart(2, '0');
-    const dd = String(bj.getUTCDate()).padStart(2, '0');
-    if (interval === '1d') return `${mm}/${dd}`;
-    const hh = String(bj.getUTCHours()).padStart(2, '0');
-    const mi = String(bj.getUTCMinutes()).padStart(2, '0');
-    return `${mm}/${dd} ${hh}:${mi}`;
+    return formatBeijingTime(tsMs, { format: interval === '1d' ? 'md' : 'mdhm' });
   }
 
   function ensureTooltipNodes() {
@@ -240,13 +235,12 @@
     ctx.textAlign = 'left';
 
     const steps = 6;
+    ctx.beginPath();
     for (let i = 0; i <= steps; i++) {
       const p = minP + (fullSpan / steps) * i;
       const y = getY(p);
-      ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(chartW, y);
-      ctx.stroke();
       if (lastCloseY === null || Math.abs(y - lastCloseY) >= 13) {
         ctx.fillText(formatCryptoPrice(p), chartW + 7, y + 3);
       }
@@ -256,47 +250,59 @@
     const slot = chartW / n;
     const barW = Math.max(slot * 0.68, 2);
 
-    ctx.beginPath();
     ctx.moveTo(0, plotH);
     ctx.lineTo(chartW, plotH);
-    ctx.stroke();
 
     const tickTarget = Math.max(2, Math.min(6, Math.floor(chartW / 120)));
     const tickStep = Math.max(1, Math.floor((n - 1) / tickTarget));
-    ctx.fillStyle = '#7f91a8';
-    ctx.font = '10px "JetBrains Mono", "SF Mono", monospace';
     ctx.textAlign = 'center';
     for (let i = 0; i < n; i += tickStep) {
       const x = i * slot + slot / 2;
       if (x < 36 || x > chartW - 36) continue;
-      ctx.beginPath();
       ctx.moveTo(x, plotH);
       ctx.lineTo(x, plotH + 4);
-      ctx.stroke();
       ctx.fillText(formatAxisTime(visibleCandles[i].time, modalCurrentInterval), x, plotH + 15);
     }
+    ctx.stroke();
     ctx.textAlign = 'left';
 
-    visibleCandles.forEach((c, i) => {
-      const x = i * slot + slot / 2;
-      const isBull = c.close >= c.open;
-      const col = isBull ? '#22c58b' : '#f25565';
+    const halfBarW = barW / 2;
+    const drawCandlePolarityBatch = (isBullBatch) => {
+      const col = isBullBatch ? '#22c58b' : '#f25565';
+      const volCol = isBullBatch ? 'rgba(34, 197, 139, 0.32)' : 'rgba(242, 85, 101, 0.32)';
       ctx.strokeStyle = col;
-      ctx.fillStyle = col;
-
       ctx.beginPath();
-      ctx.moveTo(x, getY(c.high));
-      ctx.lineTo(x, getY(c.low));
+      for (let i = 0; i < n; i++) {
+        const c = visibleCandles[i];
+        if ((c.close >= c.open) !== isBullBatch) continue;
+        const x = i * slot + slot / 2;
+        ctx.moveTo(x, getY(c.high));
+        ctx.lineTo(x, getY(c.low));
+      }
       ctx.stroke();
 
-      const yO = getY(c.open);
-      const yC = getY(c.close);
-      ctx.fillRect(x - barW / 2, Math.min(yO, yC), barW, Math.max(Math.abs(yC - yO), 1));
+      ctx.fillStyle = col;
+      for (let i = 0; i < n; i++) {
+        const c = visibleCandles[i];
+        if ((c.close >= c.open) !== isBullBatch) continue;
+        const x = i * slot + slot / 2;
+        const yO = getY(c.open);
+        const yC = getY(c.close);
+        ctx.fillRect(x - halfBarW, Math.min(yO, yC), barW, Math.max(Math.abs(yC - yO), 1));
+      }
 
-      const vY = getVolY(c.volume);
-      ctx.fillStyle = isBull ? 'rgba(34, 197, 139, 0.32)' : 'rgba(242, 85, 101, 0.32)';
-      ctx.fillRect(x - barW / 2, vY, barW, plotH - 3 - vY);
-    });
+      ctx.fillStyle = volCol;
+      for (let i = 0; i < n; i++) {
+        const c = visibleCandles[i];
+        if ((c.close >= c.open) !== isBullBatch) continue;
+        const x = i * slot + slot / 2;
+        const vY = getVolY(c.volume);
+        ctx.fillRect(x - halfBarW, vY, barW, plotH - 3 - vY);
+      }
+    };
+
+    drawCandlePolarityBatch(true);
+    drawCandlePolarityBatch(false);
 
     const drawEmaLine = (field, color) => {
       ctx.beginPath();
@@ -432,8 +438,7 @@
       ctx.fillText(axisTimeText, timeBoxX + timeBoxW / 2, plotH + 14);
       ctx.textAlign = 'left';
 
-      const bj = toBeijingDate(c.time);
-      const timeStr = `${String(bj.getUTCMonth() + 1).padStart(2, '0')}/${String(bj.getUTCDate()).padStart(2, '0')} ${String(bj.getUTCHours()).padStart(2, '0')}:${String(bj.getUTCMinutes()).padStart(2, '0')}`;
+      const timeStr = formatBeijingTime(c.time, { format: 'mdhm' });
       const chg = c.open > 0 ? (((c.close - c.open) / c.open) * 100).toFixed(2) : null;
       const isBull = c.close >= c.open;
       const chgLabel = chg !== null ? `${Number(chg) > 0 ? '+' : ''}${chg}%` : '--';
@@ -685,13 +690,7 @@
   function restoreFocusAfterClose() {
     const target = lastFocusedElement;
     lastFocusedElement = null;
-    if (!target || typeof target.focus !== 'function') return;
-    if (target.isConnected === false) return;
-    try {
-      target.focus({ preventScroll: true });
-    } catch (_err) {
-      target.focus();
-    }
+    focusSafely(target);
   }
 
   function resetModalStateOnClose() {
@@ -975,6 +974,20 @@
     modalResizeObserver.observe(modalNativeView);
   } else if (typeof global.addEventListener === 'function') {
     global.addEventListener('resize', handleNativeContainerResize);
+  }
+
+  if (typeof global.addEventListener === 'function') {
+    global.addEventListener('pagehide', () => {
+      clearTvLoadTimer();
+      if (modalRenderRafId !== null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(modalRenderRafId);
+        modalRenderRafId = null;
+      }
+      if (modalFetchController) {
+        modalFetchController.abort();
+        modalFetchController = null;
+      }
+    });
   }
 
   function setNavMeta(index, total) {

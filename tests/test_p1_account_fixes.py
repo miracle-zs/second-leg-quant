@@ -16,7 +16,13 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 class TestAccountP1Fixes(unittest.TestCase):
     def test_static_account_html_and_js_p1_contracts(self):
         html = (ROOT_DIR / "web/account.html").read_text(encoding="utf-8")
-        js = (ROOT_DIR / "web/account.js").read_text(encoding="utf-8")
+        js = (
+            (ROOT_DIR / "web/account-tables.js").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "web/account-charts.js").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "web/account.js").read_text(encoding="utf-8")
+        )
 
         # #20: Primary CTA uses .btn-primary-cobalt instead of ghost styling
         tv_cta_match = re.search(r'<a\b[^>]*data-tv-layout-link[^>]*>', html)
@@ -92,6 +98,8 @@ class TestAccountP1Fixes(unittest.TestCase):
 
             const root = process.cwd();
             const commonCode = fs.readFileSync(path.join(root, 'web/common.js'), 'utf8');
+            const acctTablesCode = fs.readFileSync(path.join(root, 'web/account-tables.js'), 'utf8');
+            const acctChartsCode = fs.readFileSync(path.join(root, 'web/account-charts.js'), 'utf8');
             const acctCode = fs.readFileSync(path.join(root, 'web/account.js'), 'utf8');
 
             function makeEl(id) {
@@ -232,6 +240,8 @@ class TestAccountP1Fixes(unittest.TestCase):
               win.window = win;
 
               vm.runInNewContext(commonCode, win);
+              vm.runInNewContext(acctTablesCode, win);
+              vm.runInNewContext(acctChartsCode, win);
               vm.runInNewContext(
                 acctCode.replace(/\\}\\)\\(\\);\\s*$/, 'window.__acctTest = { renderDashboard, tryLoadData, upsertChart, downsampleEquityCurve, getCurrentAccountData: () => currentAccountData };})();'),
                 win
@@ -436,6 +446,8 @@ class TestAccountP1Fixes(unittest.TestCase):
               };
               winNoChart.window = winNoChart;
               vm.runInNewContext(commonCode, winNoChart);
+              vm.runInNewContext(acctTablesCode, winNoChart);
+              vm.runInNewContext(acctChartsCode, winNoChart);
               vm.runInNewContext(
                 acctCode.replace(/\\}\\)\\(\\);\\s*$/, 'window.__acctTest = { tryLoadData };})();'),
                 winNoChart

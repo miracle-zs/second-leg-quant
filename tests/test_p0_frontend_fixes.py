@@ -54,6 +54,7 @@ class TestFrontendP0Fixes(unittest.TestCase):
             const root = process.cwd();
             const commonCode = fs.readFileSync(path.join(root, 'web/common.js'), 'utf8');
             const klineModalCode = fs.readFileSync(path.join(root, 'web/kline-modal.js'), 'utf8');
+            const candRenderCode = fs.readFileSync(path.join(root, 'web/candidates-render.js'), 'utf8');
             const candCode = fs.readFileSync(path.join(root, 'web/candidates.js'), 'utf8');
 
             function makeEl(id) {
@@ -275,6 +276,7 @@ class TestFrontendP0Fixes(unittest.TestCase):
 
               vm.runInNewContext(commonCode, win);
               vm.runInNewContext(klineModalCode, win);
+              vm.runInNewContext(candRenderCode, win);
               vm.runInNewContext(candCode, win);
 
               // Wait for initial loadCandidateSnapshot({ force: true }) to fail

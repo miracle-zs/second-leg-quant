@@ -213,7 +213,13 @@ class TestAccountP2FrontendStatic(unittest.TestCase):
         self.assertNotIn("#6b7f9a", html)
 
     def test_account_js_p2_clean_tokens_and_shared_helpers(self):
-        js = (ROOT_DIR / "web/account.js").read_text(encoding="utf-8")
+        js = (
+            (ROOT_DIR / "web/account-tables.js").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "web/account-charts.js").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "web/account.js").read_text(encoding="utf-8")
+        )
 
         # #22 & #29: Contrast fix (#4b5c75 -> #647894 in charts) and drifted colors converged
         self.assertNotIn("#8b9bb0", js)
@@ -275,6 +281,8 @@ class TestAccountP2RuntimeVM(unittest.TestCase):
 
             const root = process.cwd();
             const commonCode = fs.readFileSync(path.join(root, 'web/common.js'), 'utf8');
+            const acctTablesCode = fs.readFileSync(path.join(root, 'web/account-tables.js'), 'utf8');
+            const acctChartsCode = fs.readFileSync(path.join(root, 'web/account-charts.js'), 'utf8');
             const acctCode = fs.readFileSync(path.join(root, 'web/account.js'), 'utf8');
 
             function makeEl(id, extra = {}) {
@@ -470,6 +478,8 @@ class TestAccountP2RuntimeVM(unittest.TestCase):
               win.window = win;
 
               vm.runInNewContext(commonCode, win);
+              vm.runInNewContext(acctTablesCode, win);
+              vm.runInNewContext(acctChartsCode, win);
               vm.runInNewContext(
                 acctCode.replace(/\\}\\)\\(\\);\\s*$/, 'window.__acctTest = { HISTORY_SORT };})();'),
                 win
@@ -537,29 +547,6 @@ class TestAccountP2RuntimeVM(unittest.TestCase):
               els2['trade-history-table'] = histTable2;
               const getEl2 = (id) => (els2[id] ||= makeEl(id));
               const winShared = {
-                SecondLegCommon: {
-                  EXT_ARROW_SVG: '<svg data-shared-arrow="1"></svg>',
-                  escapeHtml: (v) => String(v ?? ''),
-                  isFiniteNum: (v) => typeof v === 'number' ? Number.isFinite(v) : (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))),
-                  formatCryptoPrice: (v) => String(v),
-                  formatSignedPct: (v) => String(v) + '%',
-                  getTvUrl: (s) => 'https://cn.tradingview.com/?symbol=' + s,
-                  ensureConfig: async () => 'ig0LuDL8',
-                  fetchJsonWithTimeout: async () => ({ status: 200, notModified: false, etag: null, data: payload, text: JSON.stringify(payload) }),
-                  toBeijingDate: (ms) => new Date(ms + 8 * 3600 * 1000),
-                  debounce: (fn, ms) => {
-                    debounceCalled += 1;
-                    const wrapped = (...args) => fn(...args);
-                    wrapped.cancel = () => { cancelCalled += 1; };
-                    return wrapped;
-                  },
-                  bindSortButtons: (rootEl, onSort) => {
-                    bindSortCalled += 1;
-                    assert.strictEqual(rootEl, histTable2);
-                    assert.strictEqual(typeof onSort, 'function');
-                    return { syncAria() {} };
-                  },
-                },
                 document: {
                   hidden: false,
                   readyState: 'complete',
@@ -578,6 +565,34 @@ class TestAccountP2RuntimeVM(unittest.TestCase):
                 console: { error(e) { throw e; }, warn() {} },
               };
               winShared.window = winShared;
+              vm.runInNewContext(commonCode, winShared);
+              winShared.SecondLegCommon = Object.freeze({
+                ...winShared.SecondLegCommon,
+                EXT_ARROW_SVG: '<svg data-shared-arrow="1"></svg>',
+                getExtArrowSvg: undefined,
+                escapeHtml: (v) => String(v ?? ''),
+                isFiniteNum: (v) => typeof v === 'number' ? Number.isFinite(v) : (typeof v === 'string' && v.trim() !== '' && Number.isFinite(Number(v))),
+                formatCryptoPrice: (v) => String(v),
+                formatSignedPct: (v) => String(v) + '%',
+                getTvUrl: (s) => 'https://cn.tradingview.com/?symbol=' + s,
+                ensureConfig: async () => 'ig0LuDL8',
+                fetchJsonWithTimeout: async () => ({ status: 200, notModified: false, etag: null, data: payload, text: JSON.stringify(payload) }),
+                toBeijingDate: (ms) => new Date(ms + 8 * 3600 * 1000),
+                debounce: (fn, ms) => {
+                  debounceCalled += 1;
+                  const wrapped = (...args) => fn(...args);
+                  wrapped.cancel = () => { cancelCalled += 1; };
+                  return wrapped;
+                },
+                bindSortButtons: (rootEl, onSort) => {
+                  bindSortCalled += 1;
+                  assert.strictEqual(rootEl, histTable2);
+                  assert.strictEqual(typeof onSort, 'function');
+                  return { syncAria() {} };
+                },
+              });
+              vm.runInNewContext(acctTablesCode, winShared);
+              vm.runInNewContext(acctChartsCode, winShared);
               vm.runInNewContext(acctCode, winShared);
               await new Promise((r) => setTimeout(r, 20));
               assert.strictEqual(debounceCalled, 1);

@@ -465,18 +465,34 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
         index_html = (ROOT_DIR / "web/index.html").read_text(encoding="utf-8")
         self.assertLess(
             index_html.index("static/kline-modal.js"),
+            index_html.index("static/candidates-render.js"),
+        )
+        self.assertLess(
+            index_html.index("static/candidates-render.js"),
             index_html.index("static/candidates.js"),
         )
 
-        cand_js = (ROOT_DIR / "web/candidates.js").read_text(encoding="utf-8")
+        common_js = (ROOT_DIR / "web/common.js").read_text(encoding="utf-8")
+        self.assertIn("toBeijingDate", common_js)
+        cand_js = (
+            (ROOT_DIR / "web/candidates-render.js").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "web/candidates.js").read_text(encoding="utf-8")
+        )
         self.assertLess(cand_js.index("const prevSortVal"), cand_js.index("c.turnover_ratio = trVal"))
-        self.assertIn("toBeijingDate", cand_js)
+        self.assertIn("formatBeijingTime", cand_js)
         self.assertIn("checkSnapshotVersion().then", cand_js)
 
         modal_js = (ROOT_DIR / "web/kline-modal.js").read_text(encoding="utf-8")
         self.assertIn("else if (modalHoverIndex !== -1)", modal_js)
 
-        acct_js = (ROOT_DIR / "web/account.js").read_text(encoding="utf-8")
+        acct_js = (
+            (ROOT_DIR / "web/account-tables.js").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "web/account-charts.js").read_text(encoding="utf-8")
+            + "\n"
+            + (ROOT_DIR / "web/account.js").read_text(encoding="utf-8")
+        )
         self.assertIn("mode === 'OFFLINE_FALLBACK'", acct_js)
         self.assertIn("接口状态异常", acct_js)
         self.assertIn("p.risk_monitored === true", acct_js)
@@ -632,7 +648,10 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
             const root = process.cwd();
             const commonCode = fs.readFileSync(path.join(root, 'web/common.js'), 'utf8');
             const klineModalCode = fs.readFileSync(path.join(root, 'web/kline-modal.js'), 'utf8');
+            const candRenderCode = fs.readFileSync(path.join(root, 'web/candidates-render.js'), 'utf8');
             const candCode = fs.readFileSync(path.join(root, 'web/candidates.js'), 'utf8');
+            const acctTablesCode = fs.readFileSync(path.join(root, 'web/account-tables.js'), 'utf8');
+            const acctChartsCode = fs.readFileSync(path.join(root, 'web/account-charts.js'), 'utf8');
             const acctCode = fs.readFileSync(path.join(root, 'web/account.js'), 'utf8');
 
             // 1. common.js getTvSymbol & getTvUrl fail fast on empty symbol / unconfigured layout ID
@@ -714,6 +733,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               win.window = win;
               vm.runInNewContext(commonCode, win);
               vm.runInNewContext(klineModalCode, win);
+              vm.runInNewContext(candRenderCode, win);
               // Expose loadCandidateSnapshot via trigger or run directly by checking initial error path
               payloadToServe = {
                 updated_at: '2026-11-25T12:00:00+08:00',
@@ -750,6 +770,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               vm.runInNewContext(commonCode, win2);
               win2.SecondLegCommon.setTvLayoutId('ig0LuDL8');
               vm.runInNewContext(klineModalCode, win2);
+              vm.runInNewContext(candRenderCode, win2);
               const candTestCode = candCode.replace(
                 /\\}\\)\\(\\);\\s*$/,
                 'window.__candTest = { updateKpiCards, loadCandidateSnapshot, getEffectiveSupply, formatUpdatedAtBeijing };})();'
@@ -806,6 +827,8 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               win3.window = win3;
               vm.runInNewContext(commonCode, win3);
               win3.SecondLegCommon.setTvLayoutId('ig0LuDL8');
+              vm.runInNewContext(acctTablesCode, win3);
+              vm.runInNewContext(acctChartsCode, win3);
               const acctTestCode = acctCode.replace(
                 /\\}\\)\\(\\);\\s*$/,
                 'window.__acctTest = { renderDashboard, updateKpis };})();'
@@ -857,7 +880,10 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
             const root = process.cwd();
             const commonCode = fs.readFileSync(path.join(root, 'web/common.js'), 'utf8');
             const klineModalCode = fs.readFileSync(path.join(root, 'web/kline-modal.js'), 'utf8');
+            const candRenderCode = fs.readFileSync(path.join(root, 'web/candidates-render.js'), 'utf8');
             const candCode = fs.readFileSync(path.join(root, 'web/candidates.js'), 'utf8');
+            const acctTablesCode = fs.readFileSync(path.join(root, 'web/account-tables.js'), 'utf8');
+            const acctChartsCode = fs.readFileSync(path.join(root, 'web/account-charts.js'), 'utf8');
             const acctCode = fs.readFileSync(path.join(root, 'web/account.js'), 'utf8');
 
             (async () => {
@@ -952,6 +978,8 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               };
               winAcct.window = winAcct;
               vm.runInNewContext(commonCode, winAcct);
+              vm.runInNewContext(acctTablesCode, winAcct);
+              vm.runInNewContext(acctChartsCode, winAcct);
               const acctTestCode = acctCode.replace(
                 /\\}\\)\\(\\);\\s*$/,
                 'window.__acctTest = { renderDashboard, tryLoadData };})();'
@@ -1195,6 +1223,7 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
               vm.runInNewContext(commonCode, winCand);
               winCand.SecondLegCommon.setTvLayoutId('ig0LuDL8');
               vm.runInNewContext(klineModalCode, winCand);
+              vm.runInNewContext(candRenderCode, winCand);
               const candTestCode = candCode.replace(
                 /\\}\\)\\(\\);\\s*$/,
                 'window.__candTest = { syncBinancePool, applyFilter, loadCandidateSnapshot, setSort: (col) => { sortColumn = col; } };})();'
