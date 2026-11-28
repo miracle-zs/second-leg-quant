@@ -1289,6 +1289,8 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
             self.assertTrue(live.send_alert("T", "D"))
             self.assertEqual(req_mock.call_count, 1)
             self.assertEqual(req_mock.call_args.kwargs["method"], "POST")
+            self.assertEqual(req_mock.call_args.kwargs["max_retries"], 0)
+            self.assertEqual(req_mock.call_args.kwargs["timeout"], 25.0)
 
         with patch.object(alert_notifier, "request_json", return_value={"code": 40001}):
             self.assertFalse(live.send_alert("T", "D"))

@@ -85,9 +85,8 @@ class ServerChanNotifier:
                     "User-Agent": "TradeAlertDaemon/1.0",
                 },
                 body=payload,
-                timeout=10.0,
-                max_retries=1,
-                backoff_base=1.0,
+                timeout=25.0,
+                max_retries=0,
             )
         except HttpError as e:
             logger.warning(f"    ⚠️ Server酱网络请求异常: {e}")
