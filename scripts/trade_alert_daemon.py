@@ -540,11 +540,11 @@ class TradeAlertDaemon:
                 self._ro_inode = None
                 self._ro_data_version = None
 
-    def _ensure_shared_ro_conn(self) -> tuple[Optional[sqlite3.Connection], bool]:
-        """Return `(ro_conn, db_unchanged)` for long-lived daemon polling using `PRAGMA data_version`."""
+    def _ensure_shared_ro_conn(self) -> tuple[Optional[sqlite3.Connection], bool, Optional[int]]:
+        """Return `(ro_conn, db_unchanged, observed_data_version)` for daemon polling."""
         if not self.database.exists():
             self._close_shared_ro_conn()
-            return None, False
+            return None, False, None
         st = self.database.stat()
         cur_inode = (st.st_dev, st.st_ino)
         if self._shared_ro_conn is not None and self._ro_inode != cur_inode:
@@ -555,7 +555,9 @@ class TradeAlertDaemon:
             self._shared_ro_conn = conn
             self._ro_inode = cur_inode
             self._ro_data_version = None
-            return conn, False
+            row = conn.execute("PRAGMA data_version").fetchone()
+            cur_ver = int(row[0]) if row is not None else None
+            return conn, False, cur_ver
         row = self._shared_ro_conn.execute("PRAGMA data_version").fetchone()
         cur_ver = int(row[0]) if row is not None else None
         unchanged = (
@@ -564,7 +566,7 @@ class TradeAlertDaemon:
             and self.pos_store._loaded
             and self.state_store._state_loaded
         )
-        return self._shared_ro_conn, unchanged
+        return self._shared_ro_conn, unchanged, cur_ver
 
     def handle_signal(self, signum, frame):
         logger.info(f"收到终止信号 ({signum})，正在优雅关闭守护进程...")
@@ -609,9 +611,10 @@ class TradeAlertDaemon:
                 logger.warning(f"后台自动同步币安持仓异常: {e}")
 
         db_unchanged = False
+        observed_ro_ver: Optional[int] = None
         ephemeral_ro_conn: Optional[sqlite3.Connection] = None
         if self._ro_loop_active:
-            ro_conn, db_unchanged = self._ensure_shared_ro_conn()
+            ro_conn, db_unchanged, observed_ro_ver = self._ensure_shared_ro_conn()
         elif self.database.exists():
             ephemeral_ro_conn = open_sqlite_connection(self.database, readonly=True)
             ro_conn = ephemeral_ro_conn
@@ -639,15 +642,20 @@ class TradeAlertDaemon:
             )
             pool_updated = pool_stamp is not None and pool_stamp != self._last_pool_stamp
             f1_checked_in_iteration = False
+            f1_had_error = False
 
             if pool_updated:
+                f1_status: dict[str, Any] = {}
                 check_feature_1_resonance(
                     self.notifier,
                     self.state_store,
                     layout_id=layout_id,
                     database_path=self.database,
+                    status=f1_status,
                 )
-                self._last_pool_stamp = pool_stamp
+                f1_had_error = bool(f1_status.get("had_error"))
+                if not f1_had_error:
+                    self._last_pool_stamp = pool_stamp
                 f1_checked_in_iteration = True
 
             f3_mutated = False
@@ -655,19 +663,22 @@ class TradeAlertDaemon:
                 if self._eval_bucket != current_bucket:
                     logger.info(f"⏰ 进入 15m K线收盘确认窗口 ({get_beijing_time_str(now_ts)})，启动 Feature 1/2/3 联合校验...")
                     if not f1_checked_in_iteration:
+                        f1_win_status: dict[str, Any] = {}
                         check_feature_1_resonance(
                             self.notifier,
                             self.state_store,
                             layout_id=layout_id,
                             database_path=self.database,
+                            status=f1_win_status,
                         )
-                        if pool_stamp is not None:
+                        f1_had_error = bool(f1_win_status.get("had_error"))
+                        if pool_stamp is not None and not f1_had_error:
                             self._last_pool_stamp = pool_stamp
                     self._eval_bucket = current_bucket
                     for key in ("f2", "f3"):
                         self._feature_retry_state[key] = {"done": False, "count": 0, "last_ts": 0.0}
 
-                self._run_bucket_feature(
+                f2_ran = self._run_bucket_feature(
                     "f2",
                     "Feature 2 突破扫描",
                     now_ts,
@@ -680,6 +691,16 @@ class TradeAlertDaemon:
                         current_bucket=current_bucket,
                     ),
                 )
+                if not f2_ran:
+                    if not db_unchanged and not f1_checked_in_iteration:
+                        self.state_store.load(only_if_changed=True, conn=ro_conn)
+                    if self.state_store.data.get("pending_breakouts"):
+                        check_feature_2_breakout(
+                            self.notifier,
+                            self.state_store,
+                            layout_id,
+                            retry_only=True,
+                        )
                 f3_ran = self._run_bucket_feature(
                     "f3",
                     "Feature 3 止损校验",
@@ -728,9 +749,14 @@ class TradeAlertDaemon:
                     )
                     f3_mutated = True
 
-            if ro_conn is self._shared_ro_conn and ro_conn is not None and not db_unchanged:
-                ver_row = ro_conn.execute("PRAGMA data_version").fetchone()
-                self._ro_data_version = int(ver_row[0]) if ver_row is not None else None
+            if ro_conn is self._shared_ro_conn and ro_conn is not None:
+                if f1_had_error:
+                    # Keep candidate_snapshot polling active on the next tick so failed Feature 1 retries.
+                    self._ro_data_version = None
+                elif not db_unchanged:
+                    # Commit the version observed BEFORE local snapshot reads so concurrent
+                    # writes during network I/O are never masked as db_unchanged on the next tick.
+                    self._ro_data_version = observed_ro_ver
 
             has_open_positions = (
                 bool(self.pos_store.get_open_positions()) if f3_mutated else bool(open_positions)

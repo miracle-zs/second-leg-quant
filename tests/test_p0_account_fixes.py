@@ -1187,6 +1187,144 @@ class TestLedgerBugfixRegressions(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_analytics_clock_alignment_backfill_both_contradiction_and_proxy_sqlite_guard(self):
+        # 1) AccountAnalyticsEngine aligns equity_curve timestamp with Binance server time (not lagging local clock)
+        server_now_ms = 1_800_000_100_000
+        client = bc.BinanceFuturesClient("k", "s")
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "clock.sqlite3"
+            db_store.publish_report(
+                db_path,
+                {
+                    "recording": {
+                        "start_ms": server_now_ms - 60_000,
+                        "started_at": aae.get_beijing_time_str((server_now_ms - 60_000) / 1000.0),
+                        "initial_equity": 1000.0,
+                        "ledger_synced_until_ms": server_now_ms - 60_000,
+                    },
+                    "equity_curve": [],
+                },
+            )
+            account_info = {
+                "totalMarginBalance": "1200",
+                "totalWalletBalance": "1200",
+                "totalUnrealizedProfit": "0",
+                "availableBalance": "1200",
+            }
+            income_rows = [
+                {
+                    "incomeType": "TRANSFER",
+                    "tranId": 1,
+                    "time": server_now_ms - 5_000,
+                    "income": "200",
+                    "asset": "USDT",
+                }
+            ]
+
+            def fake_signed(endpoint, params=None):
+                if endpoint == "/fapi/v2/account":
+                    return account_info
+                if endpoint == "/fapi/v2/positionRisk":
+                    return []
+                if endpoint == "/fapi/v1/income":
+                    return income_rows
+                return []
+
+            engine = aae.AccountAnalyticsEngine(client=client, default_leverage=5)
+            with patch.object(client, "get_server_time", return_value=server_now_ms), patch.object(
+                client, "_send_signed_request", side_effect=fake_signed
+            ), patch.object(qm.time, "time", return_value=(server_now_ms - 30_000) / 1000.0):
+                report = engine.run(database=db_path)
+            self.assertEqual(report["equity_curve"][-1]["timestamp"], server_now_ms)
+            self.assertAlmostEqual(report["equity_curve"][-1]["cumulative_pnl"], 0.0, places=2)
+
+        # 2) sync_db_ledger backfills >24h symbols from existing_income when existing_fills is empty
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "backfill.sqlite3"
+            day_ms = 86400 * 1000
+            start_ms = server_now_ms - 10 * day_ms
+            last_sync_ms = server_now_ms - 1000
+            db_store.publish_report(
+                db_path,
+                {
+                    "recording": {
+                        "start_ms": start_ms,
+                        "started_at": aae.get_beijing_time_str(start_ms / 1000.0),
+                        "initial_equity": 1000.0,
+                        "ledger_synced_until_ms": last_sync_ms,
+                    },
+                    "equity_curve": [],
+                },
+                income=[
+                    {
+                        "incomeType": "REALIZED_PNL",
+                        "tranId": 99,
+                        "tradeId": "1",
+                        "time": start_ms + 1000,
+                        "income": "12",
+                        "asset": "USDT",
+                        "symbol": "OLDUSDT",
+                    }
+                ],
+            )
+            trade_starts = {}
+
+            def fake_signed_bf(endpoint, params=None):
+                if endpoint == "/fapi/v1/income":
+                    return []
+                if endpoint == "/fapi/v1/userTrades":
+                    trade_starts.setdefault(params["symbol"], []).append(int(params["startTime"]))
+                    return []
+                return []
+
+            with patch.object(client, "get_server_time", return_value=server_now_ms), patch.object(
+                client, "_send_signed_request", side_effect=fake_signed_bf
+            ):
+                ledger_sync.sync_db_ledger(
+                    client,
+                    db_path,
+                    {"totalMarginBalance": "1012", "totalWalletBalance": "1012"},
+                    [],
+                    None,
+                )
+            self.assertEqual(trade_starts["OLDUSDT"][0], start_ms)
+
+        # 3) BOTH mode tentative_lots + contradicting smaller close, and default_leverage in fills path
+        fills = [
+            # Pre-recording LONG 2 @ 100 closed at 100 (0 PnL) -> tentative_lots = [(0, 2, 100)]
+            {"symbol": "RAREUSDT", "id": 1, "orderId": 1, "side": "SELL", "positionSide": "BOTH", "time": 1000, "price": "100", "qty": "2", "quoteQty": "200", "realizedPnl": "0"},
+            # Smaller close on remaining pre-recording LONG 1 with PnL=-20 (impossible for SHORT@100->BUY@110 which is -10)
+            {"symbol": "RAREUSDT", "id": 2, "orderId": 2, "side": "BUY", "positionSide": "BOTH", "time": 2000, "price": "110", "qty": "1", "quoteQty": "110", "realizedPnl": "-20"},
+        ]
+        trades, open_fee = tr.reconstruct_binance_trades([], [], fills, default_leverage=7)
+        self.assertEqual(open_fee, 0.0)
+        self.assertEqual(len(trades), 2)
+        self.assertEqual(trades[0]["leverage"], 7)
+        self.assertAlmostEqual(trades[0]["realized_pnl"], 0.0)
+        self.assertAlmostEqual(trades[1]["realized_pnl"], -20.0)
+
+        # 4) Binance proxy candidate filter catches sqlite3.Error and returns 500 JSON
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "proxy_err.sqlite3"
+            server = api.DashboardHTTPServer(("127.0.0.1", 0), api.create_handler(db_path))
+            port = server.server_address[1]
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            try:
+                with patch.object(api.http_client, "request_bytes", return_value=b'[{"symbol":"BTCUSDT"}]'), patch.object(
+                    api.db_store, "load_candidate_version", side_effect=api.sqlite3.OperationalError("locked")
+                ):
+                    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                    conn.request("GET", "/api/binance/ticker24hr")
+                    resp = conn.getresponse()
+                    body = resp.read().decode("utf-8")
+                    conn.close()
+                self.assertEqual(resp.status, 500)
+                self.assertEqual(json.loads(body)["error"], "Database error")
+            finally:
+                server.shutdown()
+                server.server_close()
+
 
 if __name__ == "__main__":
     unittest.main()

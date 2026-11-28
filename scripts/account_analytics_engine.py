@@ -263,12 +263,18 @@ class AccountAnalyticsEngine:
             initial_equity = float(recording["initial_equity"])
             if not math.isfinite(initial_equity) or initial_equity < 0:
                 raise ValueError(f"Invalid recording.initial_equity: {recording['initial_equity']!r}")
+            curve_now_ms = (
+                int(recording["ledger_synced_until_ms"])
+                if recording.get("ledger_synced_until_ms") is not None
+                else None
+            )
             equity_curve_db, net_flow = build_db_equity_curve(
                 recording,
                 effective_recording_start_ms,
                 previous_report,
                 account_info,
                 income_agg["transfers"],
+                now_ms=curve_now_ms,
             )
             daily_pnl_db = build_db_daily_pnl(
                 income_list,

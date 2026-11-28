@@ -188,10 +188,16 @@ def _fetch_chart_sources(layout_id: str, chart_id: str, token: str) -> dict[str,
     )
     if not isinstance(data, dict):
         raise TradingViewError(f"Unexpected sources payload for chart_id '{chart_id}': {type(data).__name__}")
+    if "success" in data and data["success"] is not True:
+        raise TradingViewError(f"Unsuccessful sources response for chart_id '{chart_id}': {data!r}")
     payload = data.get("payload")
     if not isinstance(payload, dict):
         raise TradingViewError(f"Missing payload dict for chart_id '{chart_id}'")
-    sources = payload.get("sources")
+    if "sources" not in payload:
+        if not payload:
+            return {}
+        raise TradingViewError(f"Missing sources dict for chart_id '{chart_id}'")
+    sources = payload["sources"]
     if not isinstance(sources, dict):
         raise TradingViewError(f"Missing sources dict for chart_id '{chart_id}'")
     return sources

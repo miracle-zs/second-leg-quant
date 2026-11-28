@@ -568,6 +568,123 @@ class TestSyncAll(unittest.TestCase):
             ["scan_second_leg_pool.py", "account_analytics_engine.py"],
         )
 
+    def test_scan_pool_preserves_resonance_detected_at_from_previous_snapshot_and_iso(self) -> None:
+        fixed_now_ts = 1_795_500_000.0
+        fixed_now_ms = int(fixed_now_ts * 1000)
+        closed_times = [fixed_now_ms - (12 - i) * 3_600_000 for i in range(12)]
+        bull_klines = [
+            [cm - 3_599_999, "1.0", "1.1", "0.9", str(1.0 + 0.1 * i), "100", cm, "100", 1]
+            for i, cm in enumerate(closed_times)
+        ]
+        symbols = [
+            {
+                "symbol": "ALPHAUSDT",
+                "base": "ALPHA",
+                "price": 2.1,
+                "circulating_supply": 10_000_000.0,
+                "market_cap": 20_000_000.0,
+                "volume_usd": 40_000_000.0,
+            },
+            {
+                "symbol": "BETAUSDT",
+                "base": "BETA",
+                "price": 2.1,
+                "circulating_supply": 10_000_000.0,
+                "market_cap": 20_000_000.0,
+                "volume_usd": 40_000_000.0,
+            },
+        ]
+        prev_dt = datetime.datetime.fromtimestamp(fixed_now_ts - 2 * 3600.0, BEIJING_TZ)
+        prev_str = prev_dt.strftime("%Y-%m-%d %H:%M:%S")
+        iso_dt = datetime.datetime.fromtimestamp(fixed_now_ts - 4 * 3600.0, BEIJING_TZ)
+        iso_str = iso_dt.isoformat()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "scanner_prev.sqlite3"
+            # ALPHAUSDT not yet in active_resonance_symbols (e.g. daemon offline), but was resonant in previous snapshot
+            db_store.publish_candidates(
+                db_path,
+                [{"symbol": "ALPHAUSDT", "is_resonance": True, "resonance_detected_at": prev_str}],
+                updated_at=prev_str,
+            )
+            # BETAUSDT has ISO-8601 first_detected in resonance_state
+            db_store.save_resonance_state(
+                db_path,
+                {
+                    "version": 1,
+                    "initialized": True,
+                    "active_resonance_symbols": ["BETAUSDT"],
+                    "notified_breakout_keys": [],
+                    "notified_breakout_times": {},
+                    "history": {"BETAUSDT": {"first_detected": iso_str}},
+                },
+            )
+
+            def fake_request_json(url: str, **_kwargs: object) -> object:
+                if url.endswith("/fapi/v1/time"):
+                    return {"serverTime": fixed_now_ms}
+                if url.endswith("/fapi/v1/exchangeInfo"):
+                    return {
+                        "symbols": [
+                            {
+                                "symbol": s["symbol"],
+                                "status": "TRADING",
+                                "contractType": "PERPETUAL",
+                                "underlyingType": "COIN",
+                                "underlyingSubType": ["Crypto"],
+                            }
+                            for s in symbols
+                        ]
+                    }
+                if url.endswith("/fapi/v1/ticker/24hr"):
+                    return [
+                        {
+                            "symbol": s["symbol"],
+                            "quoteVolume": str(s["volume_usd"]),
+                            "priceChangePercent": "5.0",
+                            "lastPrice": str(s["price"]),
+                            "highPrice": "2.2",
+                            "lowPrice": "1.0",
+                        }
+                        for s in symbols
+                    ]
+                if url.endswith("/fapi/v1/premiumIndex"):
+                    return [{"symbol": s["symbol"], "lastFundingRate": "0.0001"} for s in symbols]
+                if url.endswith("/fapi/v1/fundingInfo"):
+                    return [{"symbol": s["symbol"], "fundingIntervalHours": 4} for s in symbols]
+                if "pro-api.coinmarketcap.com" in url:
+                    return {
+                        "data": {
+                            s["base"]: {
+                                "quote": {
+                                    "USD": {
+                                        "price": s["price"],
+                                        "market_cap": s["market_cap"],
+                                        "self_reported_market_cap": None,
+                                    }
+                                },
+                                "circulating_supply": s["circulating_supply"],
+                            }
+                            for s in symbols
+                        }
+                    }
+                if "/fapi/v1/klines?" in url:
+                    return bull_klines
+                raise AssertionError(f"Unexpected URL: {url}")
+
+            with patch.dict("os.environ", {"CMC_API_KEY": "test-cmc"}), patch.object(
+                ssp.HttpClient, "request_json", side_effect=fake_request_json
+            ), patch("scan_second_leg_pool.time.time", return_value=fixed_now_ts), redirect_stdout(
+                io.StringIO()
+            ):
+                candidates = ssp.scan_pool(database=db_path)
+
+        by_sym = {c["symbol"]: c for c in candidates}
+        self.assertEqual(by_sym["ALPHAUSDT"]["resonance_detected_at"], prev_str)
+        self.assertEqual(by_sym["ALPHAUSDT"]["resonance_duration_hours"], 2)
+        self.assertEqual(by_sym["BETAUSDT"]["resonance_detected_at"], iso_dt.strftime("%Y-%m-%d %H:%M:%S"))
+        self.assertEqual(by_sym["BETAUSDT"]["resonance_duration_hours"], 4)
+
 
 if __name__ == "__main__":
     unittest.main()

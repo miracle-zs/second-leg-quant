@@ -100,6 +100,7 @@ def check_feature_1_resonance(
     cold_start: bool = True,
     debounce_hours: float = 24.0,
     database_path: Optional[Path] = None,
+    status: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     """
     Feature 1 (新共振标的提醒):
@@ -143,6 +144,9 @@ def check_feature_1_resonance(
             raw_status = c.get("status")
             if raw_status is not None and not isinstance(raw_status, str):
                 raise ValueError(f"invalid status={raw_status!r}")
+            raw_detected = c.get("resonance_detected_at")
+            if raw_detected is not None and not isinstance(raw_detected, str):
+                raise ValueError(f"invalid resonance_detected_at={raw_detected!r}")
         except (TypeError, ValueError) as e:
             logger.warning(f"跳过 {sym} 畸形共振候选记录: {e}")
             continue
@@ -245,7 +249,7 @@ def check_feature_1_resonance(
 - **当前市价**: `{price_str}`
 - **24h换手率**: `{turnover_str}`
 - **4h资金费率**: `{fr_str}`
-- **机会区标签**: {', '.join(coin.get('zones', [])) or '共振区'}
+- **机会区标签**: {', '.join(coin.get('zones') or []) or '共振区'}
 - **形态状态**: {coin.get('status', '多周期趋势共振')}{detected_line}
 - **触发时间**: {now_str}
 
@@ -273,6 +277,8 @@ def check_feature_1_resonance(
             sent_items.append((sym, coin, detected_at, res_score, tv_link))
             alerted_list.append(coin)
         else:
+            if status is not None:
+                status["had_error"] = True
             logger.warning(f"Server酱发送失败，保留 {sym} 待下轮重试。")
 
     if sent_items:
@@ -472,6 +478,8 @@ def check_feature_2_breakout(
             event["layout_id"],
         ):
             retried_succeeded.append((key, list(event["keys"])))
+        elif status is not None:
+            status["had_error"] = True
 
     if retry_only:
         _flush_retried_breakouts(state_store, retried_succeeded)
@@ -648,6 +656,8 @@ def check_feature_2_breakout(
                     state_store.data.setdefault("pending_breakouts", {}).pop(trendline_key, None)
                     state_store.save()
                 breakout_alerts.append(cand["info"])
+            elif status is not None:
+                status["had_error"] = True
             break
 
     return breakout_alerts
@@ -931,7 +941,9 @@ def check_feature_4_trailing_stops(
                 and curr_price >= target_activation_price
             ):
                 pos["trailing_stop_triggered"] = True
-                pos["trailing_stop_price"] = round(entry_price * (1.0 + lock_pct / 100.0), 8)
+                raw_lock_price = entry_price * (1.0 + lock_pct / 100.0)
+                rounded_lock = round(raw_lock_price, 8)
+                pos["trailing_stop_price"] = rounded_lock if rounded_lock > 0 else float(f"{raw_lock_price:.8g}")
                 pos["trailing_stop_activated_at"] = get_beijing_time_str()
                 pos["pending_trailing_activation_price"] = curr_price
                 dirty = True

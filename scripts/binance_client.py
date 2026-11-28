@@ -195,6 +195,7 @@ class BinanceFuturesClient:
         self._time_sync_lock = threading.Lock()
         self._synced_server_ms: Optional[int] = None
         self._time_synced_at: float = 0.0
+        self._wall_synced_at: float = 0.0
 
     @classmethod
     def from_env(cls, env_path: Path = DEFAULT_ENV_PATH) -> "BinanceFuturesClient":
@@ -216,8 +217,18 @@ class BinanceFuturesClient:
             hashlib.sha256,
         ).hexdigest()
 
-    def _cached_server_time_locked(self, now_mono: float) -> Optional[int]:
+    def _cached_server_time_locked(
+        self,
+        now_mono: float,
+        now_wall: Optional[float] = None,
+    ) -> Optional[int]:
         if (now_mono - self._time_synced_at) >= self.time_sync_ttl:
+            return None
+        if (
+            now_wall is not None
+            and self._wall_synced_at > 0.0
+            and ((now_wall - self._wall_synced_at) - (now_mono - self._time_synced_at)) > 5.0
+        ):
             return None
         if self._synced_server_ms is not None:
             return self._synced_server_ms + int((now_mono - self._time_synced_at) * 1000)
@@ -231,26 +242,36 @@ class BinanceFuturesClient:
         with self._time_lock:
             entry_synced_at = self._time_synced_at
             if not force_sync:
-                cached = self._cached_server_time_locked(time.monotonic())
+                cached = self._cached_server_time_locked(time.monotonic(), time.time())
                 if cached is not None:
                     return cached
 
         with self._time_sync_lock:
             with self._time_lock:
                 now_mono = time.monotonic()
+                now_wall = time.time()
                 if not force_sync:
-                    cached = self._cached_server_time_locked(now_mono)
+                    cached = self._cached_server_time_locked(now_mono, now_wall)
                     if cached is not None:
                         return cached
                 elif self._time_synced_at > entry_synced_at:
-                    cached = self._cached_server_time_locked(now_mono)
+                    cached = self._cached_server_time_locked(now_mono, now_wall)
                     if cached is not None:
                         return cached
 
             url = f"{self.base_url}{SERVER_TIME_ENDPOINT}"
-            m0 = time.monotonic()
-            data = fetch_json_with_retry(url, timeout=5, max_retries=1)
-            m1 = time.monotonic()
+            data: Any = None
+            m0 = m1 = 0.0
+            for attempt in range(2):
+                try:
+                    m0 = time.monotonic()
+                    data = fetch_json_with_retry(url, timeout=5, max_retries=0)
+                    m1 = time.monotonic()
+                    break
+                except BinanceAPIError:
+                    if attempt >= 1:
+                        raise
+                    time.sleep(retry_delay(0.8, attempt))
             if not isinstance(data, dict) or "serverTime" not in data:
                 raise BinanceAPIError(
                     f"Missing serverTime in {SERVER_TIME_ENDPOINT} response: {data}",
@@ -270,6 +291,7 @@ class BinanceFuturesClient:
             with self._time_lock:
                 self._synced_server_ms = server_ms
                 self._time_synced_at = (m0 + m1) / 2.0
+                self._wall_synced_at = time.time()
             return server_ms
 
     def _send_signed_request(

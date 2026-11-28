@@ -159,7 +159,7 @@ def _precompute_both_zero_close(
         pos_side: Optional[str] = None
         pos_qty = Decimal("0")
         pos_notional = 0.0
-        tentative_indices: List[int] = []
+        tentative_lots: List[Tuple[int, Decimal, float]] = []
         confirmed_open = False
 
         for idx in indices:
@@ -191,7 +191,7 @@ def _precompute_both_zero_close(
                     pos_side = fill_dir_side
                     pos_qty = qty
                     pos_notional = quote_qty
-                    tentative_indices = [idx] if g_explicit_zero_rpnl else []
+                    tentative_lots = [(idx, qty, price)] if g_explicit_zero_rpnl else []
                     confirmed_open = False
                 continue
 
@@ -199,17 +199,17 @@ def _precompute_both_zero_close(
             if fill_dir_side == pos_side:
                 if g_has_close_signal:
                     # Same-side fill with realized PnL / reduceOnly proves prior tentative fills closed pre-recording inventory.
-                    zero_close_indices.update(tentative_indices)
+                    zero_close_indices.update(t_idx for t_idx, _, _ in tentative_lots)
                     pos_side = None
                     pos_qty = Decimal("0")
                     pos_notional = 0.0
-                    tentative_indices = []
+                    tentative_lots = []
                     confirmed_open = False
                 else:
                     pos_qty += qty
                     pos_notional += quote_qty
                     if not confirmed_open and g_explicit_zero_rpnl:
-                        tentative_indices.append(idx)
+                        tentative_lots.append((idx, qty, price))
                 continue
 
             avg_entry = pos_notional / float(pos_qty)
@@ -223,26 +223,46 @@ def _precompute_both_zero_close(
                         pos_side = None
                         pos_qty = Decimal("0")
                         pos_notional = 0.0
-                        tentative_indices = []
+                        tentative_lots = []
                         confirmed_open = False
                     else:
                         rem_qty = qty - pos_qty
                         pos_side = fill_dir_side
                         pos_qty = rem_qty
                         pos_notional = quote_qty * float(rem_qty / qty)
-                        tentative_indices = [idx]
+                        tentative_lots = [(idx, rem_qty, price)]
                         confirmed_open = False
                 else:
                     # Zero-PnL opposite fill at a different price contradicts tentative open lots.
-                    zero_close_indices.update(tentative_indices)
+                    zero_close_indices.update(t_idx for t_idx, _, _ in tentative_lots)
                     pos_side = fill_dir_side
                     pos_qty = qty
                     pos_notional = quote_qty
-                    tentative_indices = [idx]
+                    tentative_lots = [(idx, qty, price)]
                     confirmed_open = False
                 continue
 
             if qty <= pos_qty or g_reduce_only:
+                if (
+                    tentative_lots
+                    and not g_reduce_only
+                    and g_fill_realized is not None
+                    and len(tentative_lots) == int(sum(1 for _ in tentative_lots))
+                ):
+                    direction = 1.0 if pos_side == "LONG" else -1.0
+                    lot_prices = [lp for _, _, lp in tentative_lots]
+                    min_rpnl = min((price - lp) * float(qty) * direction for lp in lot_prices)
+                    max_rpnl = max((price - lp) * float(qty) * direction for lp in lot_prices)
+                    tol = max(1e-3, max(abs(min_rpnl), abs(max_rpnl)) * 0.02, quote_qty * 1e-4)
+                    if g_fill_realized < min_rpnl - tol or g_fill_realized > max_rpnl + tol:
+                        # Realized PnL cannot come from the tentative open lots -> they closed pre-recording inventory.
+                        zero_close_indices.update(t_idx for t_idx, _, _ in tentative_lots)
+                        pos_side = None
+                        pos_qty = Decimal("0")
+                        pos_notional = 0.0
+                        tentative_lots = []
+                        confirmed_open = False
+                        continue
                 if qty < pos_qty:
                     pos_qty -= qty
                     pos_notional = avg_entry * float(pos_qty)
@@ -250,7 +270,7 @@ def _precompute_both_zero_close(
                     pos_side = None
                     pos_qty = Decimal("0")
                     pos_notional = 0.0
-                    tentative_indices = []
+                    tentative_lots = []
                     confirmed_open = False
             else:
                 direction = 1.0 if pos_side == "LONG" else -1.0
@@ -263,14 +283,14 @@ def _precompute_both_zero_close(
                     pos_side = None
                     pos_qty = Decimal("0")
                     pos_notional = 0.0
-                    tentative_indices = []
+                    tentative_lots = []
                     confirmed_open = False
                 else:
                     rem_qty = qty - pos_qty
                     pos_side = fill_dir_side
                     pos_qty = rem_qty
                     pos_notional = quote_qty * float(rem_qty / qty)
-                    tentative_indices = []
+                    tentative_lots = []
                     confirmed_open = True
 
     return zero_close_indices
@@ -601,7 +621,9 @@ def reconstruct_binance_trades(
         if matched_local:
             close_reason, close_reason_code = _resolve_close_reason(matched_local, exit_price, entry_price, side)
             raw_lev = matched_local.get("leverage")
-            leverage = int(raw_lev) if raw_lev is not None and int(raw_lev) > 0 else None
+            leverage: Optional[int] = (
+                int(raw_lev) if raw_lev is not None and int(raw_lev) > 0 else default_leverage
+            )
             if pnl_pct is not None and leverage is not None:
                 roe_pct: Optional[float] = round(pnl_pct * leverage, 2)
             elif matched_local.get("roe_pct") is not None:
@@ -616,8 +638,8 @@ def reconstruct_binance_trades(
             )
         else:
             close_reason, close_reason_code = "币安实盘成交", "BINANCE_REALTIME"
-            leverage = None
-            roe_pct = None
+            leverage = default_leverage
+            roe_pct = round(pnl_pct * leverage, 2) if (pnl_pct is not None and leverage is not None) else None
             highest_price = None
 
         reconstructed.append(

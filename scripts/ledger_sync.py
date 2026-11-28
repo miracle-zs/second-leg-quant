@@ -164,6 +164,11 @@ def sync_db_ledger(
         raise TypeError(f"Expected mapping for recording['fills_cursor_ms'], got {type(raw_cursor).__name__}")
     fills_cursor: Dict[str, int] = dict(raw_cursor) if raw_cursor is not None else {}
     income_for_symbols = new_income if existing_fills else existing_income + new_income
+    existing_income_syms = {
+        clean_symbol(item["symbol"])
+        for item in existing_income
+        if item.get("symbol") and item["incomeType"] in ("REALIZED_PNL", "COMMISSION")
+    }
     symbols_to_sync = {
         clean_symbol(item["symbol"])
         for item in income_for_symbols
@@ -171,12 +176,17 @@ def sync_db_ledger(
     }
     symbols_to_sync.update(clean_symbol(str(p["symbol"])) for p in active_positions_binance)
 
+    backfill_floor_ms = max(start_ms, end_ms - MAX_BINANCE_LOOKBACK_MS)
     sorted_symbols = sorted(s for s in symbols_to_sync if s)
     symbol_starts = {
         symbol: (
             max(start_ms, query_start, int(fills_cursor[symbol]) - 86400 * 1000)
             if symbol in fills_cursor
-            else max(start_ms, query_start)
+            else (
+                backfill_floor_ms
+                if (not existing_fills and symbol in existing_income_syms)
+                else max(start_ms, query_start)
+            )
         )
         for symbol in sorted_symbols
     }

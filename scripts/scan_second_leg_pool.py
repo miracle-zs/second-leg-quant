@@ -189,18 +189,31 @@ def _parse_detected_datetime(
     sym: str,
     active_res_symbols: set[str],
     res_history: dict[str, object],
+    prev_resonance_detected: Optional[dict[str, str]] = None,
 ) -> Optional[datetime.datetime]:
-    if sym not in active_res_symbols or sym not in res_history:
+    raw_detected: Optional[str] = None
+    if sym in active_res_symbols and sym in res_history:
+        res_hist_item = res_history[sym]
+        if not isinstance(res_hist_item, dict):
+            raise ValueError(
+                f"Corrupt resonance_state history entry for {sym}: expected dict, got {type(res_hist_item).__name__}"
+            )
+        raw_val = res_hist_item.get("first_detected")
+        if not isinstance(raw_val, str) or not raw_val.strip():
+            raise ValueError(f"Corrupt resonance_state history entry for {sym}: missing valid first_detected ({raw_val!r})")
+        raw_detected = raw_val.strip()
+    elif prev_resonance_detected and sym in prev_resonance_detected:
+        raw_detected = prev_resonance_detected[sym]
+    else:
         return None
-    res_hist_item = res_history[sym]
-    if not isinstance(res_hist_item, dict):
-        raise ValueError(
-            f"Corrupt resonance_state history entry for {sym}: expected dict, got {type(res_hist_item).__name__}"
-        )
-    raw_detected = res_hist_item.get("first_detected")
-    if not isinstance(raw_detected, str) or not raw_detected.strip():
-        raise ValueError(f"Corrupt resonance_state history entry for {sym}: missing valid first_detected ({raw_detected!r})")
-    return datetime.datetime.strptime(raw_detected.strip(), "%Y-%m-%d %H:%M:%S")
+
+    try:
+        dt = datetime.datetime.fromisoformat(raw_detected.replace("Z", "+00:00"))
+    except ValueError:
+        dt = datetime.datetime.strptime(raw_detected, "%Y-%m-%d %H:%M:%S")
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(BEIJING_TZ).replace(tzinfo=None)
+    return dt
 
 
 def scan_pool(database: Optional[Path] = None) -> list[_CandidateRecord]:
@@ -486,6 +499,22 @@ def scan_pool(database: Optional[Path] = None) -> list[_CandidateRecord]:
             f"Corrupt resonance_state.active_resonance_symbols: expected list, got {type(raw_active).__name__}"
         )
     active_res_symbols = {str(s) for s in raw_active}
+    prev_resonance_detected: dict[str, str] = {}
+    prev_snapshot = db_store.load_candidates(db_path)
+    if prev_snapshot is not None:
+        _, prev_json = prev_snapshot
+        prev_items = json.loads(prev_json)
+        if not isinstance(prev_items, list):
+            raise ValueError(f"Corrupt candidate_snapshot payload: expected list, got {type(prev_items).__name__}")
+        for item in prev_items:
+            if (
+                isinstance(item, dict)
+                and item.get("is_resonance")
+                and isinstance(item.get("symbol"), str)
+                and isinstance(item.get("resonance_detected_at"), str)
+                and item["resonance_detected_at"].strip()
+            ):
+                prev_resonance_detected[item["symbol"]] = item["resonance_detected_at"].strip()
 
     verified_candidates: list[_CandidateRecord] = []
     for base_c in base_candidates:
@@ -499,7 +528,7 @@ def scan_pool(database: Optional[Path] = None) -> list[_CandidateRecord]:
         is_resonance = is_ema_bull and is_high_tr
 
         if is_resonance:
-            f_dt = _parse_detected_datetime(sym, active_res_symbols, res_history)
+            f_dt = _parse_detected_datetime(sym, active_res_symbols, res_history, prev_resonance_detected)
             if f_dt is not None:
                 f_ts = f_dt.replace(tzinfo=BEIJING_TZ).timestamp()
                 dur_h = max(0, int((now_ts - f_ts) // 3600))

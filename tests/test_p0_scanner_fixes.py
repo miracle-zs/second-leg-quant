@@ -185,6 +185,53 @@ class TestBinanceClientFixes(unittest.TestCase):
             self.assertGreaterEqual(cached_ms, 1_800_000_000_000)
             self.assertEqual(calls["count"], 1)
 
+    def test_get_server_time_excludes_retry_latency_from_midpoint_and_invalidates_after_sleep(self) -> None:
+        client = bc.BinanceFuturesClient("k", "s", time_sync_ttl=600.0)
+        mono_values = iter([
+            100.0,   # initial cache check
+            100.0,   # sync lock recheck
+            100.0,   # attempt 0 m0
+            106.0,   # attempt 1 m0 (after 5s timeout + 1s sleep)
+            106.05,  # attempt 1 m1
+            106.10,  # subsequent cached read
+            107.0,   # after macOS sleep (monotonic +0.9s while wall +120s)
+            107.0,   # resync cache recheck
+            107.0,   # resync m0
+            107.02,  # resync m1
+        ])
+        wall_values = iter([
+            1000.0,  # initial cache check
+            1000.0,  # sync lock recheck
+            1000.0,  # _wall_synced_at
+            1000.1,  # subsequent cached read (wall +0.1s, mono +0.05s)
+            1120.0,  # wall jumped +120s -> triggers resync
+            1120.0,  # resync cache recheck
+            1120.0,  # resync _wall_synced_at
+        ])
+        attempts = {"n": 0}
+
+        def fake_fetch(_url: str, **kwargs: object) -> dict[str, int]:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise bc.BinanceAPIError("timeout")
+            if attempts["n"] == 2:
+                return {"serverTime": 1_800_000_000_000}
+            return {"serverTime": 1_800_000_120_000}
+
+        with patch.object(bc.time, "monotonic", side_effect=lambda: next(mono_values)), patch.object(
+            bc.time, "time", side_effect=lambda: next(wall_values)
+        ), patch.object(bc.time, "sleep"), patch.object(bc, "fetch_json_with_retry", side_effect=fake_fetch):
+            t_sync = client.get_server_time()
+            self.assertEqual(t_sync, 1_800_000_000_000)
+            # Midpoint must be (106.0 + 106.05)/2 = 106.025, NOT (100.0 + 106.05)/2 = 103.025
+            self.assertAlmostEqual(client._time_synced_at, 106.025, places=3)
+            cached_t = client.get_server_time()
+            self.assertGreaterEqual(cached_t, 1_800_000_000_074)
+            self.assertLessEqual(cached_t, 1_800_000_000_076)
+            # After macOS sleep (wall +120s vs mono +0.9s), cache invalidates and resyncs
+            resynced_t = client.get_server_time()
+            self.assertEqual(resynced_t, 1_800_000_120_000)
+
     def test_malformed_code_and_malformed_kline_raise_binance_api_error(self) -> None:
         client = bc.BinanceFuturesClient("k", "s")
         with patch.object(client, "get_server_time", return_value=1_800_000_000_000):
@@ -577,6 +624,39 @@ class TestCrashEarlyNoFallbackRegressions(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 tve.get_layout_chart_ids("L_NO_CHARTS")
+
+        with patch.object(tve, "get_chart_token", return_value="tok"), patch.object(
+            tve, "get_layout_chart_ids", return_value=["_shared", "empty_pane"]
+        ), patch.object(
+            tve,
+            "request_json",
+            side_effect=[
+                {
+                    "success": True,
+                    "payload": {
+                        "sources": {
+                            "line_1": {
+                                "symbol": "BINANCE:CFGUSDT.P",
+                                "state": {
+                                    "type": "LineToolTrendLine",
+                                    "points": [{"time_t": 100, "price": 1.0}, {"time_t": 200, "price": 0.9}],
+                                    "state": {"interval": "15"},
+                                },
+                            }
+                        }
+                    },
+                },
+                {"success": True, "payload": {}},
+            ],
+        ):
+            empty_pane_drawings = tve.get_layout_drawings("L_EMPTY_PANE", save_cache=False)
+            self.assertEqual([d["id"] for d in empty_pane_drawings["CFGUSDT"]], ["line_1"])
+
+        with patch.object(tve, "get_chart_token", return_value="tok"), patch.object(
+            tve, "get_layout_chart_ids", return_value=["_shared"]
+        ), patch.object(tve, "request_json", return_value={"success": True, "payload": {"unexpected": 1}}):
+            with self.assertRaises(tve.TradingViewError):
+                tve.get_layout_drawings("L_BAD_PAYLOAD", save_cache=False)
 
         # Non-dict source entry raises RuntimeError; corrupt serverUpdateTime skips trendline cleanly
         with patch.object(tve, "get_chart_token", return_value="tok"), patch.object(

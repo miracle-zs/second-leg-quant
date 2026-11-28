@@ -1296,6 +1296,99 @@ class TestDaemonAndWebFailFastContracts(unittest.TestCase):
         with patch.object(alert_notifier, "request_json", side_effect=HttpError("timeout")):
             self.assertFalse(live.send_alert("T", "D"))
 
+    def test_shared_ro_conn_detects_write_during_network_io_and_retries_alerts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "daemon_race.sqlite3"
+            db_store.publish_candidates(
+                db_path,
+                [{"symbol": "BTCUSDT", "is_resonance": False}],
+                updated_at="2026-11-28 10:00:00+08:00",
+            )
+            daemon = tad.TradeAlertDaemon({"database_path": str(db_path)}, dry_run=True)
+            daemon.state_store.data["initialized"] = True
+            daemon.state_store.save()
+            daemon._last_pool_stamp = db_store.load_candidate_version(db_path)
+
+            # 1) External write during network I/O must not be masked by post-IO data_version capture
+            daemon._ro_loop_active = True
+            try:
+                pos_store = tad.PositionStore(db_path)
+                pos_store.add_position("ETHUSDT", entry_price=2000.0, amount=1.0)
+
+                def fake_f4_with_concurrent_write(*_args, **_kwargs):
+                    db_store.publish_candidates(
+                        db_path,
+                        [{"symbol": "NEWCOINUSDT", "is_resonance": True, "zones": None}],
+                        updated_at="2026-11-28 10:01:00+08:00",
+                    )
+                    return []
+
+                with patch.object(tad, "check_feature_4_trailing_stops", side_effect=fake_f4_with_concurrent_write):
+                    daemon.run_iteration(now=1800000005)
+
+                # Next tick must detect the write, handle zones=None safely, and retry if send_alert fails
+                with patch.object(daemon, "_run_bucket_feature", return_value=False), patch.object(
+                    tad, "check_feature_4_trailing_stops", return_value=[]
+                ), patch.object(daemon.notifier, "send_alert", side_effect=[False, True]) as send_mock:
+                    daemon.run_iteration(now=1800000006)
+                    # Because send_alert returned False, _last_pool_stamp must NOT advance
+                    self.assertEqual(daemon._last_pool_stamp, "2026-11-28T10:00:00+08:00")
+                    daemon.run_iteration(now=1800000007)
+                    self.assertEqual(daemon._last_pool_stamp, "2026-11-28T10:01:00+08:00")
+                self.assertEqual(send_mock.call_count, 2)
+            finally:
+                daemon._ro_loop_active = False
+                daemon._close_shared_ro_conn()
+
+    def test_feature_2_send_failure_sets_had_error_and_feature_4_sub_5e9_lock_price(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "f2_f4.sqlite3"
+            store = tad.ResonanceStateStore(db_path)
+            store.data["initialized"] = True
+            store.data["active_resonance_symbols"] = ["YBUSDT"]
+            store.save()
+
+            now = 1795234500
+            line = {"id": "L1", "interval": "15", "p1": 0.06306, "t1": 1795104900, "p2": 0.05757, "t2": 1795155300}
+            candle = {
+                "symbol": "YBUSDT",
+                "open": 0.04982,
+                "close": 0.05030,
+                "open_time": now,
+                "close_time": now + 899,
+                "candle_time": "2026-11-21 12:15",
+                "prev_candle": {"close": 0.04975, "open_time": now - 900, "close_time": now - 1},
+            }
+            notifier = tad.ServerChanNotifier(dry_run=True)
+            st_f2 = {}
+            with patch.object(tve, "get_layout_drawings", return_value={"YBUSDT": [line]}), patch.object(
+                arc, "get_closed_15m_candle", return_value=candle
+            ), patch.object(notifier, "send_alert", return_value=False):
+                alerts = tad.check_feature_2_breakout(notifier, store, status=st_f2, current_bucket=now + 900)
+            self.assertEqual(alerts, [])
+            self.assertTrue(st_f2.get("had_error"))
+
+            # When f2 already marked done and f3 is retrying in the 15m window, pending_breakouts still retries
+            daemon = tad.TradeAlertDaemon({"database_path": str(db_path)}, dry_run=True)
+            daemon._eval_bucket = now + 900
+            daemon._last_pool_stamp = None
+            daemon._feature_retry_state["f2"] = {"done": True, "count": 0, "last_ts": 0.0}
+            daemon._feature_retry_state["f3"] = {"done": False, "count": 1, "last_ts": float(now + 915)}
+            with patch.object(daemon.notifier, "send_alert", return_value=True) as retry_send:
+                daemon.run_iteration(now=float(now + 920))
+            self.assertEqual(retry_send.call_count, 1)
+            self.assertEqual(tad.ResonanceStateStore(db_path).data["pending_breakouts"], {})
+
+            # Sub-5e-9 micro-cap price must not underflow trailing_stop_price to 0.0
+            pos_store = tad.PositionStore(db_path)
+            pos_store.add_position("NANOCOINUSDT", entry_price=2e-9, amount=1e12)
+            with patch.object(arc, "fetch_ticker_prices", return_value={"NANOCOINUSDT": 2.2e-9}), patch.object(
+                notifier, "send_alert", return_value=True
+            ):
+                events = tad.check_feature_4_trailing_stops(notifier, pos_store, activation_pct=6.0, lock_pct=1.0)
+            self.assertEqual(len(events), 1)
+            self.assertGreater(events[0]["pos"]["trailing_stop_price"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

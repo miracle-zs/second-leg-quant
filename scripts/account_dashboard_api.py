@@ -701,7 +701,12 @@ def create_handler(
                         flight.event.set()
 
             if filter_candidates and cache_key is not None and status == 200:
-                body, gz_body = self._filter_to_candidates(cache_key, body, gz_body)
+                try:
+                    body, gz_body = self._filter_to_candidates(cache_key, body, gz_body)
+                except sqlite3.Error as exc:
+                    self.log_error("SQLite error filtering Binance proxy %s: %s", cache_key, exc)
+                    self._send_json_error(500, "Database error", send_body=send_body)
+                    return
             self._send_proxy_payload(status, body, gz_body, send_body=send_body)
 
         def _handle_get(self, *, send_body: bool) -> None:
