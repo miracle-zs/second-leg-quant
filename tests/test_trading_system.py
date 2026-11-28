@@ -550,6 +550,12 @@ class TestFeature1NewResonanceDetection(unittest.TestCase):
         )
         self.assertEqual(len(alerts3), 1)
 
+        # Default behavior has debounce disabled (debounce_hours=0.0): immediate re-entry notifies again
+        state_store.data["active_resonance_symbols"] = []
+        state_store.save()
+        alerts4 = tad.check_feature_1_resonance(notifier, state_store, cold_start=False)
+        self.assertEqual(len(alerts4), 1)
+
     def test_feature_1_preserves_detected_entry_time_and_resets_on_debounced_reentry(self):
         candidates = [
             {

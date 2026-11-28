@@ -98,15 +98,15 @@ def check_feature_1_resonance(
     state_store: ResonanceStateStore,
     layout_id: str = DEFAULT_TV_LAYOUT_ID,
     cold_start: bool = True,
-    debounce_hours: float = 24.0,
+    debounce_hours: float = 0.0,
     database_path: Optional[Path] = None,
     status: Optional[Dict[str, Any]] = None,
 ) -> List[dict]:
     """
     Feature 1 (新共振标的提醒):
     1. 冷启动基准建立: 仅当 state_store 从未初始化过时记录初始基准，市场共振归零后再出现新标的不会重新触发冷启动抑制。
-    2. 失败不吞掉: 仅当 Server酱 发送成功或处于 24h 防抖期内才将标的计入 active_resonance_symbols，发信失败时下轮自动重试。
-    3. 24h 防抖: 标的掉出后重新进入时重置 first_detected，但 24 小时内不重复打扰。
+    2. 失败不吞掉: 仅当 Server酱 发送成功或处于防抖期内才将标的计入 active_resonance_symbols，发信失败时下轮自动重试。
+    3. 防抖间隔: 默认 debounce_hours=0.0（不设 24h 防抖）；若显式传入 >0，标的掉出后在指定小时内重进会跳过重复打扰。
     """
     db_target = Path(database_path) if database_path is not None else state_store.database
     candidates = _load_candidate_pool(db_target)
@@ -207,7 +207,7 @@ def check_feature_1_resonance(
                 age_sec = now_ts - float(last_notified_ts)
                 if age_sec < (debounce_hours * 3600.0):
                     logger.info(
-                        f"24h防抖拦截: {sym} 在前 24 小时内 ({age_sec / 3600:.1f}h 前) 已通知过，跳过重复打扰。"
+                        f"{debounce_hours:g}h防抖拦截: {sym} 在前 {debounce_hours:g} 小时内 ({age_sec / 3600:.1f}h 前) 已通知过，跳过重复打扰。"
                     )
                     history[sym] = {
                         **hist,
