@@ -542,6 +542,86 @@
     return { schedule, clear, isScheduled };
   }
 
+  let sharedToastTimer = null;
+
+  function showToast(msg) {
+    if (typeof global.document === 'undefined' || typeof global.document.getElementById !== 'function') {
+      return;
+    }
+    let toast = global.document.getElementById('toast');
+    let toastText = global.document.getElementById('toast-text');
+    if ((!toast || !toastText) && global.document.body && typeof global.document.createElement === 'function') {
+      toast = global.document.createElement('div');
+      toast.id = 'toast';
+      toast.setAttribute('role', 'status');
+      toast.setAttribute('aria-live', 'polite');
+      toast.className = 'fixed bottom-5 right-5 z-50 hidden max-w-[calc(100vw-2.5rem)] px-3.5 py-2 rounded-[5px] bg-[#151c27] border border-[#324055] text-[#f1f5f9] text-xs shadow-xl flex items-center gap-2';
+      toastText = global.document.createElement('span');
+      toastText.id = 'toast-text';
+      toast.innerHTML = '<svg class="w-3.5 h-3.5 text-[#38d99f] shrink-0" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 8.5L6.5 11.5L12.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+      toast.appendChild(toastText);
+      global.document.body.appendChild(toast);
+    }
+    if (!toast || !toastText) return;
+    if (sharedToastTimer !== null) {
+      clearTimeout(sharedToastTimer);
+      sharedToastTimer = null;
+    }
+    toastText.textContent = msg;
+    if (toast.classList) toast.classList.remove('hidden');
+    sharedToastTimer = setTimeout(() => {
+      if (toast.classList) toast.classList.add('hidden');
+      sharedToastTimer = null;
+    }, 2000);
+    if (sharedToastTimer && typeof sharedToastTimer.unref === 'function') {
+      sharedToastTimer.unref();
+    }
+  }
+
+  async function copyText(text, successMsg, notifyFn) {
+    if (!text) return false;
+    let ok = false;
+    try {
+      if (global.navigator && global.navigator.clipboard && typeof global.navigator.clipboard.writeText === 'function') {
+        await global.navigator.clipboard.writeText(text);
+        ok = true;
+      }
+    } catch (err) {
+      console.warn('Clipboard write failed:', err);
+    }
+    const doc = global.document;
+    if (!ok && doc && typeof doc.createElement === 'function' && typeof doc.execCommand === 'function') {
+      let textarea = null;
+      const prevActive = doc.activeElement;
+      try {
+        textarea = doc.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.top = '-9999px';
+        textarea.style.left = '-9999px';
+        textarea.style.opacity = '0';
+        (doc.body || doc.documentElement).appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        if (typeof textarea.setSelectionRange === 'function') {
+          textarea.setSelectionRange(0, text.length);
+        }
+        ok = Boolean(doc.execCommand('copy'));
+      } catch (fallbackErr) {
+        console.warn('Fallback execCommand copy failed:', fallbackErr);
+      } finally {
+        if (textarea && textarea.parentNode) {
+          textarea.parentNode.removeChild(textarea);
+        }
+        focusSafely(prevActive);
+      }
+    }
+    const notifier = typeof notifyFn === 'function' ? notifyFn : showToast;
+    notifier(ok ? successMsg : '复制失败，请手动选择复制');
+    return ok;
+  }
+
   if (typeof global.document !== 'undefined' && typeof global.document.querySelector === 'function') {
     const syncLinks = () => {
       ensureConfig().catch((err) => console.error('Failed to load /api/config:', err));
@@ -580,5 +660,7 @@
     setButtonBusy,
     updateStatusBadge,
     createPollScheduler,
+    showToast,
+    copyText,
   });
 })(window);

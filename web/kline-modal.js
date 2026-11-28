@@ -4,17 +4,26 @@
   const Common = global.SecondLegCommon;
   const {
     TV_INTERVAL_MAP,
+    escapeHtml,
     isFiniteNum,
     formatCryptoPrice,
+    formatSignedPct,
     getTvUrl,
     fetchJsonWithTimeout,
     formatBeijingTime,
     focusSafely,
+    copyText,
   } = Common;
 
   const VALID_BAR_COUNTS = new Set([60, 120, 168]);
   const RIGHT_AXIS_WIDTH = 78;
   const TV_IFRAME_TIMEOUT_MS = 10000;
+  const INTERVAL_HOTKEY_MAP = Object.freeze({
+    '1': '15m',
+    '2': '1h',
+    '3': '4h',
+    '4': '1d',
+  });
 
   let modalCurrentSymbol = '';
   let modalCurrentTvSymbol = '';
@@ -24,6 +33,8 @@
   let modalCandles = [];
   let modalHoverIndex = -1;
   let modalNavTotal = 0;
+  let modalContext = null;
+  let modalContextKey = '';
   let modalFetchController = null;
   let modalRenderRafId = null;
   let tvLoadTimer = null;
@@ -33,40 +44,186 @@
   let supportsDisplayTransition;
   let lastFocusedElement = null;
 
-  const chartModal = document.getElementById('chart-modal');
-  const modalHeaderToolbar = document.getElementById('modal-header-toolbar');
-  const modalCloseBtn = document.getElementById('modal-close-btn');
-  const modalNavGroup = document.getElementById('modal-nav-group');
-  const modalPrevBtn = document.getElementById('modal-prev-btn');
-  const modalNextBtn = document.getElementById('modal-next-btn');
-  const modalNavPos = document.getElementById('modal-nav-pos');
-  const modalChartTitle = document.getElementById('modal-chart-title');
-  const modalChartPrice = document.getElementById('modal-chart-price');
-  const modalExternalLink = document.getElementById('modal-external-link');
-  const modalNativeView = document.getElementById('modal-native-chart-view');
-  const modalTvView = document.getElementById('modal-tv-view');
-  const modalTvIframe = document.getElementById('modal-tv-iframe');
-  const modalTvLoading = document.getElementById('modal-tv-loading');
-  const modalTvFallback = document.getElementById('modal-tv-fallback');
-  const modalTvFallbackText = document.getElementById('modal-tv-fallback-text');
-  const modalTvSwitchNativeBtn = document.getElementById('modal-tv-switch-native-btn');
-  const modalTvOpenExtBtn = document.getElementById('modal-tv-open-ext-btn');
-  const modalCanvas = document.getElementById('modal-kline-canvas');
-  const modalTooltip = document.getElementById('modal-chart-tooltip');
-  const modalLoading = document.getElementById('modal-chart-loading');
-  const modalError = document.getElementById('modal-chart-error');
-  const modalErrorText = document.getElementById('modal-chart-error-text');
-  const modalRetryBtn = document.getElementById('modal-chart-retry-btn');
-  const btnEngineNative = document.getElementById('btn-chart-engine-native');
-  const btnEngineTv = document.getElementById('btn-chart-engine-tv');
-  const modalBarsGroup = document.getElementById('modal-bars-group');
-  const modalBarsBtns = document.querySelectorAll('.modal-bars-btn');
-  const modalIntervalBtns = document.querySelectorAll('.modal-interval-btn');
+  let chartModal = null;
+  let modalHeaderToolbar = null;
+  let modalCloseBtn = null;
+  let modalCopyBtn = null;
+  let modalNavGroup = null;
+  let modalPrevBtn = null;
+  let modalNextBtn = null;
+  let modalNavPos = null;
+  let modalChartTitle = null;
+  let modalChartPrice = null;
+  let modalExternalLink = null;
+  let modalHudEma5 = null;
+  let modalHudEma10 = null;
+  let modalHudEmaSpread = null;
+  let modalHudContext = null;
+  let modalNativeView = null;
+  let modalTvView = null;
+  let modalTvIframe = null;
+  let modalTvLoading = null;
+  let modalTvFallback = null;
+  let modalTvFallbackText = null;
+  let modalTvSwitchNativeBtn = null;
+  let modalTvOpenExtBtn = null;
+  let modalCanvas = null;
+  let modalTooltip = null;
+  let modalLoading = null;
+  let modalError = null;
+  let modalErrorText = null;
+  let modalRetryBtn = null;
+  let btnEngineNative = null;
+  let btnEngineTv = null;
+  let modalBarsGroup = null;
+  let modalBarsBtns = [];
+  let modalIntervalBtns = [];
 
   let baseChartCanvas = null;
   let baseChartKey = '';
   let modalChartMetrics = null;
   let tooltipRefs = null;
+  let modalDomBound = false;
+  let modalResizeObserver = null;
+
+  function buildModalShellHtml() {
+    return `<dialog id="chart-modal" tabindex="-1" closedby="any" aria-labelledby="modal-chart-title" class="chart-modal-dialog bg-[#10151d] border border-[#324055] rounded-[6px] w-[calc(100vw-1rem)] max-w-5xl h-[85vh] max-h-[740px] flex-col overflow-hidden">
+      <div id="modal-header-toolbar" class="px-2.5 sm:px-3 py-1.5 bg-[#0d1219] border-b border-[#222b38] flex flex-wrap items-center justify-between gap-1 sm:gap-2 shrink-0">
+        <div class="flex items-center gap-1 sm:gap-2 flex-wrap">
+          <span id="modal-nav-group" hidden class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13]">
+            <button type="button" id="modal-prev-btn" class="w-8 h-8 hover:bg-[#192231] text-[#9fb0c5] hover:text-[#f1f5f9] inline-flex items-center justify-center transition-colors" title="上一个标的 (←)" aria-label="上一个标的">
+              <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M7.5 2.5L4 6L7.5 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <span id="modal-nav-pos" class="px-1.5 text-[10px] font-mono tabular-nums text-[#7f91a8]">--</span>
+            <button type="button" id="modal-next-btn" class="w-8 h-8 hover:bg-[#192231] text-[#9fb0c5] hover:text-[#f1f5f9] inline-flex items-center justify-center transition-colors" title="下一个标的 (→)" aria-label="下一个标的">
+              <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.5 2.5L8 6L4.5 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </span>
+          <h2 id="modal-chart-title" class="font-bold text-[#f1f5f9] text-sm sm:text-[15px] font-sans tracking-tight"></h2>
+          <span id="modal-chart-price" class="font-mono tabular-nums text-[#38d99f] font-bold text-xs sm:text-[13px]">--</span>
+          <span role="group" aria-label="K线时间周期" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-mono">
+            <button type="button" aria-pressed="true" class="modal-interval-btn px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-interval="15m">15m</button>
+            <button type="button" aria-pressed="false" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1h">1h</button>
+            <button type="button" aria-pressed="false" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="4h">4h</button>
+            <button type="button" aria-pressed="false" class="modal-interval-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-interval="1d">1D</button>
+          </span>
+          <span id="modal-bars-group" role="group" aria-label="显示K线根数" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-sans tabular-nums" title="显示 K 线根数">
+            <button type="button" aria-pressed="false" class="modal-bars-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="60">60根</button>
+            <button type="button" aria-pressed="true" class="modal-bars-btn px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold" data-bars="120">120根</button>
+            <button type="button" aria-pressed="false" class="modal-bars-btn px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]" data-bars="168">168根</button>
+          </span>
+        </div>
+        <div class="flex items-center gap-1 sm:gap-2 ml-auto">
+          <span role="group" aria-label="图表引擎切换" class="inline-flex items-center divide-x divide-[#283446] border border-[#283446] rounded-[4px] overflow-hidden bg-[#0b0e13] text-[11px] font-sans">
+            <button type="button" id="btn-chart-engine-native" aria-pressed="true" class="px-1.5 py-0.5 bg-[#192231] text-[#f1f5f9] font-semibold">极速K线</button>
+            <button type="button" id="btn-chart-engine-tv" aria-pressed="false" class="px-1.5 py-0.5 hover:bg-[#151c27] text-[#9fb0c5]">TV内嵌</button>
+          </span>
+          <button id="modal-copy-btn" type="button" class="px-2 py-0.5 rounded-[4px] bg-[#151c27] hover:bg-[#1d2736] text-[#9fb0c5] hover:text-[#f1f5f9] border border-[#283446] text-[11px] font-sans inline-flex items-center gap-1 transition-colors" title="复制 TV 代码 (c)">
+            <span>复制代码</span>
+          </button>
+          <a id="modal-external-link" href="#" target="_blank" rel="noopener noreferrer" class="btn-primary-cobalt px-2 py-0.5 rounded-[4px] text-[11px] inline-flex items-center gap-1 transition-colors" title="在 TradingView 打开专属画线布局">
+            <span>TV 画线</span>
+            <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </a>
+          <button id="modal-close-btn" type="button" class="w-8 h-8 rounded-[4px] bg-[#151c27] hover:bg-[#222b38] text-[#9fb0c5] hover:text-[#f1f5f9] border border-[#283446] inline-flex items-center justify-center transition-colors" title="关闭 (Esc)" aria-label="关闭弹窗">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div id="modal-context-hud" class="modal-hud-strip shrink-0">
+        <div class="flex items-center gap-3 flex-wrap">
+          <span class="inline-flex items-center gap-1.5 font-mono tabular-nums"><span class="w-2 h-2 rounded-full bg-[#f0b429]" aria-hidden="true"></span><span id="modal-hud-ema5" class="text-[#f5c451]">EMA5 --</span></span>
+          <span class="inline-flex items-center gap-1.5 font-mono tabular-nums"><span class="w-2 h-2 rounded-full" style="background-color: #60a5fa" aria-hidden="true"></span><span id="modal-hud-ema10" class="text-[#8ab8ff]">EMA10 --</span></span>
+          <span id="modal-hud-ema-spread" class="font-mono tabular-nums text-[#9fb0c5]">--</span>
+        </div>
+        <div id="modal-hud-context" class="hidden flex items-center gap-1.5 flex-wrap"></div>
+      </div>
+      <div id="modal-chart-stage" tabindex="-1" autofocus class="flex-1 w-full min-h-0 bg-[#0b0e13] relative overflow-hidden">
+        <div id="modal-native-chart-view" class="w-full h-full relative">
+          <canvas id="modal-kline-canvas" role="img" aria-label="K线走势图" class="w-full h-full block select-none"></canvas>
+          <div id="modal-chart-tooltip" class="absolute top-2.5 left-3 bg-[#10151d]/95 border border-[#324055] px-3 py-2 rounded-[4px] text-[11px] font-mono tabular-nums text-[#f1f5f9] hidden pointer-events-none z-20"></div>
+          <div id="modal-chart-loading" class="absolute inset-0 bg-[#0b0e13]/80 flex flex-col items-center justify-center gap-2 text-[#9fb0c5] text-xs font-sans font-medium z-30">
+            <span>正在拉取实时 K 线序列...</span>
+          </div>
+          <div id="modal-chart-error" class="hidden absolute inset-0 bg-[#0b0e13]/90 flex flex-col items-center justify-center gap-3 text-[#f8717e] text-xs font-sans font-medium z-30 px-4 text-center">
+            <span id="modal-chart-error-text">K 线序列读取失败，请检查网络连接后重试</span>
+            <button type="button" id="modal-chart-retry-btn" class="px-3 py-1.5 bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] rounded-[4px] border border-[#324055] text-xs">重新加载</button>
+          </div>
+        </div>
+        <div id="modal-tv-view" class="w-full h-full hidden relative bg-[#0b0e13]">
+          <iframe id="modal-tv-iframe" class="w-full h-full border-0" title="TradingView 实时图表" referrerpolicy="no-referrer" allowfullscreen></iframe>
+          <div id="modal-tv-loading" class="hidden absolute inset-0 bg-[#0b0e13]/80 flex flex-col items-center justify-center gap-2 text-[#9fb0c5] text-xs font-sans font-medium z-20">
+            <span>正在加载 TradingView 图表...</span>
+          </div>
+          <div id="modal-tv-fallback" class="hidden absolute inset-0 bg-[#0b0e13]/90 flex flex-col items-center justify-center gap-3 text-xs font-sans z-30 px-4 text-center">
+            <span id="modal-tv-fallback-text" class="text-[#f5c451]">TradingView 内嵌图表加载超时或受网络限制</span>
+            <div class="flex items-center justify-center gap-2 flex-wrap">
+              <button type="button" id="modal-tv-switch-native-btn" class="px-3 py-1.5 bg-[#151c27] hover:bg-[#1d2736] text-[#f1f5f9] rounded-[4px] border border-[#324055] text-xs font-medium transition-colors">切回极速K线</button>
+              <a id="modal-tv-open-ext-btn" href="#" target="_blank" rel="noopener noreferrer" class="btn-primary-cobalt px-3 py-1.5 rounded-[4px] text-xs inline-flex items-center gap-1 transition-colors">
+                <span>新窗口打开</span>
+                <svg class="w-3 h-3" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path d="M3.5 8.5L8.5 3.5M8.5 3.5H4.5M8.5 3.5V7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </dialog>`;
+  }
+
+  function resolveModalDomRefs() {
+    if (typeof global.document === 'undefined' || typeof global.document.getElementById !== 'function') {
+      return;
+    }
+    chartModal = global.document.getElementById('chart-modal');
+    if (!chartModal && global.document.body && typeof global.document.createElement === 'function') {
+      const wrap = global.document.createElement('div');
+      wrap.innerHTML = buildModalShellHtml();
+      const created = wrap.firstElementChild;
+      if (created && typeof global.document.body.appendChild === 'function') {
+        global.document.body.appendChild(created);
+        chartModal = created;
+      }
+    }
+    modalHeaderToolbar = global.document.getElementById('modal-header-toolbar');
+    modalCloseBtn = global.document.getElementById('modal-close-btn');
+    modalCopyBtn = global.document.getElementById('modal-copy-btn');
+    modalNavGroup = global.document.getElementById('modal-nav-group');
+    modalPrevBtn = global.document.getElementById('modal-prev-btn');
+    modalNextBtn = global.document.getElementById('modal-next-btn');
+    modalNavPos = global.document.getElementById('modal-nav-pos');
+    modalChartTitle = global.document.getElementById('modal-chart-title');
+    modalChartPrice = global.document.getElementById('modal-chart-price');
+    modalExternalLink = global.document.getElementById('modal-external-link');
+    modalHudEma5 = global.document.getElementById('modal-hud-ema5');
+    modalHudEma10 = global.document.getElementById('modal-hud-ema10');
+    modalHudEmaSpread = global.document.getElementById('modal-hud-ema-spread');
+    modalHudContext = global.document.getElementById('modal-hud-context');
+    modalNativeView = global.document.getElementById('modal-native-chart-view');
+    modalTvView = global.document.getElementById('modal-tv-view');
+    modalTvIframe = global.document.getElementById('modal-tv-iframe');
+    modalTvLoading = global.document.getElementById('modal-tv-loading');
+    modalTvFallback = global.document.getElementById('modal-tv-fallback');
+    modalTvFallbackText = global.document.getElementById('modal-tv-fallback-text');
+    modalTvSwitchNativeBtn = global.document.getElementById('modal-tv-switch-native-btn');
+    modalTvOpenExtBtn = global.document.getElementById('modal-tv-open-ext-btn');
+    modalCanvas = global.document.getElementById('modal-kline-canvas');
+    modalTooltip = global.document.getElementById('modal-chart-tooltip');
+    modalLoading = global.document.getElementById('modal-chart-loading');
+    modalError = global.document.getElementById('modal-chart-error');
+    modalErrorText = global.document.getElementById('modal-chart-error-text');
+    modalRetryBtn = global.document.getElementById('modal-chart-retry-btn');
+    btnEngineNative = global.document.getElementById('btn-chart-engine-native');
+    btnEngineTv = global.document.getElementById('btn-chart-engine-tv');
+    modalBarsGroup = global.document.getElementById('modal-bars-group');
+    modalBarsBtns = typeof global.document.querySelectorAll === 'function' ? global.document.querySelectorAll('.modal-bars-btn') : [];
+    modalIntervalBtns = typeof global.document.querySelectorAll === 'function' ? global.document.querySelectorAll('.modal-interval-btn') : [];
+  }
 
   function canTransitionDisplay() {
     if (supportsDisplayTransition !== undefined) return supportsDisplayTransition;
@@ -152,6 +309,132 @@
     return formatBeijingTime(tsMs, { format: interval === '1d' ? 'md' : 'mdhm' });
   }
 
+  function buildContextKey(ctx) {
+    if (!ctx || typeof ctx !== 'object') return '';
+    if (ctx.type === 'candidate' && ctx.candidate) {
+      const c = ctx.candidate;
+      return `cand:${c.symbol || ''}:${c.turnover_ratio || ''}:${c.funding_rate_4h_pct || ''}:${c.is_resonance ? 1 : 0}`;
+    }
+    if (ctx.type === 'position' && ctx.position) {
+      const p = ctx.position;
+      return `pos:${p.symbol || ''}:${p.entry_price || ''}:${p.trailing_stop_price || ''}:${p.trailing_stop_triggered ? 1 : 0}:${p.trendline_label || ''}`;
+    }
+    if (ctx.type === 'trade' && ctx.trade) {
+      const t = ctx.trade;
+      return `trade:${t.symbol || ''}:${t.entry_price || ''}:${t.exit_price || ''}:${t.net_pnl || ''}`;
+    }
+    return '';
+  }
+
+  function updateModalEmaHud(candle) {
+    if (!modalHudEma5 && !modalHudEma10 && !modalHudEmaSpread) return;
+    if (!candle) {
+      if (modalHudEma5) modalHudEma5.textContent = 'EMA5 --';
+      if (modalHudEma10) modalHudEma10.textContent = 'EMA10 --';
+      if (modalHudEmaSpread) {
+        modalHudEmaSpread.textContent = '--';
+        modalHudEmaSpread.className = 'font-mono tabular-nums text-[#9fb0c5]';
+      }
+      return;
+    }
+    const diff = isFiniteNum(candle.ema5) && isFiniteNum(candle.ema10) ? candle.ema5 - candle.ema10 : undefined;
+    if (modalHudEma5) {
+      modalHudEma5.textContent = `EMA5 ${formatCryptoPrice(candle.ema5, { refDiff: diff })}`;
+    }
+    if (modalHudEma10) {
+      modalHudEma10.textContent = `EMA10 ${formatCryptoPrice(candle.ema10, { refDiff: diff })}`;
+    }
+    if (modalHudEmaSpread) {
+      if (isFiniteNum(candle.ema5) && isFiniteNum(candle.ema10) && candle.ema10 > 0) {
+        const spreadPct = ((candle.ema5 - candle.ema10) / candle.ema10) * 100;
+        modalHudEmaSpread.textContent = `均线差 ${formatSignedPct(spreadPct, 2)}`;
+        modalHudEmaSpread.className = `font-mono tabular-nums ${spreadPct >= 0 ? 'text-[#38d99f]' : 'text-[#f8717e]'}`;
+      } else {
+        modalHudEmaSpread.textContent = '--';
+        modalHudEmaSpread.className = 'font-mono tabular-nums text-[#9fb0c5]';
+      }
+    }
+  }
+
+  function renderModalContextHud() {
+    if (!modalHudContext) return;
+    const ctx = modalContext;
+    if (!ctx || typeof ctx !== 'object') {
+      modalHudContext.innerHTML = '';
+      modalHudContext.classList.add('hidden');
+      return;
+    }
+    const badges = [];
+    if (ctx.type === 'candidate' && ctx.candidate) {
+      const c = ctx.candidate;
+      if (c.is_resonance && c.is_neg_funding) {
+        badges.push('<span class="modal-hud-badge text-[#f8717e]">贴水双核共振</span>');
+      } else if (c.is_resonance) {
+        badges.push('<span class="modal-hud-badge text-[#f5c451]">顺势高换手共振</span>');
+      } else if (c.is_ema_bull) {
+        badges.push('<span class="modal-hud-badge text-[#38d99f]">1h EMA 顺势</span>');
+      }
+      if (isFiniteNum(c.turnover_ratio)) {
+        badges.push(`<span class="modal-hud-badge font-mono tabular-nums text-[#8ab8ff]">换手 ${Number(c.turnover_ratio).toFixed(2)}x</span>`);
+      }
+      if (isFiniteNum(c.funding_rate_4h_pct)) {
+        const frCls = Number(c.funding_rate_4h_pct) < 0 ? 'text-[#f8717e]' : 'text-[#9fb0c5]';
+        badges.push(`<span class="modal-hud-badge font-mono tabular-nums ${frCls}">4h资费 ${escapeHtml(formatSignedPct(c.funding_rate_4h_pct, 4))}</span>`);
+      }
+      if (isFiniteNum(c.market_cap_usd)) {
+        badges.push(`<span class="modal-hud-badge font-mono tabular-nums">市值 $${(Number(c.market_cap_usd) / 1e6).toFixed(1)}M</span>`);
+      }
+    } else if (ctx.type === 'position' && ctx.position) {
+      const p = ctx.position;
+      const side = String(p.side || '').toUpperCase();
+      if (side) {
+        const sCls = side === 'SHORT' ? 'text-[#f8717e]' : 'text-[#38d99f]';
+        badges.push(`<span class="modal-hud-badge font-mono font-semibold ${sCls}">${escapeHtml(side)}</span>`);
+      }
+      if (isFiniteNum(p.entry_price) && Number(p.entry_price) > 0) {
+        badges.push(`<span class="modal-hud-badge font-mono tabular-nums text-[#8ab8ff]">开仓 $${escapeHtml(formatCryptoPrice(p.entry_price))}</span>`);
+      }
+      if (p.trailing_stop_triggered && isFiniteNum(p.trailing_stop_price) && Number(p.trailing_stop_price) > 0) {
+        badges.push(`<span class="modal-hud-badge font-mono tabular-nums text-[#38d99f]">保本线 $${escapeHtml(formatCryptoPrice(p.trailing_stop_price))}</span>`);
+      }
+      if (isFiniteNum(p.roe_pct)) {
+        const rCls = Number(p.roe_pct) >= 0 ? 'text-[#38d99f]' : 'text-[#f8717e]';
+        badges.push(`<span class="modal-hud-badge font-mono tabular-nums ${rCls}">ROE ${escapeHtml(formatSignedPct(p.roe_pct, 2))}</span>`);
+      }
+      if (typeof p.trendline_label === 'string' && p.trendline_label.trim() && p.trendline_label.trim() !== '--') {
+        badges.push(`<span class="modal-hud-badge font-mono text-[#f5c451]">${escapeHtml(p.trendline_label.trim())}</span>`);
+      }
+    } else if (ctx.type === 'trade' && ctx.trade) {
+      const t = ctx.trade;
+      const side = String(t.side || '').toUpperCase();
+      if (side) {
+        const sCls = side === 'SHORT' ? 'text-[#f8717e]' : 'text-[#38d99f]';
+        badges.push(`<span class="modal-hud-badge font-mono font-semibold ${sCls}">${escapeHtml(side)}</span>`);
+      }
+      if (isFiniteNum(t.entry_price) && Number(t.entry_price) > 0) {
+        badges.push(`<span class="modal-hud-badge font-mono tabular-nums text-[#8ab8ff]">开 $${escapeHtml(formatCryptoPrice(t.entry_price))}</span>`);
+      }
+      if (isFiniteNum(t.exit_price) && Number(t.exit_price) > 0) {
+        badges.push(`<span class="modal-hud-badge font-mono tabular-nums text-[#f5c451]">平 $${escapeHtml(formatCryptoPrice(t.exit_price))}</span>`);
+      }
+      if (isFiniteNum(t.pnl_pct)) {
+        const pCls = Number(t.pnl_pct) >= 0 ? 'text-[#38d99f]' : 'text-[#f8717e]';
+        badges.push(`<span class="modal-hud-badge font-mono tabular-nums ${pCls}">${escapeHtml(formatSignedPct(t.pnl_pct, 2))}</span>`);
+      }
+      if (typeof t.close_reason === 'string' && t.close_reason.trim()) {
+        badges.push(`<span class="modal-hud-badge">${escapeHtml(t.close_reason.trim())}</span>`);
+      }
+    }
+
+    if (badges.length === 0) {
+      modalHudContext.innerHTML = '';
+      modalHudContext.classList.add('hidden');
+      return;
+    }
+    modalHudContext.innerHTML = badges.join('');
+    modalHudContext.classList.remove('hidden');
+  }
+
   function ensureTooltipNodes() {
     if (!modalTooltip) return null;
     if (tooltipRefs) return tooltipRefs;
@@ -196,8 +479,35 @@
     return tooltipRefs;
   }
 
+  function extractTrendlineOverlay(ctxData) {
+    if (!ctxData || ctxData.type !== 'position' || !ctxData.position) return null;
+    const tl = ctxData.position.trendline;
+    if (!tl || typeof tl !== 'object' || !Array.isArray(tl.points) || tl.points.length < 2) return null;
+    const pA = tl.points[0];
+    const pB = tl.points[1];
+    const readPt = (pt) => {
+      if (Array.isArray(pt) && pt.length >= 2) {
+        return { t: Number(pt[0]), p: Number(pt[1]) };
+      }
+      if (pt && typeof pt === 'object') {
+        return { t: Number(pt.time ?? pt.timestamp ?? pt.t), p: Number(pt.price ?? pt.p) };
+      }
+      return null;
+    };
+    const a = readPt(pA);
+    const b = readPt(pB);
+    if (!a || !b || !Number.isFinite(a.t) || !Number.isFinite(a.p) || !Number.isFinite(b.t) || !Number.isFinite(b.p)) {
+      return null;
+    }
+    if (a.p <= 0 || b.p <= 0 || a.t === b.t) return null;
+    const normT = (t) => (t < 1e11 ? t * 1000 : t);
+    const t1 = normT(a.t);
+    const t2 = normT(b.t);
+    return t1 <= t2 ? { t1, p1: a.p, t2, p2: b.p } : { t1: t2, p1: b.p, t2: t1, p2: a.p };
+  }
+
   function renderModalBaseChart(ctx, visibleCandles, w, h) {
-    const topPadding = 14;
+    const topPadding = 16;
     const bottomAxisH = 22;
     const plotH = Math.max(96, h - bottomAxisH);
     const priceH = plotH * 0.78;
@@ -208,16 +518,24 @@
 
     let minP = Infinity;
     let maxP = -Infinity;
+    let maxHighIdx = 0;
+    let minLowIdx = 0;
     let maxVol = 0;
-    visibleCandles.forEach((c) => {
-      if (c.low < minP) minP = c.low;
-      if (c.high > maxP) maxP = c.high;
+    visibleCandles.forEach((c, idx) => {
+      if (c.low < minP) {
+        minP = c.low;
+        minLowIdx = idx;
+      }
+      if (c.high > maxP) {
+        maxP = c.high;
+        maxHighIdx = idx;
+      }
       if (c.volume > maxVol) maxVol = c.volume;
     });
     const rawSpan = maxP - minP;
     const span = rawSpan > 0 ? rawSpan : Math.max(Math.abs(maxP) * 0.02, 1e-8);
-    minP -= span * 0.05;
-    maxP += span * 0.05;
+    minP -= span * 0.06;
+    maxP += span * 0.06;
     const fullSpan = maxP - minP;
 
     const getY = (p) => topPadding + priceSpanH - ((p - minP) / fullSpan) * priceSpanH;
@@ -326,6 +644,83 @@
     drawEmaLine('ema5', '#f0b429');
     drawEmaLine('ema10', '#60a5fa');
 
+    if (n >= 2 && rawSpan > 0) {
+      ctx.font = '10px "JetBrains Mono", "SF Mono", monospace';
+      ctx.fillStyle = '#9fb0c5';
+      const hiC = visibleCandles[maxHighIdx];
+      const hiX = Math.max(28, Math.min(chartW - 36, maxHighIdx * slot + slot / 2));
+      const hiY = Math.max(11, getY(hiC.high) - 4);
+      ctx.textAlign = 'center';
+      ctx.fillText(formatCryptoPrice(hiC.high), hiX, hiY);
+
+      const loC = visibleCandles[minLowIdx];
+      const loX = Math.max(28, Math.min(chartW - 36, minLowIdx * slot + slot / 2));
+      const loY = Math.min(priceH - 3, getY(loC.low) + 11);
+      ctx.fillText(formatCryptoPrice(loC.low), loX, loY);
+      ctx.textAlign = 'left';
+    }
+
+    if (modalContext && (modalContext.type === 'position' || modalContext.type === 'trade')) {
+      const refSrc = modalContext.type === 'position' ? modalContext.position : modalContext.trade;
+      const drawRefLine = (priceVal, label, strokeCol) => {
+        if (!isFiniteNum(priceVal) || Number(priceVal) <= 0) return;
+        const num = Number(priceVal);
+        if (num < minP || num > maxP) return;
+        const ry = getY(num);
+        ctx.save();
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = strokeCol;
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(0, ry);
+        ctx.lineTo(chartW, ry);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = strokeCol;
+        ctx.font = 'bold 10px "JetBrains Mono", "SF Mono", monospace';
+        ctx.fillText(`${label} ${formatCryptoPrice(num)}`, 8, Math.max(11, ry - 4));
+        ctx.restore();
+      };
+      if (refSrc) {
+        drawRefLine(refSrc.entry_price, '开仓', '#8ab8ff');
+        if (modalContext.type === 'position' && refSrc.trailing_stop_triggered) {
+          drawRefLine(refSrc.trailing_stop_price, '保本', '#38d99f');
+        }
+        if (modalContext.type === 'trade') {
+          drawRefLine(refSrc.exit_price, '平仓', '#f5c451');
+        }
+      }
+      if (modalCurrentInterval === '15m') {
+        const tl = extractTrendlineOverlay(modalContext);
+        if (tl) {
+          const lnP1 = Math.log(tl.p1);
+          const lnP2 = Math.log(tl.p2);
+          const dt = tl.t2 - tl.t1;
+          ctx.save();
+          ctx.setLineDash([5, 3]);
+          ctx.strokeStyle = '#f0b429';
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          let started = false;
+          for (let i = 0; i < n; i++) {
+            const ct = visibleCandles[i].time;
+            const proj = Math.exp(lnP1 + ((ct - tl.t1) / dt) * (lnP2 - lnP1));
+            if (proj < minP * 0.85 || proj > maxP * 1.15) continue;
+            const x = i * slot + slot / 2;
+            const y = getY(proj);
+            if (!started) {
+              ctx.moveTo(x, y);
+              started = true;
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+          if (started) ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
+
     if (lastCandle) {
       const lastY = getY(lastCandle.close);
       const isBull = lastCandle.close >= lastCandle.open;
@@ -368,7 +763,7 @@
     }
 
     const lastCandle = visibleCandles[visibleCandles.length - 1];
-    const nextBaseKey = `${modalCurrentSymbol}:${modalCurrentInterval}:${modalVisibleBars}:${visibleCandles.length}:${lastCandle ? lastCandle.time : 0}:${targetW}x${targetH}:${dpr}`;
+    const nextBaseKey = `${modalCurrentSymbol}:${modalCurrentInterval}:${modalVisibleBars}:${visibleCandles.length}:${lastCandle ? lastCandle.time : 0}:${targetW}x${targetH}:${dpr}:${modalContextKey}`;
 
     if (typeof global.document !== 'undefined' && typeof global.document.createElement === 'function') {
       if (!baseChartCanvas) {
@@ -396,6 +791,8 @@
     }
 
     const { n, slot, plotH, chartW, rightPadding, getY } = modalChartMetrics;
+    const activeCandle = modalHoverIndex >= 0 && modalHoverIndex < n ? visibleCandles[modalHoverIndex] : lastCandle;
+    updateModalEmaHud(activeCandle);
 
     if (modalHoverIndex >= 0 && modalHoverIndex < n && modalTooltip) {
       const c = visibleCandles[modalHoverIndex];
@@ -412,7 +809,6 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Dynamic Y-axis hover price badge
       const hoverPriceText = formatCryptoPrice(c.close);
       ctx.fillStyle = '#1d2736';
       ctx.fillRect(chartW + 2, hy - 9, rightPadding - 4, 18);
@@ -424,7 +820,6 @@
       ctx.textAlign = 'left';
       ctx.fillText(hoverPriceText, chartW + 6, hy + 4);
 
-      // Dynamic X-axis hover time badge
       const axisTimeText = formatAxisTime(c.time, modalCurrentInterval);
       ctx.font = 'bold 10px "JetBrains Mono", "SF Mono", monospace';
       const timeBoxW = Math.max(54, Math.ceil(ctx.measureText(axisTimeText).width) + 12);
@@ -479,6 +874,7 @@
     modalHoverIndex = -1;
     baseChartKey = '';
     modalChartMetrics = null;
+    updateModalEmaHud(null);
     if (modalTooltip) modalTooltip.classList.add('hidden');
     if (modalChartPrice) {
       modalChartPrice.textContent = '--';
@@ -501,16 +897,17 @@
       modalCanvas.setAttribute('aria-label', 'K线走势图');
       return;
     }
-    const suffix = visibleCount > 0 ? `（显示近 ${visibleCount} 根）` : '';
-    modalCanvas.setAttribute('aria-label', `${modalCurrentSymbol} ${modalCurrentInterval} K线走势图${suffix}`);
+    modalCanvas.setAttribute(
+      'aria-label',
+      `${modalCurrentSymbol} ${modalCurrentInterval} K线与 EMA5/EMA10 走势图（显示 ${visibleCount} 根）`
+    );
   }
 
   function showModalChartError(message) {
     if (modalLoading) modalLoading.classList.add('hidden');
     if (!modalError) return;
-    const textEl = modalErrorText || (typeof modalError.querySelector === 'function' ? modalError.querySelector('span') : null);
-    if (textEl) {
-      textEl.textContent = message || 'K 线序列读取失败，请检查网络连接后重试';
+    if (modalErrorText) {
+      modalErrorText.textContent = message || 'K 线序列读取失败，请检查网络连接后重试';
     }
     modalError.classList.remove('hidden');
   }
@@ -650,7 +1047,8 @@
     }
   }
 
-  function openTvModal(sym, tvSym, triggerEl) {
+  function openTvModal(sym, tvSym, triggerEl, context) {
+    ensureModalInitialized();
     if (!chartModal) return;
     if (!chartModal.open) {
       const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
@@ -664,6 +1062,9 @@
     chartModal.removeAttribute('data-closing');
     modalCurrentSymbol = sym;
     modalCurrentTvSymbol = tvSym;
+    modalContext = context || null;
+    modalContextKey = buildContextKey(modalContext);
+    renderModalContextHud();
     clearModalChartDisplay();
     hideModalChartError();
     hideTvOverlays();
@@ -705,6 +1106,9 @@
       modalFetchController.abort();
       modalFetchController = null;
     }
+    modalContext = null;
+    modalContextKey = '';
+    renderModalContextHud();
     hideTvOverlays();
     hideModalChartError();
     if (modalTvIframe) modalTvIframe.src = 'about:blank';
@@ -770,6 +1174,26 @@
     }
   }
 
+  function selectInterval(nextInterval) {
+    if (!nextInterval || !Object.hasOwn(TV_INTERVAL_MAP, nextInterval)) {
+      showModalChartError(`不支持的时间周期: ${nextInterval || '未知'}`);
+      return;
+    }
+    if (nextInterval === modalCurrentInterval) return;
+    modalCurrentInterval = nextInterval;
+    updateModalIntervalUi();
+    if (modalExternalLink && modalCurrentTvSymbol) {
+      modalExternalLink.href = getTvUrl(modalCurrentTvSymbol, null, modalCurrentInterval);
+    }
+    updateCanvasAriaLabel(Math.min(modalVisibleBars, modalCandles.length));
+    if (!modalCurrentSymbol) return;
+    if (modalActiveEngine === 'native') {
+      fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
+    } else {
+      loadTvIframe();
+    }
+  }
+
   function switchChartEngine(targetEngine) {
     if (targetEngine !== 'native' && targetEngine !== 'tv') return;
     if (modalActiveEngine === targetEngine) return;
@@ -799,182 +1223,210 @@
     }
   }
 
-  if (modalNativeView) {
-    const updateModalHoverAtClientX = (clientX) => {
-      const rect = modalNativeView.getBoundingClientRect();
-      const x = clientX - rect.left;
-      const chartW = modalNativeView.clientWidth - RIGHT_AXIS_WIDTH;
-      const visibleCount = Math.min(modalVisibleBars, modalCandles.length);
-      if (x >= 0 && x <= chartW && visibleCount > 0) {
-        const slot = chartW / visibleCount;
-        const nextIdx = Math.min(Math.floor(x / slot), visibleCount - 1);
-        if (nextIdx !== modalHoverIndex) {
-          modalHoverIndex = nextIdx;
+  function bindModalDomEvents() {
+    if (modalDomBound) return;
+    modalDomBound = true;
+
+    if (modalNativeView) {
+      const updateModalHoverAtClientX = (clientX) => {
+        const rect = modalNativeView.getBoundingClientRect();
+        const x = clientX - rect.left;
+        const chartW = modalNativeView.clientWidth - RIGHT_AXIS_WIDTH;
+        const visibleCount = Math.min(modalVisibleBars, modalCandles.length);
+        if (x >= 0 && x <= chartW && visibleCount > 0) {
+          const slot = chartW / visibleCount;
+          const nextIdx = Math.min(Math.floor(x / slot), visibleCount - 1);
+          if (nextIdx !== modalHoverIndex) {
+            modalHoverIndex = nextIdx;
+            scheduleModalRender();
+          }
+        } else if (modalHoverIndex !== -1) {
+          modalHoverIndex = -1;
           scheduleModalRender();
         }
-      } else if (modalHoverIndex !== -1) {
-        modalHoverIndex = -1;
-        scheduleModalRender();
-      }
-    };
-    const clearModalHover = () => {
-      if (modalTooltip) modalTooltip.classList.add('hidden');
-      if (modalHoverIndex !== -1) {
-        modalHoverIndex = -1;
-        scheduleModalRender();
-      }
-    };
-
-    modalNativeView.addEventListener('mousemove', (e) => {
-      updateModalHoverAtClientX(e.clientX);
-    });
-    modalNativeView.addEventListener('mouseleave', clearModalHover);
-    modalNativeView.addEventListener('touchstart', (e) => {
-      if (!e.touches || !e.touches.length) return;
-      updateModalHoverAtClientX(e.touches[0].clientX);
-    }, { passive: true });
-    modalNativeView.addEventListener('touchmove', (e) => {
-      if (!e.touches || !e.touches.length) return;
-      if (e.cancelable) e.preventDefault();
-      updateModalHoverAtClientX(e.touches[0].clientX);
-    }, { passive: false });
-    modalNativeView.addEventListener('touchend', clearModalHover, { passive: true });
-    modalNativeView.addEventListener('touchcancel', clearModalHover, { passive: true });
-  }
-
-  modalBarsBtns.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const bars = Number(btn.getAttribute('data-bars'));
-      if (!VALID_BAR_COUNTS.has(bars) || bars === modalVisibleBars) return;
-      modalVisibleBars = bars;
-      modalHoverIndex = -1;
-      updateModalBarsUi();
-      if (typeof onVisibleBarsChange === 'function') {
-        onVisibleBarsChange(bars);
-      }
-      updateCanvasAriaLabel(Math.min(modalVisibleBars, modalCandles.length));
-      renderModalChart();
-    });
-  });
-
-  modalIntervalBtns.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const nextInterval = btn.getAttribute('data-interval');
-      if (!nextInterval || !Object.hasOwn(TV_INTERVAL_MAP, nextInterval)) {
-        showModalChartError(`不支持的时间周期: ${nextInterval || '未知'}`);
-        return;
-      }
-      if (nextInterval === modalCurrentInterval) return;
-      modalCurrentInterval = nextInterval;
-      updateModalIntervalUi();
-      if (modalExternalLink && modalCurrentTvSymbol) {
-        modalExternalLink.href = getTvUrl(modalCurrentTvSymbol, null, modalCurrentInterval);
-      }
-      updateCanvasAriaLabel(Math.min(modalVisibleBars, modalCandles.length));
-      if (!modalCurrentSymbol) return;
-      if (modalActiveEngine === 'native') {
-        fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
-      } else {
-        loadTvIframe();
-      }
-    });
-  });
-
-  if (btnEngineNative && btnEngineTv) {
-    btnEngineNative.addEventListener('click', () => switchChartEngine('native'));
-    btnEngineTv.addEventListener('click', () => switchChartEngine('tv'));
-  }
-
-  if (modalTvSwitchNativeBtn) {
-    modalTvSwitchNativeBtn.addEventListener('click', () => switchChartEngine('native'));
-  }
-
-  if (modalTvIframe) {
-    modalTvIframe.addEventListener('load', () => {
-      if (modalActiveEngine !== 'tv') return;
-      if (!modalTvIframe.src || modalTvIframe.src === 'about:blank') return;
-      hideTvOverlays();
-    });
-    modalTvIframe.addEventListener('error', () => {
-      if (modalActiveEngine !== 'tv') return;
-      showTvFallback('TradingView 内嵌图表加载失败，请切回极速 K 线或新窗口打开');
-    });
-  }
-
-  if (modalPrevBtn) {
-    modalPrevBtn.addEventListener('click', () => {
-      if (typeof onNavigateSymbol === 'function') onNavigateSymbol(-1);
-    });
-  }
-  if (modalNextBtn) {
-    modalNextBtn.addEventListener('click', () => {
-      if (typeof onNavigateSymbol === 'function') onNavigateSymbol(1);
-    });
-  }
-  if (modalRetryBtn) {
-    modalRetryBtn.addEventListener('click', () => {
-      if (!modalCurrentSymbol) return;
-      fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
-    });
-  }
-  if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeTvModal);
-  if (chartModal) {
-    chartModal.addEventListener('close', resetModalStateOnClose);
-    chartModal.addEventListener('cancel', (event) => {
-      event.preventDefault();
-      closeTopLayer(chartModal);
-    });
-    chartModal.addEventListener('keydown', (event) => {
-      if (!chartModal.open || typeof onNavigateSymbol !== 'function') return;
-      if (modalNavTotal <= 1) return;
-      const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
-      const tag = activeEl ? activeEl.tagName : '';
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (activeEl && activeEl.isContentEditable)) return;
-      if (
-        activeEl &&
-        typeof activeEl.closest === 'function' &&
-        (activeEl.closest('[role="group"]') || (modalHeaderToolbar && activeEl.closest('#modal-header-toolbar')))
-      ) {
-        return;
-      }
-      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        onNavigateSymbol(-1);
-      } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-        event.preventDefault();
-        onNavigateSymbol(1);
-      }
-    });
-    if (typeof global.HTMLDialogElement === 'undefined' || !('closedBy' in global.HTMLDialogElement.prototype)) {
-      chartModal.addEventListener('click', (event) => {
-        if (event.target !== chartModal) return;
-        const rect = chartModal.getBoundingClientRect();
-        const isDialogContent = (
-          rect.top <= event.clientY &&
-          event.clientY <= rect.top + rect.height &&
-          rect.left <= event.clientX &&
-          event.clientX <= rect.left + rect.width
-        );
-        if (!isDialogContent) {
-          closeTvModal();
+      };
+      const clearModalHover = () => {
+        if (modalTooltip) modalTooltip.classList.add('hidden');
+        if (modalHoverIndex !== -1) {
+          modalHoverIndex = -1;
+          scheduleModalRender();
         }
+      };
+
+      modalNativeView.addEventListener('mousemove', (e) => {
+        updateModalHoverAtClientX(e.clientX);
+      });
+      modalNativeView.addEventListener('mouseleave', clearModalHover);
+      modalNativeView.addEventListener('touchstart', (e) => {
+        if (!e.touches || !e.touches.length) return;
+        updateModalHoverAtClientX(e.touches[0].clientX);
+      }, { passive: true });
+      modalNativeView.addEventListener('touchmove', (e) => {
+        if (!e.touches || !e.touches.length) return;
+        if (e.cancelable) e.preventDefault();
+        updateModalHoverAtClientX(e.touches[0].clientX);
+      }, { passive: false });
+      modalNativeView.addEventListener('touchend', clearModalHover, { passive: true });
+      modalNativeView.addEventListener('touchcancel', clearModalHover, { passive: true });
+    }
+
+    modalBarsBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const bars = Number(btn.getAttribute('data-bars'));
+        if (!VALID_BAR_COUNTS.has(bars) || bars === modalVisibleBars) return;
+        modalVisibleBars = bars;
+        modalHoverIndex = -1;
+        updateModalBarsUi();
+        if (typeof onVisibleBarsChange === 'function') {
+          onVisibleBarsChange(bars);
+        }
+        updateCanvasAriaLabel(Math.min(modalVisibleBars, modalCandles.length));
+        renderModalChart();
+      });
+    });
+
+    modalIntervalBtns.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        selectInterval(btn.getAttribute('data-interval'));
+      });
+    });
+
+    if (btnEngineNative && btnEngineTv) {
+      btnEngineNative.addEventListener('click', () => switchChartEngine('native'));
+      btnEngineTv.addEventListener('click', () => switchChartEngine('tv'));
+    }
+
+    if (modalTvSwitchNativeBtn) {
+      modalTvSwitchNativeBtn.addEventListener('click', () => switchChartEngine('native'));
+    }
+
+    if (modalCopyBtn) {
+      modalCopyBtn.addEventListener('click', () => {
+        if (!modalCurrentTvSymbol) return;
+        copyText(modalCurrentTvSymbol, `已复制: ${modalCurrentTvSymbol}`);
       });
     }
-  }
-  const handleNativeContainerResize = () => {
-    if (chartModal && chartModal.open && modalActiveEngine === 'native') {
-      scheduleModalRender();
+
+    if (modalTvIframe) {
+      modalTvIframe.addEventListener('load', () => {
+        if (modalActiveEngine !== 'tv') return;
+        if (!modalTvIframe.src || modalTvIframe.src === 'about:blank') return;
+        hideTvOverlays();
+      });
+      modalTvIframe.addEventListener('error', () => {
+        if (modalActiveEngine !== 'tv') return;
+        showTvFallback('TradingView 内嵌图表加载失败，请切回极速 K 线或新窗口打开');
+      });
     }
-  };
-  let modalResizeObserver = null;
-  if (modalNativeView && typeof global.ResizeObserver === 'function') {
-    modalResizeObserver = new global.ResizeObserver(() => {
-      handleNativeContainerResize();
-    });
-    modalResizeObserver.observe(modalNativeView);
-  } else if (typeof global.addEventListener === 'function') {
-    global.addEventListener('resize', handleNativeContainerResize);
+
+    if (modalPrevBtn) {
+      modalPrevBtn.addEventListener('click', () => {
+        if (typeof onNavigateSymbol === 'function') onNavigateSymbol(-1);
+      });
+    }
+    if (modalNextBtn) {
+      modalNextBtn.addEventListener('click', () => {
+        if (typeof onNavigateSymbol === 'function') onNavigateSymbol(1);
+      });
+    }
+    if (modalRetryBtn) {
+      modalRetryBtn.addEventListener('click', () => {
+        if (!modalCurrentSymbol) return;
+        fetchModalKlines(modalCurrentSymbol, modalCurrentInterval);
+      });
+    }
+    if (modalCloseBtn) modalCloseBtn.addEventListener('click', closeTvModal);
+    if (chartModal) {
+      chartModal.addEventListener('close', resetModalStateOnClose);
+      chartModal.addEventListener('cancel', (event) => {
+        event.preventDefault();
+        closeTopLayer(chartModal);
+      });
+      chartModal.addEventListener('keydown', (event) => {
+        if (!chartModal.open) return;
+        const activeEl = typeof document !== 'undefined' ? document.activeElement : null;
+        const tag = activeEl ? activeEl.tagName : '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (activeEl && activeEl.isContentEditable)) return;
+
+        const hasModifier = Boolean(event.ctrlKey || event.metaKey || event.altKey);
+        if (!hasModifier) {
+          if (Object.hasOwn(INTERVAL_HOTKEY_MAP, event.key)) {
+            event.preventDefault();
+            selectInterval(INTERVAL_HOTKEY_MAP[event.key]);
+            return;
+          }
+          if (event.key === 't' || event.key === 'T') {
+            event.preventDefault();
+            switchChartEngine(modalActiveEngine === 'native' ? 'tv' : 'native');
+            return;
+          }
+          if (event.key === 'c' || event.key === 'C') {
+            if (modalCurrentTvSymbol) {
+              event.preventDefault();
+              copyText(modalCurrentTvSymbol, `已复制: ${modalCurrentTvSymbol}`);
+            }
+            return;
+          }
+        }
+
+        if (typeof onNavigateSymbol !== 'function' || modalNavTotal <= 1) return;
+        if (
+          activeEl &&
+          typeof activeEl.closest === 'function' &&
+          (activeEl.closest('[role="group"]') || (modalHeaderToolbar && activeEl.closest('#modal-header-toolbar')))
+        ) {
+          return;
+        }
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          onNavigateSymbol(-1);
+        } else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+          event.preventDefault();
+          onNavigateSymbol(1);
+        }
+      });
+      if (typeof global.HTMLDialogElement === 'undefined' || !('closedBy' in global.HTMLDialogElement.prototype)) {
+        chartModal.addEventListener('click', (event) => {
+          if (event.target !== chartModal) return;
+          const rect = chartModal.getBoundingClientRect();
+          const isDialogContent = (
+            rect.top <= event.clientY &&
+            event.clientY <= rect.top + rect.height &&
+            rect.left <= event.clientX &&
+            event.clientX <= rect.left + rect.width
+          );
+          if (!isDialogContent) {
+            closeTvModal();
+          }
+        });
+      }
+    }
+
+    const handleNativeContainerResize = () => {
+      if (chartModal && chartModal.open && modalActiveEngine === 'native') {
+        scheduleModalRender();
+      }
+    };
+    if (modalNativeView && typeof global.ResizeObserver === 'function') {
+      modalResizeObserver = new global.ResizeObserver(() => {
+        handleNativeContainerResize();
+      });
+      modalResizeObserver.observe(modalNativeView);
+    } else if (typeof global.addEventListener === 'function') {
+      global.addEventListener('resize', handleNativeContainerResize);
+    }
   }
+
+  function ensureModalInitialized() {
+    if (!chartModal) {
+      resolveModalDomRefs();
+    }
+    if (chartModal && !modalDomBound) {
+      bindModalDomEvents();
+    }
+  }
+
+  ensureModalInitialized();
 
   if (typeof global.addEventListener === 'function') {
     global.addEventListener('pagehide', () => {
@@ -991,6 +1443,7 @@
   }
 
   function setNavMeta(index, total) {
+    ensureModalInitialized();
     modalNavTotal = Number.isInteger(total) ? total : 0;
     if (!modalNavGroup || !modalNavPos) return;
     if (Number.isInteger(index) && Number.isInteger(total) && total > 1 && index >= 0 && index < total) {
@@ -1002,6 +1455,7 @@
   }
 
   function init(opts) {
+    ensureModalInitialized();
     const options = opts || {};
     if (VALID_BAR_COUNTS.has(Number(options.visibleBars))) {
       modalVisibleBars = Number(options.visibleBars);

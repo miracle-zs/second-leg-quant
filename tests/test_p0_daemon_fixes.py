@@ -493,7 +493,7 @@ class TestDaemonTransactionDecouplingAndFixes(unittest.TestCase):
             + "\n"
             + (ROOT_DIR / "web/account.js").read_text(encoding="utf-8")
         )
-        self.assertIn("mode === 'OFFLINE_FALLBACK'", acct_js)
+        self.assertIn("'OFFLINE_FALLBACK'", acct_js)
         self.assertIn("接口状态异常", acct_js)
         self.assertIn("p.risk_monitored === true", acct_js)
         self.assertIn("Invalid /api/account payload", acct_js)

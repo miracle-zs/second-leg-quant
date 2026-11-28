@@ -2,6 +2,7 @@
   const Common = window.SecondLegCommon;
   const Tables = window.SecondLegAccountTables;
   const Charts = window.SecondLegAccountCharts;
+  const KlineModal = window.SecondLegKlineModal || null;
 
   const {
     escapeHtml,
@@ -24,6 +25,10 @@
     renderActivePositions: renderPositionsTable,
     prepareHistorySearchKeys,
     renderHistoryTable: renderHistoryRows,
+    renderApiStatusBadge,
+    formatLoadErrorMessage,
+    getAccountModalCollection,
+    openAccountKlineModal: openModalWithContext,
   } = Tables;
 
   const {
@@ -43,6 +48,9 @@
   let latestSnapshot = '';
   let lastEtag = null;
   let accountController = null;
+  let accountKeydownBound = false;
+  let modalCollectionKind = null;
+  let modalCollectionIdx = -1;
   let activeLoadId = 0;
   let lastSuccessfulLoadAt = 0;
   let historySortBinding = null;
@@ -101,59 +109,7 @@
   }
 
   function updateApiStatusBadge(accountData, fetchError) {
-    const badge = getCachedEl('api-status-badge');
-    if (!badge) return;
-
-    if (fetchError) {
-      updateStatusBadge(badge, apiBadgeCache, {
-        className: 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5',
-        dotClass: 'bg-[#f25565]',
-        label: '数据拉取失败',
-      });
-      return;
-    }
-
-    const mode = (accountData && accountData.api_status && accountData.api_status.mode) || '';
-    if (mode === 'BINANCE_REALTIME') {
-      updateStatusBadge(badge, apiBadgeCache, {
-        className: 'px-2 py-0.5 font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5',
-        dotClass: 'bg-[#22c58b]',
-        label: '币安实盘在线',
-      });
-    } else if (mode === 'BINANCE_PARTIAL') {
-      updateStatusBadge(badge, apiBadgeCache, {
-        className: 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5',
-        dotClass: 'bg-[#f0b429]',
-        label: '币安部分数据可用',
-      });
-    } else if (mode === 'BINANCE_SNAPSHOT_PENDING_INCOME') {
-      updateStatusBadge(badge, apiBadgeCache, {
-        className: 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5',
-        dotClass: 'bg-[#f0b429]',
-        label: '币安快照同步中',
-      });
-    } else if (mode === 'OFFLINE_FALLBACK') {
-      updateStatusBadge(badge, apiBadgeCache, {
-        className: 'px-2 py-0.5 font-medium bg-[#151c27] text-[#f5c451] inline-flex items-center gap-1.5 whitespace-nowrap',
-        dotClass: 'bg-[#f0b429]',
-        label: '离线风控同步',
-        title: '',
-      });
-    } else if (mode === 'NOT_CONFIGURED') {
-      updateStatusBadge(badge, apiBadgeCache, {
-        className: 'px-2 py-0.5 font-medium bg-[#151c27] text-[#9fb0c5] inline-flex items-center gap-1.5 whitespace-nowrap',
-        dotClass: 'bg-[#4b5c75]',
-        label: '未配置币安密钥',
-        title: '尚未配置币安 API 凭证，当前展示本地或未连接状态',
-      });
-    } else {
-      updateStatusBadge(badge, apiBadgeCache, {
-        className: 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5 whitespace-nowrap',
-        dotClass: 'bg-[#f25565]',
-        label: mode ? ('接口状态异常 (' + mode + ')') : '接口状态缺失',
-        title: '',
-      });
-    }
+    renderApiStatusBadge(getCachedEl('api-status-badge'), apiBadgeCache, accountData, fetchError);
   }
 
   function renderDashboard(accountData) {
@@ -226,6 +182,21 @@
     setButtonBusy(getCachedEl('btn-manual-refresh'), busy, getCachedEl('refresh-spinner'));
   }
 
+  function openAccountKlineModal(kind, idx, triggerEl) {
+    const opened = openModalWithContext(KlineModal, currentAccountData, kind, idx, triggerEl);
+    if (opened) {
+      modalCollectionKind = opened.kind;
+      modalCollectionIdx = opened.idx;
+    }
+  }
+
+  function navigateAccountModalSymbol(delta) {
+    const list = getAccountModalCollection(modalCollectionKind, currentAccountData);
+    if (list.length <= 1) return;
+    const curIdx = (modalCollectionIdx >= 0 && modalCollectionIdx < list.length) ? modalCollectionIdx : 0;
+    openAccountKlineModal(modalCollectionKind, (curIdx + delta + list.length) % list.length, null);
+  }
+
   function bindControlsOnce() {
     const searchInput = getCachedEl('history-search-input');
     if (searchInput && !searchInput.dataset.bound) {
@@ -233,29 +204,64 @@
       searchInput.addEventListener('input', debouncedHistorySearch);
     }
 
+    const sideSelect = getCachedEl('history-side-filter');
     const outcomeSelect = getCachedEl('history-outcome-filter');
-    if (outcomeSelect && !outcomeSelect.dataset.bound) {
-      outcomeSelect.dataset.bound = 'true';
-      outcomeSelect.addEventListener('change', function () {
-        historyCurrentPage = 1;
-        renderHistoryTable();
-      });
-    }
+    [sideSelect, outcomeSelect].forEach((sel) => {
+      if (sel && !sel.dataset.bound) {
+        sel.dataset.bound = 'true';
+        sel.addEventListener('change', () => {
+          historyCurrentPage = 1;
+          renderHistoryTable();
+        });
+      }
+    });
 
     const resetBtn = getCachedEl('btn-reset-history-filter');
     if (resetBtn && !resetBtn.dataset.bound) {
       resetBtn.dataset.bound = 'true';
-      resetBtn.addEventListener('click', function () {
+      resetBtn.addEventListener('click', () => {
         debouncedHistorySearch.cancel();
         if (searchInput) searchInput.value = '';
+        if (sideSelect) sideSelect.value = '';
         if (outcomeSelect) outcomeSelect.value = '';
         HISTORY_SORT.column = 'closed_ts';
         HISTORY_SORT.asc = false;
         historyCurrentPage = 1;
         renderHistoryTable();
         const sortStatus = getCachedEl('history-sort-status');
-        if (sortStatus && currentAccountData) {
-          sortStatus.textContent = '已重置筛选与排序，恢复按平仓时间降序排列';
+        if (sortStatus && currentAccountData) sortStatus.textContent = '已重置筛选与排序，恢复按平仓时间降序排列';
+      });
+    }
+
+    [['active-positions-tbody', 'position'], ['history-tbody', 'trade']].forEach(([tbodyId, kind]) => {
+      const tbody = getCachedEl(tbodyId);
+      if (tbody && !tbody.dataset.bound) {
+        tbody.dataset.bound = 'true';
+        tbody.addEventListener('click', (e) => {
+          const btn = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('button[data-kline-kind]') : null;
+          const idx = btn ? Number.parseInt(btn.getAttribute('data-idx'), 10) : NaN;
+          if (Number.isInteger(idx)) openAccountKlineModal(kind, idx, btn);
+        });
+      }
+    });
+
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function' && !accountKeydownBound) {
+      accountKeydownBound = true;
+      document.addEventListener('keydown', (e) => {
+        if (KlineModal && typeof KlineModal.isOpen === 'function' && KlineModal.isOpen()) return;
+        const activeEl = document.activeElement;
+        const activeTag = activeEl ? activeEl.tagName : '';
+        const isEditable = Boolean(activeEl && (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || activeTag === 'SELECT' || activeEl.isContentEditable));
+        const input = getCachedEl('history-search-input');
+        if (e.key === '/' && !isEditable && !e.ctrlKey && !e.metaKey && !e.altKey && input) {
+          e.preventDefault();
+          focusSafely(input);
+        } else if (e.key === 'Escape' && input && (input.value || activeEl === input)) {
+          debouncedHistorySearch.cancel();
+          input.value = '';
+          if (typeof input.blur === 'function') input.blur();
+          historyCurrentPage = 1;
+          renderHistoryTable();
         }
       });
     }
@@ -330,26 +336,10 @@
     tryLoadData();
   }, POLL_INTERVAL_MS);
 
-  function formatLoadErrorMessage(error) {
-    const errMsg = error && error.message ? String(error.message) : '未知错误';
-    const isSchemaError = Boolean(
-      (error && error.name === 'SyntaxError') ||
-      /^Invalid (summary|\/api\/account payload|active|trade_history|equity_curve|daily_pnl|pnl_distribution)/.test(errMsg)
-    );
-    if (isSchemaError) {
-      return latestSnapshot
-        ? ('账户快照摘要字段缺失或格式异常 (' + errMsg + ')，当前展示上次有效快照。')
-        : ('账户快照摘要字段缺失或数据格式不兼容 (' + errMsg + ')，请确认后台分析数据版本后重试。');
-    }
-    return latestSnapshot
-      ? ('账户数据刷新失败 (' + errMsg + ')，当前展示上次快照。')
-      : ('暂时无法加载账户数据 (' + errMsg + ')，请检查后台 API 服务，系统将自动重试。');
-  }
-
   function showLoadErrorStatus(error) {
     const status = getCachedEl('account-load-status');
     if (!status) return;
-    const message = formatLoadErrorMessage(error);
+    const message = formatLoadErrorMessage(error, Boolean(latestSnapshot));
     const signature = (latestSnapshot ? 'stale' : 'initial') + '|' + message;
     if (lastLoadStatusSignature === signature && status.hidden === false) {
       return;
@@ -423,6 +413,11 @@
 
   function init() {
     ensureChartDefaults();
+    if (KlineModal && typeof KlineModal.init === 'function') {
+      KlineModal.init({
+        onNavigateSymbol: navigateAccountModalSymbol,
+      });
+    }
     bindControlsOnce();
     tryLoadData();
   }

@@ -17,6 +17,8 @@
     setButtonBusy,
     updateStatusBadge,
     createPollScheduler,
+    showToast: commonShowToast,
+    copyText: commonCopyText,
   } = Common;
 
   const {
@@ -29,6 +31,10 @@
     renderTableRows,
     syncRowDom,
     applySortOrder: renderSortOrder,
+    matchesCandidateFilter,
+    syncRowSelection: renderRowSelection,
+    syncEmptySearchState,
+    collectNewlyEnteredResonance,
   } = Render;
 
   const ZONE_NAMES = {
@@ -56,11 +62,16 @@
   let lastEtag = null;
   let currentZone = 'resonance';
   let searchQuery = '';
+  let onlyFreshResonance = false;
+  let onlyHealthyFunding = false;
+  let selectedSymbol = null;
   let sortColumn = null;
   let sortAsc = true;
   let modalVisibleBars = 120;
   let highTurnoverThreshold = DEFAULT_HIGH_TURNOVER_THRESHOLD;
   let hiddenOrderDirty = false;
+  let hasLoadedSnapshotOnce = false;
+  let prevResonanceSyms = new Set();
 
   let pollController = null;
   let snapshotController = null;
@@ -94,6 +105,8 @@
         JSON.stringify({
           currentZone,
           searchQuery,
+          onlyFreshResonance,
+          onlyHealthyFunding,
           sortColumn,
           sortAsc,
           modalVisibleBars,
@@ -124,6 +137,12 @@
       if (typeof saved.searchQuery === 'string') {
         searchQuery = saved.searchQuery;
       }
+      if (typeof saved.onlyFreshResonance === 'boolean') {
+        onlyFreshResonance = saved.onlyFreshResonance;
+      }
+      if (typeof saved.onlyHealthyFunding === 'boolean') {
+        onlyHealthyFunding = saved.onlyHealthyFunding;
+      }
       if (typeof saved.sortColumn === 'string' && VALID_SORT_COLS.has(saved.sortColumn)) {
         sortColumn = saved.sortColumn;
         sortAsc = Boolean(saved.sortAsc);
@@ -147,6 +166,8 @@
   const tickerSyncedEl = document.getElementById('ticker-synced-time');
   const countBadge = document.getElementById('pool-count-badge');
   const searchInput = document.getElementById('symbol-search-input');
+  const freshFilterBtn = document.getElementById('btn-filter-fresh');
+  const healthyFrFilterBtn = document.getElementById('btn-filter-healthy-fr');
   const resetBtn = document.getElementById('btn-reset-filter');
   const kpiCards = document.querySelectorAll('.kpi-card');
   const tableScrollEl = document.getElementById('candidates-table-scroll');
@@ -157,8 +178,6 @@
   const batchCopyLabelEl = document.getElementById('btn-batch-copy-tv-label');
   const batchExportBtn = document.getElementById('btn-batch-export-tv');
   const batchExportLabelEl = document.getElementById('btn-batch-export-tv-label');
-  const toast = document.getElementById('toast');
-  const toastText = document.getElementById('toast-text');
   const tvDrawer = document.getElementById('tv-drawer');
   const toggleDrawerBtn = document.getElementById('btn-toggle-drawer');
   const closeDrawerBtn = document.getElementById('btn-close-drawer');
@@ -209,17 +228,7 @@
   }
 
   function showToast(msg) {
-    if (!toast || !toastText) return;
-    if (toastTimer) {
-      clearTimeout(toastTimer);
-      toastTimer = null;
-    }
-    toastText.textContent = msg;
-    toast.classList.remove('hidden');
-    toastTimer = setTimeout(() => {
-      toast.classList.add('hidden');
-      toastTimer = null;
-    }, 2000);
+    if (typeof commonShowToast === 'function') commonShowToast(msg);
   }
 
   function updateKpiCards(list) {
@@ -236,14 +245,21 @@
     });
   }
 
+  function syncFilterToggleButtons() {
+    if (freshFilterBtn) {
+      freshFilterBtn.setAttribute('aria-pressed', onlyFreshResonance ? 'true' : 'false');
+    }
+    if (healthyFrFilterBtn) {
+      healthyFrFilterBtn.setAttribute('aria-pressed', onlyHealthyFunding ? 'true' : 'false');
+    }
+  }
+
+  function syncRowSelection(sym, opts) {
+    return renderRowSelection(rowRefsBySym, sym, opts);
+  }
+
   function matchesCurrentFilter(c) {
-    const q = searchQuery.trim().toUpperCase();
-    if (q && !c.symbol.toUpperCase().includes(q)) return false;
-    if (currentZone === 'resonance') return c.is_resonance;
-    if (currentZone === 'neg_fr') return c.is_neg_funding;
-    if (currentZone === 'high_tr') return c.is_high_turnover;
-    if (currentZone === 'ema_bull') return c.is_ema_bull;
-    return true;
+    return matchesCandidateFilter(c, { searchQuery, onlyFreshResonance, onlyHealthyFunding, currentZone });
   }
 
   function getVisibleCandidates() {
@@ -288,27 +304,14 @@
     setIfChanged(batchExportLabelEl, 'textContent', `导出 .txt (${visibleCount})`);
     setIfChanged(batchExportBtn, 'title', `导出当前筛选生效的 ${visibleCount} 个标的 .txt 文件以导入 TradingView 自选列表`);
 
-    const emptyRow = document.getElementById('empty-search-row');
-    if (emptyRow) {
-      emptyRow.classList.toggle('hidden', visibleCount > 0);
-      if (visibleCount === 0) {
-        const emptyTitleEl = document.getElementById('empty-state-title');
-        const emptyHintEl = document.getElementById('empty-state-hint');
-        const emptyResetBtn = document.getElementById('btn-empty-reset-filter');
-        const isBackendEmpty = candidatesState.length === 0;
-        if (emptyTitleEl) {
-          setIfChanged(emptyTitleEl, 'textContent', isBackendEmpty ? '当前候选底池暂无符合策略标的' : '当前筛选下无匹配合约');
-        }
-        if (emptyHintEl) {
-          emptyHintEl.innerHTML = isBackendEmpty
-            ? '后台扫描每小时更新，可点击右上角「刷新」手动同步'
-            : '按 <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">Esc</kbd> 清空搜索词或点击下方按钮重置筛选';
-        }
-        if (emptyResetBtn && emptyResetBtn.classList) {
-          emptyResetBtn.classList.toggle('hidden', isBackendEmpty);
-        }
+    syncEmptySearchState(document, visibleCount, candidatesState.length);
+    if (selectedSymbol) {
+      const selRef = rowRefsBySym.get(selectedSymbol);
+      if (!selRef || !selRef.rowEl || selRef.rowEl.style.display === 'none') {
+        selectedSymbol = null;
       }
     }
+    syncRowSelection(selectedSymbol);
     return visibleCount;
   }
 
@@ -328,45 +331,7 @@
   }
 
   async function copyText(text, successMsg) {
-    if (!text) return false;
-    let ok = false;
-    try {
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-        await navigator.clipboard.writeText(text);
-        ok = true;
-      }
-    } catch (err) {
-      console.warn('Clipboard write failed:', err);
-    }
-    if (!ok && typeof document !== 'undefined' && typeof document.createElement === 'function' && typeof document.execCommand === 'function') {
-      let textarea = null;
-      const prevActive = document.activeElement;
-      try {
-        textarea = document.createElement('textarea');
-        textarea.value = text;
-        textarea.setAttribute('readonly', '');
-        textarea.style.position = 'fixed';
-        textarea.style.top = '-9999px';
-        textarea.style.left = '-9999px';
-        textarea.style.opacity = '0';
-        (document.body || document.documentElement).appendChild(textarea);
-        textarea.focus();
-        textarea.select();
-        if (typeof textarea.setSelectionRange === 'function') {
-          textarea.setSelectionRange(0, text.length);
-        }
-        ok = Boolean(document.execCommand('copy'));
-      } catch (fallbackErr) {
-        console.warn('Fallback execCommand copy failed:', fallbackErr);
-      } finally {
-        if (textarea && textarea.parentNode) {
-          textarea.parentNode.removeChild(textarea);
-        }
-        focusSafely(prevActive);
-      }
-    }
-    showToast(ok ? successMsg : '复制失败，请手动选择复制');
-    return ok;
+    return commonCopyText(text, successMsg, showToast);
   }
 
   function updateSettleCountdown() {
@@ -379,6 +344,9 @@
     const mins = Math.floor(diffMs / 60000);
     const secs = Math.floor((diffMs % 60000) / 1000);
     setIfChanged(timerEl, 'textContent', `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`);
+    if (timerEl.classList && typeof timerEl.classList.toggle === 'function') {
+      timerEl.classList.toggle('settle-urgent', mins < 5);
+    }
   }
 
   function updateSyncStatusBadge(level, label) {
@@ -395,6 +363,18 @@
         label,
       });
     }
+  }
+
+  function notifyNewResonanceSymbols(list) {
+    const { currentSet, entered } = collectNewlyEnteredResonance(list, prevResonanceSyms, hasLoadedSnapshotOnce);
+    if (entered.length > 0) {
+      const preview = entered.slice(0, 3).join('、');
+      const extra = entered.length > 3 ? ` 等 ${entered.length} 个标的` : '';
+      showToast(`新进顺势共振: ${preview}${extra}`);
+    }
+    prevResonanceSyms = currentSet;
+    hasLoadedSnapshotOnce = true;
+    return entered;
   }
 
   const pollScheduler = createPollScheduler(() => {
@@ -556,7 +536,8 @@
       updateKpiCards(candidatesState);
       if (sortColumn && sortMetricChanged) applySortOrder();
       if (anyClassChanged) applyFilter();
-      if (manual) {
+      const enteredResonance = notifyNewResonanceSymbols(candidatesState);
+      if (manual && enteredResonance.length === 0) {
         showToast(`已同步最新行情 (${candidatesState.length} 标的)`);
       }
     } catch (e) {
@@ -666,6 +647,7 @@
       updateKpiCards(candidatesState);
       applyFilter();
       if (sortColumn) applySortOrder();
+      notifyNewResonanceSymbols(candidatesState);
       updateTableScrollMaxHeight();
       if (pollingActive) versionScheduler.schedule();
       if (candidatesState.length > 0) {
@@ -798,6 +780,10 @@
     debouncedApplyFilter.cancel();
     if (searchInput) searchInput.value = '';
     searchQuery = '';
+    onlyFreshResonance = false;
+    onlyHealthyFunding = false;
+    selectedSymbol = null;
+    syncFilterToggleButtons();
     sortColumn = null;
     sortAsc = true;
     syncSortAria();
@@ -808,6 +794,19 @@
       sortStatusEl.textContent = `已重置为默认共振区筛选，当前显示 ${visibleCount} 个标的`;
     }
   }
+
+  [
+    [freshFilterBtn, () => { onlyFreshResonance = !onlyFreshResonance; }],
+    [healthyFrFilterBtn, () => { onlyHealthyFunding = !onlyHealthyFunding; }],
+  ].forEach(([btn, flip]) => {
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      flip();
+      syncFilterToggleButtons();
+      saveUiState();
+      applyFilter();
+    });
+  });
 
   kpiCards.forEach((card) => {
     card.addEventListener('click', () => {
@@ -876,12 +875,15 @@
 
   function openCandidateChartModal(sym, tvSym, triggerEl) {
     if (!KlineModal) return;
+    selectedSymbol = sym;
+    syncRowSelection(sym);
     const visible = getVisibleCandidates();
     const idx = visible.findIndex((c) => c.symbol === sym);
     if (typeof KlineModal.setNavMeta === 'function') {
       KlineModal.setNavMeta(idx, visible.length);
     }
-    KlineModal.open(sym, tvSym, triggerEl);
+    const candidate = candidatesState.find((c) => c.symbol === sym) || null;
+    KlineModal.open(sym, tvSym, triggerEl, candidate ? { type: 'candidate', candidate } : undefined);
   }
 
   function navigateModalSymbol(delta) {
@@ -1034,18 +1036,45 @@
         searchInput.blur();
         saveUiState();
         applyFilter();
-      } else if (currentZone !== 'resonance' || sortColumn !== null) {
+      } else if (currentZone !== 'resonance' || sortColumn !== null || onlyFreshResonance || onlyHealthyFunding) {
         resetFiltersToDefault();
+      } else if (selectedSymbol) {
+        selectedSymbol = null;
+        syncRowSelection(null);
       }
     } else if (e.key === '/' && !isEditableActive && !hasModifier) {
       e.preventDefault();
       if (searchInput) searchInput.focus();
     } else if (!isEditableActive && !hasModifier) {
+      const isInteractiveFocused = Boolean(
+        activeEl && typeof activeEl.closest === 'function' && activeEl.closest('button, a, [role="button"], [tabindex]')
+      );
       if (e.key === '1') switchZone('resonance');
       else if (e.key === '2') switchZone('neg_fr');
       else if (e.key === '3') switchZone('high_tr');
       else if (e.key === '4') switchZone('ema_bull');
       else if (e.key === '5') switchZone('all');
+      else if (e.key === 'ArrowDown' || e.key === 'j' || e.key === 'ArrowUp' || e.key === 'k') {
+        if (tvDrawer && !tvDrawer.classList.contains('hidden')) return;
+        const visible = getVisibleCandidates();
+        if (!visible.length) return;
+        e.preventDefault();
+        const delta = (e.key === 'ArrowDown' || e.key === 'j') ? 1 : -1;
+        const curIdx = selectedSymbol ? visible.findIndex((c) => c.symbol === selectedSymbol) : -1;
+        const nextIdx = curIdx === -1
+          ? (delta > 0 ? 0 : visible.length - 1)
+          : (curIdx + delta + visible.length) % visible.length;
+        selectedSymbol = visible[nextIdx].symbol;
+        syncRowSelection(selectedSymbol, { scroll: true });
+      } else if (e.key === 'Enter' && selectedSymbol && !isInteractiveFocused) {
+        e.preventDefault();
+        const refs = rowRefsBySym.get(selectedSymbol);
+        const triggerEl = refs && refs.rowEl ? refs.rowEl.querySelector('.btn-preview-kline') : null;
+        openCandidateChartModal(selectedSymbol, getTvSymbol(selectedSymbol), triggerEl);
+      } else if ((e.key === 'c' || e.key === 'C') && selectedSymbol) {
+        const tvSym = getTvSymbol(selectedSymbol);
+        copyText(tvSym, `已复制: ${tvSym}`);
+      }
     }
   });
 
@@ -1066,10 +1095,6 @@
     stopPolling();
     stopCountdown();
     debouncedApplyFilter.cancel();
-    if (toastTimer !== null) {
-      clearTimeout(toastTimer);
-      toastTimer = null;
-    }
     if (resizeRafId !== null && typeof cancelAnimationFrame === 'function') {
       cancelAnimationFrame(resizeRafId);
       resizeRafId = null;
@@ -1129,6 +1154,7 @@
   window.addEventListener('resize', scheduleTableScrollResize);
 
   restoreUiState();
+  syncFilterToggleButtons();
   kpiCards.forEach((card) => {
     const isSelected = card.getAttribute('data-zone') === currentZone;
     card.classList.toggle('active', isSelected);

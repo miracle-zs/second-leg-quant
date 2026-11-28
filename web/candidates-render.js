@@ -720,6 +720,128 @@
     return hiddenOrderDirty;
   }
 
+  function matchesCandidateFilter(c, filterState) {
+    const q = (filterState.searchQuery || '').trim().toUpperCase();
+    if (q && !c.symbol.toUpperCase().includes(q)) return false;
+    if (filterState.onlyFreshResonance) {
+      if (!c.is_resonance || !isFiniteNum(c.resonance_duration_hours)) return false;
+      const hrs = Number(c.resonance_duration_hours);
+      if (hrs < 0 || hrs > 3) return false;
+    }
+    if (filterState.onlyHealthyFunding) {
+      if (!isFiniteNum(c.funding_rate_4h_pct) || Number(c.funding_rate_4h_pct) < 0) return false;
+    }
+    const zone = filterState.currentZone;
+    if (zone === 'resonance') return c.is_resonance;
+    if (zone === 'neg_fr') return c.is_neg_funding;
+    if (zone === 'high_tr') return c.is_high_turnover;
+    if (zone === 'ema_bull') return c.is_ema_bull;
+    return true;
+  }
+
+  function syncRowSelection(rowRefsBySym, sym, opts) {
+    const scroll = Boolean(opts && opts.scroll);
+    rowRefsBySym.forEach((refs, rowSym) => {
+      const rowEl = refs && refs.rowEl;
+      if (!rowEl) return;
+      const isSelected = Boolean(sym && rowSym === sym && rowEl.style.display !== 'none');
+      if (isSelected) {
+        if (typeof rowEl.setAttribute === 'function') {
+          rowEl.setAttribute('data-selected', 'true');
+          rowEl.setAttribute('aria-selected', 'true');
+        }
+        if (scroll && typeof rowEl.scrollIntoView === 'function') {
+          rowEl.scrollIntoView({ block: 'nearest' });
+        }
+      } else if (typeof rowEl.removeAttribute === 'function') {
+        if (typeof rowEl.hasAttribute !== 'function' || rowEl.hasAttribute('data-selected')) {
+          rowEl.removeAttribute('data-selected');
+          rowEl.removeAttribute('aria-selected');
+        }
+      }
+    });
+  }
+
+  function applyLiveTickerToCandidate(c, t, pr, prevPriceBySym, highTurnoverThreshold) {
+    const sym = c.symbol;
+    let oldPrice;
+    if (t) {
+      const pVal = parseFloat(t.lastPrice);
+      const chgVal = parseFloat(t.priceChangePercent);
+      const highVal = parseFloat(t.highPrice);
+      const lowVal = parseFloat(t.lowPrice);
+      const volVal = parseFloat(t.quoteVolume);
+      if (!isFiniteNum(pVal) || pVal <= 0 || !isFiniteNum(chgVal) || !isFiniteNum(highVal) || highVal <= 0 || !isFiniteNum(lowVal) || lowVal <= 0 || !isFiniteNum(volVal) || volVal < 0) {
+        global.console.warn('Malformed Binance ticker24hr fields for ' + sym + ':', t);
+      }
+      if (isFiniteNum(pVal) && pVal > 0) {
+        oldPrice = prevPriceBySym.get(sym);
+        prevPriceBySym.set(sym, pVal);
+        c.price = pVal;
+      }
+      if (isFiniteNum(highVal) && highVal > 0) c.high_24h = highVal;
+      if (isFiniteNum(lowVal) && lowVal > 0) c.low_24h = lowVal;
+      if (isFiniteNum(chgVal)) c.price_chg_24h = chgVal;
+      if (isFiniteNum(volVal) && volVal >= 0) c.volume_24h_usd = volVal;
+      const cs = getEffectiveSupply(c);
+      if (cs > 0 && isFiniteNum(c.price) && c.price > 0) {
+        const currentMcap = c.price * cs;
+        c.market_cap_usd = currentMcap;
+        if (isFiniteNum(c.volume_24h_usd) && c.volume_24h_usd >= 0 && currentMcap > 0) {
+          c.turnover_ratio = c.volume_24h_usd / currentMcap;
+        }
+      }
+    }
+    if (pr) {
+      const settleVal = parseFloat(pr.lastFundingRate) * 100;
+      const interval = c.funding_interval_hours;
+      if (!isFiniteNum(settleVal)) {
+        global.console.warn('Malformed Binance premiumIndex lastFundingRate for ' + sym + ':', pr);
+      } else {
+        c.funding_rate_pct = settleVal;
+        c.funding_rate_4h_pct = isValidFundingIntervalHours(interval) ? settleVal * (4.0 / Number(interval)) : null;
+      }
+    }
+    classifyCandidate(c, highTurnoverThreshold);
+    return oldPrice;
+  }
+
+  function syncEmptySearchState(globalDoc, visibleCount, totalCount) {
+    const emptyRow = globalDoc.getElementById('empty-search-row');
+    if (!emptyRow) return;
+    emptyRow.classList.toggle('hidden', visibleCount > 0);
+    if (visibleCount > 0) return;
+    const emptyTitleEl = globalDoc.getElementById('empty-state-title');
+    const emptyHintEl = globalDoc.getElementById('empty-state-hint');
+    const emptyResetBtn = globalDoc.getElementById('btn-empty-reset-filter');
+    const isBackendEmpty = totalCount === 0;
+    if (emptyTitleEl) {
+      setIfChanged(emptyTitleEl, 'textContent', isBackendEmpty ? '当前候选底池暂无符合策略标的' : '当前筛选下无匹配合约');
+    }
+    if (emptyHintEl) {
+      emptyHintEl.innerHTML = isBackendEmpty
+        ? '后台扫描每小时更新，可点击右上角「刷新」手动同步'
+        : '按 <kbd class="px-1.5 py-0.5 bg-[#151c27] rounded-[3px] border border-[#283446] font-mono text-[#9fb0c5]">Esc</kbd> 清空搜索词或点击下方按钮重置筛选';
+    }
+    if (emptyResetBtn && emptyResetBtn.classList) {
+      emptyResetBtn.classList.toggle('hidden', isBackendEmpty);
+    }
+  }
+
+  function collectNewlyEnteredResonance(list, prevSet, hasLoadedOnce) {
+    const currentSet = new Set();
+    for (let i = 0; i < list.length; i += 1) {
+      if (list[i].is_resonance) currentSet.add(list[i].symbol);
+    }
+    const entered = [];
+    if (hasLoadedOnce) {
+      currentSet.forEach((sym) => {
+        if (!prevSet.has(sym)) entered.push(sym);
+      });
+    }
+    return { currentSet, entered };
+  }
+
   global.SecondLegCandidatesRender = Object.freeze({
     DEFAULT_HIGH_TURNOVER_THRESHOLD,
     isValidFundingIntervalHours,
@@ -731,5 +853,9 @@
     renderTableRows,
     syncRowDom,
     applySortOrder,
+    matchesCandidateFilter,
+    syncRowSelection,
+    syncEmptySearchState,
+    collectNewlyEnteredResonance,
   });
 })(window);

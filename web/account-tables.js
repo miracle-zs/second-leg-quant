@@ -22,6 +22,104 @@
   const HISTORY_PAGE_SIZE = 50;
   let lastActivePosSignature = null;
   let historyFilterCache = null;
+  let lastHistoryPageRows = [];
+
+  const API_STATUS_BADGE_MAP = {
+    BINANCE_REALTIME: {
+      className: 'px-2 py-0.5 font-medium bg-[#22c58b]/10 text-[#38d99f] inline-flex items-center gap-1.5',
+      dotClass: 'bg-[#22c58b]',
+      label: '币安实盘在线',
+    },
+    BINANCE_PARTIAL: {
+      className: 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5',
+      dotClass: 'bg-[#f0b429]',
+      label: '币安部分数据可用',
+    },
+    BINANCE_SNAPSHOT_PENDING_INCOME: {
+      className: 'px-2 py-0.5 font-medium bg-[#f0b429]/[0.12] text-[#f5c451] inline-flex items-center gap-1.5',
+      dotClass: 'bg-[#f0b429]',
+      label: '币安快照同步中',
+    },
+    'OFFLINE_FALLBACK': {
+      className: 'px-2 py-0.5 font-medium bg-[#151c27] text-[#f5c451] inline-flex items-center gap-1.5 whitespace-nowrap',
+      dotClass: 'bg-[#f0b429]',
+      label: '离线风控同步',
+      title: '',
+    },
+    NOT_CONFIGURED: {
+      className: 'px-2 py-0.5 font-medium bg-[#151c27] text-[#9fb0c5] inline-flex items-center gap-1.5 whitespace-nowrap',
+      dotClass: 'bg-[#4b5c75]',
+      label: '未配置币安密钥',
+      title: '尚未配置币安 API 凭证，当前展示本地或未连接状态',
+    },
+  };
+
+  function getLastHistoryPageRows() {
+    return lastHistoryPageRows;
+  }
+
+  function renderApiStatusBadge(badge, cache, accountData, fetchError) {
+    if (!badge) return;
+    if (fetchError) {
+      Common.updateStatusBadge(badge, cache, {
+        className: 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5',
+        dotClass: 'bg-[#f25565]',
+        label: '数据拉取失败',
+      });
+      return;
+    }
+    const mode = (accountData && accountData.api_status && accountData.api_status.mode) || '';
+    const spec = API_STATUS_BADGE_MAP[mode] || {
+      className: 'px-2 py-0.5 font-medium bg-[#f25565]/10 text-[#f8717e] inline-flex items-center gap-1.5 whitespace-nowrap',
+      dotClass: 'bg-[#f25565]',
+      label: mode ? ('接口状态异常 (' + mode + ')') : '接口状态缺失',
+      title: '',
+    };
+    Common.updateStatusBadge(badge, cache, spec);
+  }
+
+  function formatLoadErrorMessage(error, hasLatestSnapshot) {
+    const errMsg = error && error.message ? String(error.message) : '未知错误';
+    const isSchemaError = Boolean(
+      (error && error.name === 'SyntaxError') ||
+      /^Invalid (summary|\/api\/account payload|active|trade_history|equity_curve|daily_pnl|pnl_distribution)/.test(errMsg)
+    );
+    if (isSchemaError) {
+      return hasLatestSnapshot
+        ? ('账户快照摘要字段缺失或格式异常 (' + errMsg + ')，当前展示上次有效快照。')
+        : ('账户快照摘要字段缺失或数据格式不兼容 (' + errMsg + ')，请确认后台分析数据版本后重试。');
+    }
+    return hasLatestSnapshot
+      ? ('账户数据刷新失败 (' + errMsg + ')，当前展示上次快照。')
+      : ('暂时无法加载账户数据 (' + errMsg + ')，请检查后台 API 服务，系统将自动重试。');
+  }
+
+  function getAccountModalCollection(kind, accountData) {
+    if (!accountData) return [];
+    if (kind === 'position') {
+      return Array.isArray(accountData.active_positions) ? accountData.active_positions : [];
+    }
+    if (kind === 'trade') {
+      return Array.isArray(lastHistoryPageRows) ? lastHistoryPageRows : [];
+    }
+    return [];
+  }
+
+  function openAccountKlineModal(KlineModal, accountData, kind, idx, triggerEl) {
+    if (!KlineModal || typeof KlineModal.open !== 'function') return null;
+    const list = getAccountModalCollection(kind, accountData);
+    if (!list.length || idx < 0 || idx >= list.length) return null;
+    const item = list[idx];
+    const sym = item && typeof item.symbol === 'string' ? item.symbol.trim() : '';
+    if (!sym) return null;
+    if (typeof KlineModal.setNavMeta === 'function') {
+      KlineModal.setNavMeta(idx, list.length);
+    }
+    const tvSym = typeof Common.getTvSymbol === 'function' ? Common.getTvSymbol(sym) : (sym + '.P');
+    const context = kind === 'position' ? { type: 'position', position: item } : { type: 'trade', trade: item };
+    KlineModal.open(sym, tvSym, triggerEl, context);
+    return { kind, idx };
+  }
 
   function formatMoney(val, options) {
     const opts = options || {};
@@ -294,7 +392,7 @@
       return;
     }
 
-    const html = positions.map((p) => {
+    const html = positions.map((p, idx) => {
       if (!p || typeof p !== 'object' || typeof p.symbol !== 'string' || !p.symbol.trim() || typeof p.side !== 'string' || !p.side.trim()) {
         throw new Error('Invalid active position: missing symbol or side');
       }
@@ -343,6 +441,7 @@
                 '<span>' + safeSym + '</span>' + EXT_ARROW_SVG +
               '</a>' +
               sideBadge +
+              '<button type="button" class="row-kline-chip" data-kline-kind="position" data-idx="' + idx + '" title="预览 ' + safeSym + ' 15m/1h K线">15m图</button>' +
             '</div>' +
           '</td>' +
           '<td class="px-3.5 py-2.5 text-right text-[#f1f5f9] whitespace-nowrap"><div>' + escapeHtml(levStr) + ' · ' + escapeHtml(notionalStr) + '</div><div class="text-[10px] text-[#7f91a8]">' + escapeHtml(amtStr) + '</div></td>' +
@@ -387,8 +486,10 @@
 
   function getFilteredAndSortedHistory(history, sortState, getEl) {
     const searchInput = typeof getEl === 'function' ? getEl('history-search-input') : global.document.getElementById('history-search-input');
+    const sideSelect = typeof getEl === 'function' ? getEl('history-side-filter') : global.document.getElementById('history-side-filter');
     const outcomeSelect = typeof getEl === 'function' ? getEl('history-outcome-filter') : global.document.getElementById('history-outcome-filter');
     const query = (searchInput ? searchInput.value : '').trim().toLowerCase();
+    const sideFilter = sideSelect ? sideSelect.value : '';
     const outcomeFilter = outcomeSelect ? outcomeSelect.value : '';
     const col = sortState.column;
     const asc = sortState.asc;
@@ -398,6 +499,7 @@
       historyFilterCache.history === history &&
       historyFilterCache.length === history.length &&
       historyFilterCache.query === query &&
+      historyFilterCache.sideFilter === sideFilter &&
       historyFilterCache.outcomeFilter === outcomeFilter &&
       historyFilterCache.col === col &&
       historyFilterCache.asc === asc
@@ -406,6 +508,9 @@
     }
 
     const filtered = history.filter((h) => {
+      if (sideFilter && String(h.side || '').trim().toUpperCase() !== sideFilter) {
+        return false;
+      }
       if (outcomeFilter && String(h.outcome || '').toUpperCase() !== outcomeFilter) {
         return false;
       }
@@ -437,6 +542,7 @@
       history,
       length: history.length,
       query,
+      sideFilter,
       outcomeFilter,
       col,
       asc,
@@ -512,7 +618,37 @@
       updateSortIndicators();
     }
 
+    const summaryEl = typeof getEl === 'function' ? getEl('history-filtered-summary') : global.document.getElementById('history-filtered-summary');
+    if (summaryEl) {
+      if (rows.length > 0 && rows.length < fullHistory.length) {
+        let sumNet = 0;
+        let netCount = 0;
+        let winCount = 0;
+        for (let i = 0; i < rows.length; i += 1) {
+          const item = rows[i];
+          if (isFiniteNumber(item.net_pnl)) {
+            sumNet += Number(item.net_pnl);
+            netCount += 1;
+          }
+          if (String(item.outcome || '').toUpperCase() === 'WIN') {
+            winCount += 1;
+          }
+        }
+        const winRateStr = ((winCount / rows.length) * 100).toFixed(1) + '%';
+        const summaryText = netCount > 0
+          ? ('筛选净盈亏 ' + formatMoney(sumNet, { signed: true }) + ' · 胜率 ' + winRateStr)
+          : ('筛选胜率 ' + winRateStr);
+        summaryEl.hidden = false;
+        setIfChanged(summaryEl, 'textContent', summaryText);
+        setSignedColorClass(summaryEl, netCount > 0 ? sumNet : null, { zeroClass: 'text-[#9fb0c5]' });
+      } else {
+        summaryEl.hidden = true;
+        setIfChanged(summaryEl, 'textContent', '');
+      }
+    }
+
     if (rows.length === 0) {
+      lastHistoryPageRows = [];
       updateHistoryPaginationControls(0, 0, 0, 1, 1, getEl);
       histTbody.innerHTML = '<tr><td colspan="10" class="py-10 text-center text-[#9fb0c5] text-xs font-sans">' +
         (fullHistory.length === 0 ? '暂无历史开平仓流水记录' : '当前筛选条件下无匹配交易记录') + '</td></tr>';
@@ -526,9 +662,10 @@
     const startIdx = (nextPage - 1) * HISTORY_PAGE_SIZE;
     const endIdx = Math.min(rows.length, startIdx + HISTORY_PAGE_SIZE);
     const pageRows = rows.slice(startIdx, endIdx);
+    lastHistoryPageRows = pageRows;
     updateHistoryPaginationControls(rows.length, startIdx, endIdx, totalPages, nextPage, getEl);
 
-    histTbody.innerHTML = pageRows.map((h) => {
+    histTbody.innerHTML = pageRows.map((h, idx) => {
       if (!h || typeof h !== 'object' || typeof h.symbol !== 'string' || !h.symbol.trim() || typeof h.side !== 'string' || !h.side.trim()) {
         throw new Error('Invalid trade_history entry: missing symbol or side');
       }
@@ -573,6 +710,7 @@
                 '<span>' + safeSym + '</span>' + EXT_ARROW_SVG +
               '</a>' +
               '<span class="text-[10px] font-mono font-semibold ' + sideCls + '">' + escapeHtml(side) + '</span>' +
+              '<button type="button" class="row-kline-chip" data-kline-kind="trade" data-idx="' + idx + '" title="预览 ' + safeSym + ' 15m/1h K线">15m图</button>' +
             '</div>' +
           '</td>' +
           '<td class="px-2.5 sm:px-3.5 py-2.5 text-right text-[#f1f5f9] whitespace-nowrap">' + notionalCellHtml + '</td>' +
@@ -604,5 +742,10 @@
     prepareHistorySearchKeys,
     getFilteredAndSortedHistory,
     renderHistoryTable,
+    getLastHistoryPageRows,
+    renderApiStatusBadge,
+    formatLoadErrorMessage,
+    getAccountModalCollection,
+    openAccountKlineModal,
   });
 })(window);
